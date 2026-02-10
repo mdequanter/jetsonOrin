@@ -192,6 +192,9 @@ def worker_loop(args, stop_event: mp.Event):
     print("[INFO] Running. Stop with Ctrl+C in the terminal.")
 
     try:
+
+        speak(engine, f"Face recognition started. {len(known)} known identities loaded.")
+
         while not stop_event.is_set():
             ok, frame = cap.read()
             if not ok or frame is None:

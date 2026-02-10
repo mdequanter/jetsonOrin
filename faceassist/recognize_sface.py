@@ -64,17 +64,33 @@ def best_match(recognizer, feat, known: dict):
 
 
 def speak(engine, text: str):
-    print("[SAY]", text)
+    """Blocking TTS call. Keep usage throttled with cooldown."""
+    print("[TTS]", text)
     if engine is None:
         return
-    engine.say(text)
-    engine.runAndWait()
+    try:
+        engine.say(text)
+        engine.runAndWait()
+    except Exception as e:
+        print("[WARN] TTS failed:", e)
+
+
+def face_direction(x: int, w_face: int, frame_w: int) -> str:
+    """
+    Return left/center/right based on face center position in the frame.
+    """
+    cx = x + (w_face // 2)
+    if cx < frame_w / 3:
+        return "left"
+    elif cx > 2 * frame_w / 3:
+        return "right"
+    return "center"
 
 
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     dev = f"/dev/video{cam_index}"
 
-    # MJPEG GStreamer (typical USB webcam on Jetson)
+    # MJPEG GStreamer (typical for USB cams on Jetson)
     gst_pipeline = (
         f"v4l2src device={dev} ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -109,13 +125,11 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
 
 def worker_loop(args, stop_event: mp.Event):
     """
-    Runs the full vision loop in a separate process.
-    stop_event is checked between frames; if OpenCV DNN blocks,
-    the parent can still terminate this process immediately on Ctrl+C.
+    Vision loop runs in a separate process so Ctrl+C always works from the parent.
     """
-    # Make Ctrl+C handled by parent only (avoid double-handling)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # Models
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
 
@@ -125,15 +139,31 @@ def worker_loop(args, stop_event: mp.Event):
         return
     print("[INFO] Known:", ", ".join(sorted(known.keys())))
 
+    # TTS engine (English)
     engine = None
-    if TTS_OK:
+    if TTS_OK and not args.no_tts:
         try:
             engine = pyttsx3.init()
-            engine.setProperty("rate", 175)
-        except Exception:
+            engine.setProperty("rate", args.tts_rate)
+            # Optional: try to pick an English voice if present
+            if args.force_en_voice:
+                try:
+                    for v in engine.getProperty("voices"):
+                        # voice.languages can vary by platform; do a best-effort check
+                        langs = str(getattr(v, "languages", "")).lower()
+                        name = str(getattr(v, "name", "")).lower()
+                        vid = str(getattr(v, "id", "")).lower()
+                        if "en" in langs or "english" in name or "english" in vid:
+                            engine.setProperty("voice", v.id)
+                            break
+                except Exception:
+                    pass
+        except Exception as e:
+            print("[WARN] TTS init failed:", e)
             engine = None
 
-    WIDTH, HEIGHT, FPS = 640, 480, 15
+    # Camera
+    WIDTH, HEIGHT, FPS = args.width, args.height, args.fps
     cap = open_camera_linux(args.cam, WIDTH, HEIGHT, FPS)
     if not cap.isOpened():
         print("[ERROR] Cannot open camera.")
@@ -149,7 +179,8 @@ def worker_loop(args, stop_event: mp.Event):
     detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h), args.score_th, args.nms_th, args.topk)
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    last_spoken = {}
+    last_spoken = {}  # key -> timestamp, where key = (name, direction) or ("Unknown", direction)
+
     frame_id = 0
     last_label = "..."
 
@@ -168,16 +199,13 @@ def worker_loop(args, stop_event: mp.Event):
                 break
             frame_id += 1
 
-            # Keep UI responsive even without key handling
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
-                # window closed
                 break
 
             if frame_id % args.infer_every != 0:
                 cv2.putText(frame, last_label, (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
-                frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
-                cv2.imshow(win, frame_disp)
+                cv2.imshow(win, cv2.resize(frame, (WIDTH, HEIGHT)))
                 cv2.waitKey(1)
                 continue
 
@@ -186,11 +214,14 @@ def worker_loop(args, stop_event: mp.Event):
             _, faces = detector.detect(frame)
             face = largest_face(faces)
 
-            label = "Geen gezicht"
+            label = "No face"
             color = (0, 0, 255)
 
             if face is not None:
                 x, y, fw, fh = face[:4].astype(int)
+
+                direction = face_direction(x, fw, w)  # left/center/right
+
                 if fw >= args.min_face:
                     aligned = recognizer.alignCrop(frame, face)
                     feat = recognizer.feature(aligned).astype(np.float32)
@@ -199,29 +230,40 @@ def worker_loop(args, stop_event: mp.Event):
                     confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
                     if confident:
-                        label = f"{best_name} ({best_score:.2f})"
+                        label = f"{best_name} ({best_score:.2f}) - {direction}"
                         color = (0, 255, 0)
-                        now = time.time()
-                        last = last_spoken.get(best_name, 0.0)
-                        if now - last >= args.cooldown:
-                            speak(engine, f"Ik denk dat het {best_name} is")
-                            last_spoken[best_name] = now
+
+                        if engine is not None:
+                            now = time.time()
+                            key = (best_name, direction)
+                            last = last_spoken.get(key, 0.0)
+                            if now - last >= args.cooldown:
+                                # English TTS message
+                                speak(engine, f"{best_name} is on the {direction}")
+                                last_spoken[key] = now
                     else:
-                        label = f"Onbekend ({best_score:.2f})"
+                        label = f"Unknown ({best_score:.2f}) - {direction}"
                         color = (0, 165, 255)
+
+                        if engine is not None and args.speak_unknown:
+                            now = time.time()
+                            key = ("Unknown", direction)
+                            last = last_spoken.get(key, 0.0)
+                            if now - last >= args.cooldown:
+                                speak(engine, f"Unknown person on the {direction}")
+                                last_spoken[key] = now
 
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
                 else:
-                    label = "Kom dichterbij"
+                    label = f"Come closer - {direction}"
                     color = (0, 165, 255)
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
 
             last_label = label
             cv2.putText(frame, label, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-            frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
-            cv2.imshow(win, frame_disp)
+            cv2.imshow(win, cv2.resize(frame, (WIDTH, HEIGHT)))
             cv2.waitKey(1)
 
     finally:
@@ -234,13 +276,23 @@ def main():
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--known", type=str, default="known")
     ap.add_argument("--min_face", type=int, default=120)
-    ap.add_argument("--threshold", type=float, default=0.50, help="Cosine similarity threshold (higher = stricter)")
+    ap.add_argument("--threshold", type=float, default=0.50, help="Cosine similarity threshold (higher=stricter)")
     ap.add_argument("--margin", type=float, default=0.06, help="Best-second margin")
-    ap.add_argument("--cooldown", type=float, default=6.0)
+    ap.add_argument("--cooldown", type=float, default=6.0, help="Seconds between repeated TTS for same (name,direction)")
     ap.add_argument("--score_th", type=float, default=0.9)
     ap.add_argument("--nms_th", type=float, default=0.3)
     ap.add_argument("--topk", type=int, default=5000)
-    ap.add_argument("--infer_every", type=int, default=2, help="Run detection/recognition every N frames")
+    ap.add_argument("--infer_every", type=int, default=2)
+    ap.add_argument("--width", type=int, default=640)
+    ap.add_argument("--height", type=int, default=480)
+    ap.add_argument("--fps", type=int, default=15)
+
+    # TTS options
+    ap.add_argument("--no_tts", action="store_true", help="Disable TTS")
+    ap.add_argument("--tts_rate", type=int, default=175)
+    ap.add_argument("--force_en_voice", action="store_true", help="Try to select an English voice if available")
+    ap.add_argument("--speak_unknown", action="store_true", help="Also speak when person is unknown")
+
     args = ap.parse_args()
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
@@ -254,23 +306,20 @@ def main():
 
     print("[INFO] Ctrl+C to stop.")
     try:
-        # Wait until worker ends; Ctrl+C will interrupt this wait immediately
         while p.is_alive():
             p.join(timeout=0.2)
     except KeyboardInterrupt:
-        print("\n[INFO] Ctrl+C ontvangen, stoppen...")
+        print("\n[INFO] Ctrl+C received, stopping...")
         stop_event.set()
-        # Give worker a moment to exit; if it's stuck in a C++ call, terminate.
         p.join(timeout=1.0)
         if p.is_alive():
-            print("[WARN] Worker hangt (OpenCV call). Process wordt geforceerd afgesloten.")
+            print("[WARN] Worker stuck in OpenCV call. Terminating process.")
             p.terminate()
             p.join()
 
-    print("[INFO] Afgesloten.")
+    print("[INFO] Exited.")
 
 
 if __name__ == "__main__":
-    # Important for Jetson + multiprocessing
     mp.set_start_method("spawn", force=True)
     main()

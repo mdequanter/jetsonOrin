@@ -1,0 +1,8 @@
+path,status,predicted_name,best_score,x,y,w,h
+to_check\10.jpg,NO_FACE,,,,,
+to_check\9.jpg,MATCH,jennifer_Lopez,0.7763,658,256,214,305
+to_check\cruise.jpg,NO_FACE,,,,,
+to_check\tom2.jpg,NO_FACE,,,,,
+to_check\tom5.jpg,MATCH,Tom_Cruise,1.0000,126,85,156,208
+to_check\tom6.jpg,MATCH,Tom_Cruise,1.0000,211,91,163,217
+to_check\11.webp,MATCH,jennifer_Lopez,0.7803,215,121,306,414

@@ -5,8 +5,6 @@ import urllib.request
 import numpy as np
 import cv2
 import signal
-import select
-import sys
 
 try:
     import pyttsx3
@@ -17,28 +15,13 @@ except Exception:
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
-
-# ---------- Robust exit handling (works even if OpenCV window doesn't receive key events) ----------
+# ---------- Robust exit handling ----------
 STOP = False
-
-
 def _handle_sigint(sig, frame):
     global STOP
     STOP = True
-
-
 signal.signal(signal.SIGINT, _handle_sigint)
-
-
-def key_from_stdin():
-    """Non-blocking key read from terminal (so 'q' works even if the OpenCV window has no focus)."""
-    if select.select([sys.stdin], [], [], 0)[0]:
-        try:
-            return sys.stdin.read(1)
-        except Exception:
-            return None
-    return None
-# -----------------------------------------------------------------------------------------------
+# ----------------------------------------
 
 
 def download_if_missing(url: str, path: str) -> None:
@@ -51,7 +34,7 @@ def download_if_missing(url: str, path: str) -> None:
 
 
 def load_known(known_dir: str):
-    known = {}  # name -> (N, D) or (N, 1, D) features depending on enroll
+    known = {}
     if not os.path.isdir(known_dir):
         return known
     for fn in os.listdir(known_dir):
@@ -71,7 +54,6 @@ def largest_face(faces: np.ndarray):
 
 
 def best_match(recognizer, feat, known: dict):
-    # returns best_name, best_score, second_score (cosine similarity; higher is better)
     scores = []
     for name, feats in known.items():
         best = -1.0
@@ -97,14 +79,9 @@ def speak(engine, text: str):
 
 
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
-    """
-    Jetson-friendly camera open:
-    1) Try GStreamer (MJPEG) pipeline on /dev/video{cam_index}
-    2) Fallback to V4L2/default
-    """
     dev = f"/dev/video{cam_index}"
 
-    # Most USB cams on Jetson output MJPEG; decode with jpegdec.
+    # MJPEG GStreamer (meestal correct op Jetson)
     gst_pipeline = (
         f"v4l2src device={dev} ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -134,7 +111,7 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
         print("[INFO] Camera opened via default backend (OpenCV).")
         return cap
 
-    return cap  # not opened
+    return cap
 
 
 def main():
@@ -142,13 +119,13 @@ def main():
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--known", type=str, default="known")
     ap.add_argument("--min_face", type=int, default=120)
-    ap.add_argument("--threshold", type=float, default=0.50, help="Cosine similarity threshold (higher = stricter)")
-    ap.add_argument("--margin", type=float, default=0.06, help="Best-second margin")
+    ap.add_argument("--threshold", type=float, default=0.50)
+    ap.add_argument("--margin", type=float, default=0.06)
     ap.add_argument("--cooldown", type=float, default=6.0)
     ap.add_argument("--score_th", type=float, default=0.9)
     ap.add_argument("--nms_th", type=float, default=0.3)
     ap.add_argument("--topk", type=int, default=5000)
-    ap.add_argument("--infer_every", type=int, default=2, help="Run detection/recognition every N frames")
+    ap.add_argument("--infer_every", type=int, default=2)
     args = ap.parse_args()
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
@@ -167,57 +144,53 @@ def main():
         engine = pyttsx3.init()
         engine.setProperty("rate", 175)
 
-    # ---- Jetson-safe camera open ----
     WIDTH, HEIGHT, FPS = 640, 480, 15
     cap = open_camera_linux(args.cam, WIDTH, HEIGHT, FPS)
     if not cap.isOpened():
-        print("[ERROR] Cannot open camera. Check /dev/videoX and permissions.")
+        print("[ERROR] Cannot open camera.")
         return
 
     ok, frame = cap.read()
     if not ok or frame is None:
-        print("[ERROR] Cannot read from camera (first frame).")
+        print("[ERROR] Cannot read first frame.")
         cap.release()
         return
 
     h, w = frame.shape[:2]
-    detector = cv2.FaceDetectorYN.create(
-        yunet_path, "", (w, h),
-        args.score_th, args.nms_th, args.topk
-    )
+    detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h), args.score_th, args.nms_th, args.topk)
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    last_spoken = {}  # name -> timestamp
+    last_spoken = {}
     frame_id = 0
     last_label = "..."
 
-    # ---- Ensure window exists & gets focus-friendly behavior ----
     win = "Recognize (SFace+YuNet)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win, WIDTH, HEIGHT)
     cv2.moveWindow(win, 50, 50)
 
-    print("[INFO] Press 'q' (in the window OR terminal) to quit. Ctrl+C also works.")
+    print("[INFO] Stoppen: klik in het videovenster en druk 'q', of druk Ctrl+C, of sluit het venster (X).")
 
     while True:
         if STOP:
             break
 
-        # Also allow 'q' from terminal even if OpenCV window doesn't get key events
-        ch = key_from_stdin()
-        if ch == "q":
+        # Stop als window gesloten is
+        if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
             break
 
         ok, frame = cap.read()
         if not ok or frame is None:
-            print("[WARN] Frame grab failed, stopping.")
+            print("[WARN] Frame grab failed.")
             break
         frame_id += 1
 
         if frame_id % args.infer_every != 0:
-            cv2.putText(frame, last_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
+            cv2.putText(frame, last_label, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
             frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
             cv2.imshow(win, frame_disp)
+
             k = cv2.waitKey(1) & 0xFF
             if k == ord("q"):
                 break
@@ -259,7 +232,8 @@ def main():
                 cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
 
         last_label = label
-        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        cv2.putText(frame, label, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
         frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
         cv2.imshow(win, frame_disp)

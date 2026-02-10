@@ -42,7 +42,8 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
+    #cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW) # for Windows to avoid warning about DirectShow; on Linux/Mac this flag is ignored
+    cap = cv2.VideoCapture(args.cam)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 15)

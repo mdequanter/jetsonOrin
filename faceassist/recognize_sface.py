@@ -4,7 +4,6 @@ import argparse
 import urllib.request
 import numpy as np
 import cv2
-import multiprocessing as mp
 import signal
 
 try:
@@ -15,6 +14,14 @@ except Exception:
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+
+# --- Ctrl+C handling ---
+STOP = False
+def _handle_sigint(sig, frame):
+    global STOP
+    STOP = True
+signal.signal(signal.SIGINT, _handle_sigint)
+# ----------------------
 
 
 def download_if_missing(url: str, path: str) -> None:
@@ -74,7 +81,7 @@ def speak(engine, text: str):
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     dev = f"/dev/video{cam_index}"
 
-    # MJPEG GStreamer (typical USB webcam on Jetson)
+    # MJPEG GStreamer (typical for USB cams)
     gst_pipeline = (
         f"v4l2src device={dev} ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -107,17 +114,24 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     return cap
 
 
-def worker_loop(args, stop_event: mp.Event):
-    """
-    Runs the full vision loop in a separate process.
-    stop_event is checked between frames; if OpenCV DNN blocks,
-    the parent can still terminate this process immediately on Ctrl+C.
-    """
-    # Make Ctrl+C handled by parent only (avoid double-handling)
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cam", type=int, default=0)
+    ap.add_argument("--known", type=str, default="known")
+    ap.add_argument("--min_face", type=int, default=120)
+    ap.add_argument("--threshold", type=float, default=0.50)
+    ap.add_argument("--margin", type=float, default=0.06)
+    ap.add_argument("--cooldown", type=float, default=6.0)
+    ap.add_argument("--score_th", type=float, default=0.9)
+    ap.add_argument("--nms_th", type=float, default=0.3)
+    ap.add_argument("--topk", type=int, default=5000)
+    ap.add_argument("--infer_every", type=int, default=2)
+    args = ap.parse_args()
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
+    download_if_missing(YUNET_URL, yunet_path)
+    download_if_missing(SFACE_URL, sface_path)
 
     known = load_known(args.known)
     if not known:
@@ -127,11 +141,8 @@ def worker_loop(args, stop_event: mp.Event):
 
     engine = None
     if TTS_OK:
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 175)
-        except Exception:
-            engine = None
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 175)
 
     WIDTH, HEIGHT, FPS = 640, 480, 15
     cap = open_camera_linux(args.cam, WIDTH, HEIGHT, FPS)
@@ -158,26 +169,25 @@ def worker_loop(args, stop_event: mp.Event):
     cv2.resizeWindow(win, WIDTH, HEIGHT)
     cv2.moveWindow(win, 50, 50)
 
-    print("[INFO] Running. Stop with Ctrl+C in the terminal.")
+    print("[INFO] Stoppen kan alleen met Ctrl+C (in de terminal).")
 
     try:
-        while not stop_event.is_set():
+        while True:
+            if STOP:
+                break
+
             ok, frame = cap.read()
             if not ok or frame is None:
                 print("[WARN] Frame grab failed.")
                 break
             frame_id += 1
 
-            # Keep UI responsive even without key handling
-            if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
-                # window closed
-                break
-
             if frame_id % args.infer_every != 0:
                 cv2.putText(frame, last_label, (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
                 frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
                 cv2.imshow(win, frame_disp)
+                # keep UI responsive; no key handling
                 cv2.waitKey(1)
                 continue
 
@@ -224,53 +234,14 @@ def worker_loop(args, stop_event: mp.Event):
             cv2.imshow(win, frame_disp)
             cv2.waitKey(1)
 
+    except KeyboardInterrupt:
+        # This will catch Ctrl+C reliably in normal terminal execution
+        print("\n[INFO] Ctrl+C ontvangen, afsluiten...")
+
     finally:
         cap.release()
         cv2.destroyAllWindows()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cam", type=int, default=0)
-    ap.add_argument("--known", type=str, default="known")
-    ap.add_argument("--min_face", type=int, default=120)
-    ap.add_argument("--threshold", type=float, default=0.50, help="Cosine similarity threshold (higher = stricter)")
-    ap.add_argument("--margin", type=float, default=0.06, help="Best-second margin")
-    ap.add_argument("--cooldown", type=float, default=6.0)
-    ap.add_argument("--score_th", type=float, default=0.9)
-    ap.add_argument("--nms_th", type=float, default=0.3)
-    ap.add_argument("--topk", type=int, default=5000)
-    ap.add_argument("--infer_every", type=int, default=2, help="Run detection/recognition every N frames")
-    args = ap.parse_args()
-
-    yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
-    sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
-    download_if_missing(YUNET_URL, yunet_path)
-    download_if_missing(SFACE_URL, sface_path)
-
-    stop_event = mp.Event()
-    p = mp.Process(target=worker_loop, args=(args, stop_event), daemon=True)
-    p.start()
-
-    print("[INFO] Ctrl+C to stop.")
-    try:
-        # Wait until worker ends; Ctrl+C will interrupt this wait immediately
-        while p.is_alive():
-            p.join(timeout=0.2)
-    except KeyboardInterrupt:
-        print("\n[INFO] Ctrl+C ontvangen, stoppen...")
-        stop_event.set()
-        # Give worker a moment to exit; if it's stuck in a C++ call, terminate.
-        p.join(timeout=1.0)
-        if p.is_alive():
-            print("[WARN] Worker hangt (OpenCV call). Process wordt geforceerd afgesloten.")
-            p.terminate()
-            p.join()
-
-    print("[INFO] Afgesloten.")
-
-
 if __name__ == "__main__":
-    # Important for Jetson + multiprocessing
-    mp.set_start_method("spawn", force=True)
     main()

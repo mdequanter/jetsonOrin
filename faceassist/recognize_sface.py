@@ -15,13 +15,13 @@ except Exception:
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
-# ---------- Robust exit handling ----------
+# --- Ctrl+C handling ---
 STOP = False
 def _handle_sigint(sig, frame):
     global STOP
     STOP = True
 signal.signal(signal.SIGINT, _handle_sigint)
-# ----------------------------------------
+# ----------------------
 
 
 def download_if_missing(url: str, path: str) -> None:
@@ -81,7 +81,7 @@ def speak(engine, text: str):
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     dev = f"/dev/video{cam_index}"
 
-    # MJPEG GStreamer (meestal correct op Jetson)
+    # MJPEG GStreamer (typical for USB cams)
     gst_pipeline = (
         f"v4l2src device={dev} ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -90,10 +90,10 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
 
     cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
     if cap.isOpened():
-        print("[INFO] Camera opened via GStreamer:", gst_pipeline)
+        print("[INFO] Camera opened via GStreamer.")
         return cap
 
-    print("[WARN] GStreamer open failed. Falling back to V4L2/default OpenCV capture...")
+    print("[WARN] GStreamer open failed. Falling back to V4L2...")
 
     cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
     if cap.isOpened():
@@ -169,81 +169,78 @@ def main():
     cv2.resizeWindow(win, WIDTH, HEIGHT)
     cv2.moveWindow(win, 50, 50)
 
-    print("[INFO] Stoppen: klik in het videovenster en druk 'q', of druk Ctrl+C, of sluit het venster (X).")
+    print("[INFO] Stoppen kan alleen met Ctrl+C (in de terminal).")
 
-    while True:
-        if STOP:
-            break
+    try:
+        while True:
+            if STOP:
+                break
 
-        # Stop als window gesloten is
-        if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
-            break
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                print("[WARN] Frame grab failed.")
+                break
+            frame_id += 1
 
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            print("[WARN] Frame grab failed.")
-            break
-        frame_id += 1
+            if frame_id % args.infer_every != 0:
+                cv2.putText(frame, last_label, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
+                frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
+                cv2.imshow(win, frame_disp)
+                # keep UI responsive; no key handling
+                cv2.waitKey(1)
+                continue
 
-        if frame_id % args.infer_every != 0:
-            cv2.putText(frame, last_label, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
+            h, w = frame.shape[:2]
+            detector.setInputSize((w, h))
+            _, faces = detector.detect(frame)
+            face = largest_face(faces)
+
+            label = "Geen gezicht"
+            color = (0, 0, 255)
+
+            if face is not None:
+                x, y, fw, fh = face[:4].astype(int)
+                if fw >= args.min_face:
+                    aligned = recognizer.alignCrop(frame, face)
+                    feat = recognizer.feature(aligned).astype(np.float32)
+
+                    best_name, best_score, second_score = best_match(recognizer, feat, known)
+                    confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
+
+                    if confident:
+                        label = f"{best_name} ({best_score:.2f})"
+                        color = (0, 255, 0)
+                        now = time.time()
+                        last = last_spoken.get(best_name, 0.0)
+                        if now - last >= args.cooldown:
+                            speak(engine, f"Ik denk dat het {best_name} is")
+                            last_spoken[best_name] = now
+                    else:
+                        label = f"Onbekend ({best_score:.2f})"
+                        color = (0, 165, 255)
+
+                    cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
+                else:
+                    label = "Kom dichterbij"
+                    color = (0, 165, 255)
+                    cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
+
+            last_label = label
+            cv2.putText(frame, label, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+
             frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
             cv2.imshow(win, frame_disp)
+            cv2.waitKey(1)
 
-            k = cv2.waitKey(1) & 0xFF
-            if k == ord("q"):
-                break
-            continue
+    except KeyboardInterrupt:
+        # This will catch Ctrl+C reliably in normal terminal execution
+        print("\n[INFO] Ctrl+C ontvangen, afsluiten...")
 
-        h, w = frame.shape[:2]
-        detector.setInputSize((w, h))
-        _, faces = detector.detect(frame)
-        face = largest_face(faces)
-
-        label = "Geen gezicht"
-        color = (0, 0, 255)
-
-        if face is not None:
-            x, y, fw, fh = face[:4].astype(int)
-            if fw >= args.min_face:
-                aligned = recognizer.alignCrop(frame, face)
-                feat = recognizer.feature(aligned).astype(np.float32)
-
-                best_name, best_score, second_score = best_match(recognizer, feat, known)
-                confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
-
-                if confident:
-                    label = f"{best_name} ({best_score:.2f})"
-                    color = (0, 255, 0)
-                    now = time.time()
-                    last = last_spoken.get(best_name, 0.0)
-                    if now - last >= args.cooldown:
-                        speak(engine, f"Ik denk dat het {best_name} is")
-                        last_spoken[best_name] = now
-                else:
-                    label = f"Onbekend ({best_score:.2f})"
-                    color = (0, 165, 255)
-
-                cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
-            else:
-                label = "Kom dichterbij"
-                color = (0, 165, 255)
-                cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
-
-        last_label = label
-        cv2.putText(frame, label, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-
-        frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
-        cv2.imshow(win, frame_disp)
-
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

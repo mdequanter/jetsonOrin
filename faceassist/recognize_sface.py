@@ -23,7 +23,7 @@ def download_if_missing(url: str, path: str) -> None:
     print(f"[OK] Saved to {path}")
 
 def load_known(known_dir: str):
-    known = {}  # name -> (N, 1, D) features
+    known = {}  # name -> (N, D) or (N, 1, D) features depending on enroll
     if not os.path.isdir(known_dir):
         return known
     for fn in os.listdir(known_dir):
@@ -64,6 +64,48 @@ def speak(engine, text: str):
     engine.say(text)
     engine.runAndWait()
 
+def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
+    """
+    Jetson-friendly camera open:
+    1) Try GStreamer (MJPEG) pipeline on /dev/video{cam_index}
+    2) Fallback to V4L2/default
+    """
+    dev = f"/dev/video{cam_index}"
+
+    # Most USB cams on Jetson output MJPEG; decode with jpegdec.
+    gst_pipeline = (
+        f"v4l2src device={dev} ! "
+        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+        f"jpegdec ! videoconvert ! appsink drop=true sync=false"
+    )
+
+    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+    if cap.isOpened():
+        print("[INFO] Camera opened via GStreamer:", gst_pipeline)
+        return cap
+
+    print("[WARN] GStreamer open failed. Falling back to V4L2/default OpenCV capture...")
+
+    # Try V4L2 explicitly (works on Linux)
+    cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        print("[INFO] Camera opened via V4L2 (OpenCV).")
+        return cap
+
+    # Last resort: default backend
+    cap = cv2.VideoCapture(cam_index)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        print("[INFO] Camera opened via default backend (OpenCV).")
+        return cap
+
+    return cap  # not opened
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", type=int, default=0)
@@ -94,14 +136,17 @@ def main():
         engine = pyttsx3.init()
         engine.setProperty("rate", 175)
 
-    cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 15)
+    # ---- Jetson-safe camera open ----
+    WIDTH, HEIGHT, FPS = 640, 480, 15
+    cap = open_camera_linux(args.cam, WIDTH, HEIGHT, FPS)
+    if not cap.isOpened():
+        print("[ERROR] Cannot open camera. Check /dev/videoX and permissions.")
+        return
 
     ok, frame = cap.read()
-    if not ok:
-        print("[ERROR] Cannot read from camera.")
+    if not ok or frame is None:
+        print("[ERROR] Cannot read from camera (first frame).")
+        cap.release()
         return
 
     h, w = frame.shape[:2]
@@ -118,13 +163,15 @@ def main():
     print("[INFO] Press 'q' to quit.")
     while True:
         ok, frame = cap.read()
-        if not ok:
+        if not ok or frame is None:
+            print("[WARN] Frame grab failed, stopping.")
             break
         frame_id += 1
 
         if frame_id % args.infer_every != 0:
             cv2.putText(frame, last_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
-            #cv2.imshow("Recognize (SFace+YuNet)", frame)
+            frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
+            cv2.imshow("Recognize (SFace+YuNet)", frame_disp)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
             continue
@@ -165,11 +212,10 @@ def main():
                 cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
 
         last_label = label
-
         cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-        
-        frame = cv2.resize(frame, (640, 480))
-        cv2.imshow("Recognize (SFace+YuNet)", frame)
+
+        frame_disp = cv2.resize(frame, (WIDTH, HEIGHT))
+        cv2.imshow("Recognize (SFace+YuNet)", frame_disp)
 
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break

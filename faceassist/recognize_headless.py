@@ -273,7 +273,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--speak", type=bool, default=True)
+    ap.add_argument("--speak", type=str, default="True")
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--known", type=str, default="known")
 
@@ -306,7 +306,7 @@ def main():
 
     stop_event = mp.Event()
 
-    if args.speak is True:
+    if args.speak == "True":
         print("[INFO] Voice output enabled.", flush=True)
     else :
         print("[INFO] Voice output disabled (--speak False).", flush=True)

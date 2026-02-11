@@ -306,12 +306,11 @@ def main():
 
     stop_event = mp.Event()
 
-    if args.speak == True:
+    if args.speak is True:
         print("[INFO] Voice output enabled.", flush=True)
-        activate_voice = True
     else :
         print("[INFO] Voice output disabled (--speak False).", flush=True)
-        activate_voice = False
+
 
     tts_queue = None
     tts_proc = None

@@ -2,16 +2,12 @@
 """
 Headless gezichtsherkenning + "auto-opslaan bij onbekende persoon" (OpenCV YuNet + SFace)
 
-NEDERLANDSE versie (voor jouw toepassing voor blinden) — aangepast zoals gevraagd:
-- Zodra een onbekende persoon wordt gedetecteerd (na --unknown_confirm_frames),
-  starten we meteen met het verzamelen van "snapshots" (SFace feature vectors)
-  om de --unknown_capture_interval seconden.
-- Pas nadat de onbekende persoon gedurende --unknown_seconds aanwezig blijft,
-  vragen we: "Nieuwe persoon gedetecteerd, wil je deze persoon opslaan?"
-- Als JA:
-  - Vraag om een naam
-  - Sla direct op met de reeds verzamelde snapshots (GEEN nieuwe snapshots nemen)
-  - Optioneel: sla 1 foto op van het laatste frame (zonder extra capture)
+EXTRA (zoals gevraagd):
+- Bij detectie van een persoon (bekend of onbekend) wordt een FOTO-snapshot opgeslagen in map `snapshots/`
+  met bestandsnaam:  Naam_yyyy_mm_dd_hh_mm_ss.jpg
+  - Voor onbekend gebruiken we "Onbekend" als naam.
+  - Om spam te vermijden: we bewaren enkel bij "BINNEN" (entry) voor bekende personen,
+    en bij start van een onbekende sessie (na unknown_confirm_frames).
 
 TTS (Piper):
 - Standaard voice: nl_BE-nathalie-medium.onnx (+ .json)
@@ -144,6 +140,22 @@ def ask_input(prompt: str) -> str:
 
 
 # -----------------------------
+# Foto snapshot (NIEUW)
+# -----------------------------
+
+def save_person_snapshot(frame, name: str, out_dir: str = "snapshots") -> str:
+    """
+    Slaat 1 JPG op in out_dir met naam: Naam_yyyy_mm_dd_hh_mm_ss.jpg
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    safe_name = sanitize_name(name) if name else "Onbekend"
+    ts = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    path = os.path.join(out_dir, f"{safe_name}_{ts}.jpg")
+    cv2.imwrite(path, frame)
+    return path
+
+
+# -----------------------------
 # Piper TTS
 # -----------------------------
 
@@ -244,7 +256,7 @@ def tts_enqueue(tts_queue, text: str):
 
 
 # -----------------------------
-# Snapshot opslag
+# Snapshot opslag (features)
 # -----------------------------
 
 def save_snapshot(frame, out_dir: str, tag: str) -> str:
@@ -292,7 +304,7 @@ def main():
     ap.add_argument("--cooldown_after_unknown", type=float, default=10.0,
                     help="Na een onbekend-afhandeling (save/skip) even wachten.")
 
-    # NEW: meteen snapshots (features) verzamelen
+    # Meteen snapshots (features) verzamelen
     ap.add_argument("--unknown_capture_interval", type=float, default=0.5,
                     help="Tijdens onbekend: neem een feature-snapshot om de N seconden.")
     ap.add_argument("--unknown_max_snaps", type=int, default=60,
@@ -389,6 +401,10 @@ def main():
     unknown_last_cap = 0.0
     unknown_last_frame = None
 
+    # NEW: snapshot-spam preventie
+    last_person_photo_at = {}  # name -> time
+    person_photo_cooldown = 3.0  # sec
+
     frame_id = 0
     print("[INFO] Headless actief. Ctrl+C om te stoppen.", flush=True)
 
@@ -428,7 +444,6 @@ def main():
 
             x, y, fw, fh = face[:4].astype(int)
             if fw < args.min_face:
-                # te klein => bijna alsof er niemand is
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
                     present = False
@@ -452,16 +467,14 @@ def main():
             confident = (best_name is not None) and (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
             # -------------------------
-            # ONBEKEND: meteen snapshots verzamelen
+            # ONBEKEND: meteen snapshots verzamelen + 1 FOTO bij start
             # -------------------------
             if not confident:
-                # leave logic (unknown refreshes last_seen niet)
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
                     present = False
                     present_name = None
 
-                # cooldown
                 if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
                     unknown_consec = 0
                     unknown_started_at = None
@@ -470,7 +483,6 @@ def main():
                     unknown_last_frame = None
                     continue
 
-                # eerst N opeenvolgende unknown frames
                 unknown_consec += 1
                 if unknown_consec < args.unknown_confirm_frames:
                     continue
@@ -485,10 +497,17 @@ def main():
                     if speak_enabled:
                         tts_enqueue(tts_queue, "Ik zie iemand die ik niet herken.")
 
-                # bewaar laatste frame (voor optionele jpg bij save)
+                    # NIEUW: foto snapshot opslaan (Onbekend_yyyy_mm_dd_hh_mm_ss.jpg)
+                    # (met cooldown, zodat het niet voortdurend schrijft)
+                    name_for_photo = "Onbekend"
+                    last_t = last_person_photo_at.get(name_for_photo, 0.0)
+                    if (now - last_t) >= person_photo_cooldown:
+                        p = save_person_snapshot(frame, name_for_photo, out_dir="snapshots")
+                        last_person_photo_at[name_for_photo] = now
+                        print("[OK] Snapshot opgeslagen:", p, flush=True)
+
                 unknown_last_frame = frame
 
-                # feature snapshot capture
                 if (now - unknown_last_cap) >= args.unknown_capture_interval:
                     try:
                         aligned_u = recognizer.alignCrop(frame, face)
@@ -504,7 +523,6 @@ def main():
                     except Exception:
                         pass
 
-                # na unknown_seconds prompt
                 if (now - unknown_started_at) >= args.unknown_seconds:
                     print("[INFO] Nieuwe persoon gedetecteerd. Vraag om op te slaan...", flush=True)
                     if speak_enabled:
@@ -530,10 +548,8 @@ def main():
                                 if speak_enabled:
                                     tts_enqueue(tts_queue, f"Opgeslagen. {name} is toegevoegd.")
 
-                                # meteen herladen
                                 known = load_known(args.known)
 
-                                # optioneel: 1 jpg opslaan (laatste frame, geen extra capture)
                                 if args.save_unknown_snapshot and unknown_last_frame is not None:
                                     tagged_path = save_snapshot(unknown_last_frame, args.unknown_photos, name)
                                     print("[OK] Foto opgeslagen:", tagged_path, flush=True)
@@ -547,7 +563,6 @@ def main():
                         if speak_enabled:
                             tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
 
-                    # reset + cooldown start
                     last_unknown_handled_at = time.time()
                     unknown_consec = 0
                     unknown_started_at = None
@@ -555,14 +570,13 @@ def main():
                     unknown_last_cap = 0.0
                     unknown_last_frame = None
 
-                continue  # klaar met onbekend pad
+                continue
 
             # -------------------------
-            # BEKEND: entry announcement
+            # BEKEND: entry announcement + 1 FOTO bij "BINNEN"
             # -------------------------
             last_seen = now
 
-            # reset unknown tracking
             unknown_consec = 0
             unknown_started_at = None
             unknown_feats = []
@@ -592,6 +606,13 @@ def main():
             present = True
             present_name = candidate_name
             last_announced_at[present_name] = now
+
+            # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
+            last_t = last_person_photo_at.get(present_name, 0.0)
+            if (now - last_t) >= person_photo_cooldown:
+                p = save_person_snapshot(frame, present_name, out_dir="snapshots")
+                last_person_photo_at[present_name] = now
+                print("[OK] Snapshot opgeslagen:", p, flush=True)
 
             print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
             if speak_enabled:

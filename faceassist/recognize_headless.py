@@ -62,10 +62,10 @@ def best_match(recognizer, feat, known: dict):
 def face_direction(x: int, w_face: int, frame_w: int) -> str:
     cx = x + (w_face // 2)
     if cx < frame_w / 3:
-        return "staat links"
+        return "is on your left"
     elif cx > 2 * frame_w / 3:
-        return "staat rechts"
-    return "staat voor jou"
+        return "is on your right"
+    return "is in front of you"
 
 
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
@@ -104,27 +104,58 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
 
 
 # -----------------------------
-# Async TTS (espeak) process
+# Async TTS (Piper) process
 # -----------------------------
 
-def espeak_say(text: str, rate: int, voice: str, pitch: int, amp: int):
-    cmd = ["espeak", "-v", str(voice), "-s", str(rate), "-p", str(pitch), "-a", str(amp)]
-    subprocess.run(
-        cmd,
-        input=text.encode("utf-8"),
+def piper_say(text: str, model_path: str, sample_rate: int = 22050):
+    """
+    Equivalent to:
+      echo "text" | piper --model MODEL --output_raw | aplay -r 22050 -f S16_LE -t raw -
+    """
+    # Start piper
+    p1 = subprocess.Popen(
+        ["piper", "--model", model_path, "--output_raw"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # Pipe into aplay
+    p2 = subprocess.Popen(
+        ["aplay", "-r", str(sample_rate), "-f", "S16_LE", "-t", "raw", "-"],
+        stdin=p1.stdout,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        check=False,
     )
+
+    # Send text to piper
+    try:
+        p1.stdin.write((text + "\n").encode("utf-8"))
+        p1.stdin.close()
+    except Exception:
+        pass
+
+    # Ensure pipes close
+    if p1.stdout is not None:
+        p1.stdout.close()
+
+    # Wait for aplay to finish
+    p2.wait(timeout=30)
+    p1.wait(timeout=30)
 
 
 def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # quick check
     try:
-        subprocess.run(["espeak", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        subprocess.run(["piper", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except FileNotFoundError:
-        print("[WARN] 'espeak' not found. Install with: sudo apt-get install espeak", flush=True)
+        print("[WARN] 'piper' not found in PATH.", flush=True)
+        return
+
+    if not os.path.exists(args.piper_model):
+        print(f"[WARN] Piper model not found: {args.piper_model}", flush=True)
         return
 
     while not stop_event.is_set():
@@ -141,7 +172,7 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
             continue
 
         try:
-            espeak_say(text, args.tts_rate, args.espeak_voice, args.espeak_pitch, args.espeak_amp)
+            piper_say(text=text, model_path=args.piper_model, sample_rate=args.piper_rate)
         except Exception:
             pass
 
@@ -186,17 +217,16 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h), args.score_th, args.nms_th, args.topk)
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    last_spoken = {}  # (name, direction) -> timestamp OR ("Geen gezicht",) -> timestamp
+    last_spoken = {}
     frame_id = 0
 
     if not args.no_tts:
-        tts_enqueue(tts_queue, f"Gezichtsherkenning gestart. {len(known)} personen geladen.")
+        tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
 
     try:
         while not stop_event.is_set():
             ok, frame = cap.read()
             if not ok or frame is None:
-                print("[WARN] Frame grab failed.", flush=True)
                 time.sleep(0.2)
                 continue
 
@@ -204,7 +234,6 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
             if frame_id % args.infer_every != 0:
                 continue
 
-            h, w = frame.shape[:2]
             detector.setInputSize((w, h))
             _, faces = detector.detect(frame)
             face = largest_face(faces)
@@ -212,23 +241,12 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
             now = time.time()
 
             if face is None:
-                # Optional: spreek "geen gezicht" niet te vaak
-                if args.speak_no_face and (not args.no_tts):
-                    last = last_spoken.get(("Geen gezicht",), 0.0)
-                    if now - last >= args.no_face_cooldown:
-                        tts_enqueue(tts_queue, "Geen gezicht gedetecteerd.")
-                        last_spoken[("Geen gezicht",)] = now
                 continue
 
             x, y, fw, fh = face[:4].astype(int)
             direction = face_direction(x, fw, w)
 
             if fw < args.min_face:
-                if (not args.no_tts) and args.speak_too_far:
-                    last = last_spoken.get(("Te ver", direction), 0.0)
-                    if now - last >= args.cooldown:
-                        tts_enqueue(tts_queue, f"Kom dichter. Persoon {direction}.")
-                        last_spoken[("Te ver", direction)] = now
                 continue
 
             aligned = recognizer.alignCrop(frame, face)
@@ -237,20 +255,12 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
             best_name, best_score, second_score = best_match(recognizer, feat, known)
             confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
-            if confident:
-                if not args.no_tts:
-                    key = (best_name, direction)
-                    last = last_spoken.get(key, 0.0)
-                    if now - last >= args.cooldown:
-                        tts_enqueue(tts_queue, f"{best_name} {direction}.")
-                        last_spoken[key] = now
-            else:
-                if (not args.no_tts) and args.speak_unknown:
-                    key = ("Onbekend", direction)
-                    last = last_spoken.get(key, 0.0)
-                    if now - last >= args.cooldown:
-                        tts_enqueue(tts_queue, f"Onbekende persoon {direction}.")
-                        last_spoken[key] = now
+            if confident and not args.no_tts:
+                key = (best_name, direction)
+                last = last_spoken.get(key, 0.0)
+                if now - last >= args.cooldown:
+                    tts_enqueue(tts_queue, f"{best_name} {direction}")
+                    last_spoken[key] = now
 
     finally:
         cap.release()
@@ -275,19 +285,11 @@ def main():
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=15)
 
-    # TTS
+    # Piper TTS
     ap.add_argument("--no_tts", action="store_true")
-    ap.add_argument("--tts_rate", type=int, default=175)
-    ap.add_argument("--espeak_voice", type=str, default="nl")
-    ap.add_argument("--espeak_pitch", type=int, default=50)
-    ap.add_argument("--espeak_amp", type=int, default=100)
-    ap.add_argument("--tts_queue_size", type=int, default=10)
-
-    # extra spoken feedback
-    ap.add_argument("--speak_unknown", action="store_true", help="Spreek ook onbekenden uit")
-    ap.add_argument("--speak_no_face", action="store_true", help="Spreek af en toe 'geen gezicht'")
-    ap.add_argument("--no_face_cooldown", type=float, default=10.0, help="Cooldown voor 'geen gezicht'")
-    ap.add_argument("--speak_too_far", action="store_true", help="Zeg 'kom dichter' als gezicht te klein is")
+    ap.add_argument("--piper_model", type=str, default=os.path.expanduser("~/jetsonOrin/voices/en_GB-alan-medium.onnx"))
+    ap.add_argument("--piper_rate", type=int, default=22050, help="aplay sample rate (usually 22050 for piper voices)")
+    ap.add_argument("--tts_queue_size", type=int, default=20)
 
     args = ap.parse_args()
 

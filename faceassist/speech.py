@@ -1,85 +1,82 @@
 #!/usr/bin/env python3
-# speech.py — Webcam mic (device 0) -> Dutch STT on Jetson (faster-whisper)
-# Requirements: pip install faster-whisper sounddevice numpy
-
-import sys, queue, time
-import numpy as np
-import sounddevice as sd
+import argparse
+import os
+import subprocess
+import sys
 from faster_whisper import WhisperModel
 
-# --- Audio settings (good defaults for USB webcam mics) ---
-DEVICE_ID = 0          # HP FHD Webcam ... USB Audio (hw:0,0)
-IN_SR = 44100          # many USB mics are 44100; change to 48000 if needed
-TARGET_SR = 16000      # Whisper prefers 16 kHz
-CHANNELS = 2           # your device reports "2 in"
-BLOCK_SEC = 0.5        # audio chunk size from mic
-BUFFER_SEC = 2.0       # how much audio to transcribe at once
+def run(cmd):
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"Command failed:\n{' '.join(cmd)}\n\n{p.stderr}")
+    return p.stdout
 
-q = queue.Queue()
-
-def callback(indata, frames, t, status):
-    if status:
-        print(status, file=sys.stderr)
-    # stereo -> mono
-    mono = indata.mean(axis=1)
-    q.put(mono.copy())
-
-def simple_resample(x: np.ndarray, in_sr: int, out_sr: int) -> np.ndarray:
-    """Fast-enough resampling via interpolation (ok for speech)."""
-    if in_sr == out_sr:
-        return x.astype(np.float32, copy=False)
-    n_out = int(len(x) * out_sr / in_sr)
-    xp = np.linspace(0.0, 1.0, len(x), endpoint=False)
-    xnew = np.linspace(0.0, 1.0, n_out, endpoint=False)
-    return np.interp(xnew, xp, x).astype(np.float32)
+def extract_audio_to_wav(input_path: str, wav_path: str, sr: int = 16000):
+    # -vn: no video, 1 channel, 16kHz, pcm_s16le wav
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vn",
+        "-ac", "1",
+        "-ar", str(sr),
+        "-c:a", "pcm_s16le",
+        wav_path
+    ]
+    # ffmpeg writes progress to stderr; we don't need it
+    p = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg failed extracting audio. Check your input file.")
 
 def main():
-    # Optional: show devices once
-    # print(sd.query_devices())
+    ap = argparse.ArgumentParser(description="Fast offline Dutch transcription on Jetson (CPU int8).")
+    ap.add_argument("input", help="Path to video/audio file (e.g., input.mp4)")
+    ap.add_argument("--model", default="base", choices=["tiny", "base", "small", "medium", "large-v3"],
+                    help="Whisper model size (bigger = better, slower).")
+    ap.add_argument("--lang", default="nl", help="Language code (default: nl)")
+    ap.add_argument("--sr", type=int, default=16000, help="Audio sample rate for extraction (default: 16000)")
+    ap.add_argument("--out", default=None, help="Output text file (default: input.txt)")
+    ap.add_argument("--keep-wav", action="store_true", help="Keep extracted WAV")
+    args = ap.parse_args()
 
-    model = WhisperModel("small", device="cuda", compute_type="float16")
+    input_path = args.input
+    if not os.path.exists(input_path):
+        print(f"File not found: {input_path}", file=sys.stderr)
+        sys.exit(1)
 
-    blocksize = int(IN_SR * BLOCK_SEC)
-    buf = []
+    base, _ = os.path.splitext(input_path)
+    wav_path = base + f"_{args.sr}hz_mono.wav"
+    out_path = args.out or (base + ".txt")
 
-    print(f"Listening on device {DEVICE_ID} @ {IN_SR} Hz (Ctrl+C to stop)")
-    with sd.InputStream(
-        device=DEVICE_ID,
-        channels=CHANNELS,
-        samplerate=IN_SR,
-        dtype="float32",
-        blocksize=blocksize,
-        callback=callback,
-    ):
-        while True:
-            chunk = q.get()
-            buf.append(chunk)
+    print(f"[1/2] Extracting audio -> {wav_path}")
+    extract_audio_to_wav(input_path, wav_path, sr=args.sr)
 
-            total_len = sum(len(b) for b in buf)
-            if total_len >= int(IN_SR * BUFFER_SEC):
-                audio = np.concatenate(buf)
-                buf = []
+    print(f"[2/2] Transcribing (model={args.model}, CPU int8, lang={args.lang})")
+    model = WhisperModel(args.model, device="cpu", compute_type="int8")
 
-                # quick sanity check (uncomment for debugging)
-                # level = float(np.abs(audio).mean())
-                # print("level:", level)
+    segments, info = model.transcribe(
+        wav_path,
+        language=args.lang,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 400},
+        beam_size=1,  # fastest
+    )
 
-                audio_16k = simple_resample(audio, IN_SR, TARGET_SR)
+    lines = []
+    for s in segments:
+        # timestamps
+        lines.append(f"[{s.start:7.2f} - {s.end:7.2f}] {s.text.strip()}")
 
-                segments, info = model.transcribe(
-                    audio_16k,
-                    language="nl",
-                    vad_filter=True,
-                    vad_parameters={"min_silence_duration_ms": 400},
-                    beam_size=1,
-                )
+    text = "\n".join(lines).strip()
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
 
-                text = "".join(seg.text for seg in segments).strip()
-                if text:
-                    print(text)
+    print(f"Saved transcript -> {out_path}")
+
+    if not args.keep_wav:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nStopped.")
+    main()

@@ -14,8 +14,6 @@ import sys
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
-naam = input("Wat is jouw naam? ")
-
 
 def download_if_missing(url: str, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -131,7 +129,7 @@ def main():
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
     tts_enqueue(tts_queue, "Systeem gestart. Ik wacht op een gezicht. Druk Control C om te stoppen.")
-    #print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
+    print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
 
     try:
         while True:
@@ -165,11 +163,12 @@ def main():
             tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
             tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
 
-            name = input("Naam: ")
+            print("\n[INPUT] Camera pauzeert nu voor invoer.", flush=True)
+            name = sanitize_name(ask_input("Naam: "))
 
             if not name:
                 tts_enqueue(tts_queue, "Geen naam ingegeven. Ik wacht opnieuw op een gezicht.")
-                #print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
+                print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
                 time.sleep(0.3)
                 continue
 
@@ -221,7 +220,7 @@ def main():
             # ---------------------------
             tts_enqueue(tts_queue, "Mag ik deze persoon opslaan? Typ j of n en druk op Enter.")
 
-            ans = input("Opslaan? (j/n): ").strip().lower()
+            ans = ask_input("Opslaan? (j/n): ").strip().lower()
 
             if ans.startswith("j") and len(features) >= 8:
                 out_path = os.path.join(args.outdir, f"{name}.npz")

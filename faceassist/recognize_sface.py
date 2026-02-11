@@ -7,6 +7,7 @@ import cv2
 import multiprocessing as mp
 import signal
 import subprocess
+import queue as pyqueue  # for Empty exception
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
@@ -58,46 +59,13 @@ def best_match(recognizer, feat, known: dict):
     return best_name, best_score, second_score
 
 
-def speak_espeak(
-    text: str,
-    rate: int = 175,
-    voice: str = "en",
-    pitch: int = 50,
-    amplitude: int = 100,
-    blocking: bool = True,
-):
-    """
-    Speak text using espeak. Designed for Jetson/Ubuntu.
-    - voice: e.g. 'en', 'en-us', 'nl', ...
-    - rate: words per minute (typical 120-200)
-    - pitch: 0-99
-    - amplitude: 0-200 (volume-ish)
-    """
-    print("[TTS]", text)
-
-    # Use stdin to avoid shell quoting issues.
-    cmd = ["espeak", "-v", str(voice), "-s", str(rate), "-p", str(pitch), "-a", str(amplitude)]
-    try:
-        subprocess.run(
-            cmd,
-            input=text.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except FileNotFoundError:
-        print("[WARN] 'espeak' not found. Install with: sudo apt-get install espeak")
-    except Exception as e:
-        print("[WARN] espeak failed:", e)
-
-
 def face_direction(x: int, w_face: int, frame_w: int) -> str:
     cx = x + (w_face // 2)
     if cx < frame_w / 3:
-        return "left"
+        return "links"
     elif cx > 2 * frame_w / 3:
-        return "right"
-    return "center"
+        return "rechts"
+    return "midden"
 
 
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
@@ -135,7 +103,81 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     return cap
 
 
-def worker_loop(args, stop_event: mp.Event):
+# -----------------------------
+# Async TTS (espeak) process
+# -----------------------------
+
+def espeak_say(text: str, rate: int, voice: str, pitch: int, amp: int):
+    # stdin to avoid quoting issues
+    cmd = ["espeak", "-v", str(voice), "-s", str(rate), "-p", str(pitch), "-a", str(amp)]
+    subprocess.run(
+        cmd,
+        input=text.encode("utf-8"),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
+    """
+    Dedicated process that speaks messages from a queue.
+    Keeps vision loop smooth (no blocking).
+    """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    # quick check once
+    try:
+        subprocess.run(["espeak", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except FileNotFoundError:
+        print("[WARN] 'espeak' not found. Install with: sudo apt-get install espeak")
+        return
+
+    while not stop_event.is_set():
+        try:
+            item = tts_queue.get(timeout=0.1)
+        except pyqueue.Empty:
+            continue
+
+        if item is None:
+            break
+
+        text = str(item)
+        if not text:
+            continue
+
+        # Speak (blocking in this worker only)
+        try:
+            print("[TTS]", text)
+            espeak_say(
+                text=text,
+                rate=args.tts_rate,
+                voice=args.espeak_voice,
+                pitch=args.espeak_pitch,
+                amp=args.espeak_amp,
+            )
+        except Exception as e:
+            print("[WARN] espeak failed:", e)
+
+
+def tts_enqueue(tts_queue: mp.Queue, text: str):
+    """
+    Non-blocking enqueue (drops if queue is full).
+    """
+    if tts_queue is None:
+        return
+    try:
+        tts_queue.put_nowait(text)
+    except pyqueue.Full:
+        # Drop message to avoid buildup/lag.
+        pass
+
+
+# -----------------------------
+# Vision worker process
+# -----------------------------
+
+def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
@@ -168,7 +210,7 @@ def worker_loop(args, stop_event: mp.Event):
     frame_id = 0
     last_label = "..."
 
-    win = "Recognize (SFace+YuNet)"
+    win = "Herkenning (SFace+YuNet)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win, WIDTH, HEIGHT)
     cv2.moveWindow(win, 50, 50)
@@ -177,13 +219,7 @@ def worker_loop(args, stop_event: mp.Event):
 
     try:
         if not args.no_tts:
-            speak_espeak(
-                f"Face recognition started. {len(known)} known identities loaded.",
-                rate=args.tts_rate,
-                voice=args.espeak_voice,
-                pitch=args.espeak_pitch,
-                amplitude=args.espeak_amp,
-            )
+            tts_enqueue(tts_queue, f"Gezichtsherkenning gestart. {len(known)} personen geladen.")
 
         while not stop_event.is_set():
             ok, frame = cap.read()
@@ -207,12 +243,12 @@ def worker_loop(args, stop_event: mp.Event):
             _, faces = detector.detect(frame)
             face = largest_face(faces)
 
-            label = "No face"
+            label = "Geen gezicht"
             color = (0, 0, 255)
 
             if face is not None:
                 x, y, fw, fh = face[:4].astype(int)
-                direction = face_direction(x, fw, w)
+                direction = face_direction(x, fw, w)  # links/midden/rechts
 
                 if fw >= args.min_face:
                     aligned = recognizer.alignCrop(frame, face)
@@ -231,34 +267,23 @@ def worker_loop(args, stop_event: mp.Event):
                             key = (best_name, direction)
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
-                                speak_espeak(
-                                    f"{best_name} is on the {direction}",
-                                    rate=args.tts_rate,
-                                    voice=args.espeak_voice,
-                                    pitch=args.espeak_pitch,
-                                    amplitude=args.espeak_amp,
-                                )
+                                # Dutch message
+                                tts_enqueue(tts_queue, f"{best_name} is {direction}.")
                                 last_spoken[key] = now
                     else:
-                        label = f"Unknown ({best_score:.2f}) - {direction}"
+                        label = f"Onbekend ({best_score:.2f}) - {direction}"
                         color = (0, 165, 255)
 
                         if (not args.no_tts) and args.speak_unknown:
-                            key = ("Unknown", direction)
+                            key = ("Onbekend", direction)
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
-                                speak_espeak(
-                                    f"Unknown person on the {direction}",
-                                    rate=args.tts_rate,
-                                    voice=args.espeak_voice,
-                                    pitch=args.espeak_pitch,
-                                    amplitude=args.espeak_amp,
-                                )
+                                tts_enqueue(tts_queue, f"Onbekende persoon {direction}.")
                                 last_spoken[key] = now
 
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
                 else:
-                    label = f"Come closer - {direction}"
+                    label = f"Kom dichter - {direction}"
                     color = (0, 165, 255)
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
 
@@ -290,13 +315,17 @@ def main():
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=15)
 
-    # TTS options (espeak)
+    # TTS options (espeak, async)
     ap.add_argument("--no_tts", action="store_true", help="Disable TTS")
     ap.add_argument("--tts_rate", type=int, default=175)
-    ap.add_argument("--espeak_voice", type=str, default="en", help="espeak voice, e.g. en, en-us, nl")
+    ap.add_argument("--espeak_voice", type=str, default="nl", help="espeak voice, e.g. nl, nl-be, en-us")
     ap.add_argument("--espeak_pitch", type=int, default=50, help="0-99")
     ap.add_argument("--espeak_amp", type=int, default=100, help="0-200")
-    ap.add_argument("--speak_unknown", action="store_true", help="Also speak when person is unknown")
+
+    ap.add_argument("--speak_unknown", action="store_true", help="Ook spreken als de persoon onbekend is")
+
+    # Queue safety
+    ap.add_argument("--tts_queue_size", type=int, default=10, help="Max aantal wachtrij-berichten (dropt bij vol)")
 
     args = ap.parse_args()
 
@@ -306,21 +335,45 @@ def main():
     download_if_missing(SFACE_URL, sface_path)
 
     stop_event = mp.Event()
-    p = mp.Process(target=worker_loop, args=(args, stop_event), daemon=True)
-    p.start()
+
+    # TTS queue + process
+    tts_queue = None
+    tts_proc = None
+    if not args.no_tts:
+        tts_queue = mp.Queue(maxsize=args.tts_queue_size)
+        tts_proc = mp.Process(target=tts_worker_loop, args=(tts_queue, stop_event, args), daemon=True)
+        tts_proc.start()
+
+    # Vision process
+    vision_proc = mp.Process(target=worker_loop, args=(args, stop_event, tts_queue), daemon=True)
+    vision_proc.start()
 
     print("[INFO] Ctrl+C to stop.")
     try:
-        while p.is_alive():
-            p.join(timeout=0.2)
+        while vision_proc.is_alive():
+            vision_proc.join(timeout=0.2)
     except KeyboardInterrupt:
         print("\n[INFO] Ctrl+C received, stopping...")
         stop_event.set()
-        p.join(timeout=1.0)
-        if p.is_alive():
-            print("[WARN] Worker stuck in OpenCV call. Terminating process.")
-            p.terminate()
-            p.join()
+
+        # Tell TTS worker to exit promptly
+        if tts_queue is not None:
+            try:
+                tts_queue.put_nowait(None)
+            except Exception:
+                pass
+
+        vision_proc.join(timeout=1.0)
+        if vision_proc.is_alive():
+            print("[WARN] Vision worker stuck in OpenCV call. Terminating process.")
+            vision_proc.terminate()
+            vision_proc.join()
+
+        if tts_proc is not None:
+            tts_proc.join(timeout=1.0)
+            if tts_proc.is_alive():
+                tts_proc.terminate()
+                tts_proc.join()
 
     print("[INFO] Exited.")
 

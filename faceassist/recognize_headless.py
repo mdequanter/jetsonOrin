@@ -261,7 +261,7 @@ def main():
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--known", type=str, default="known")
 
-    ap.add_argument("--min_face", type=int, default=120)
+    ap.add_argument("--min_face", type=int, default=50)
     ap.add_argument("--threshold", type=float, default=0.50)
     ap.add_argument("--margin", type=float, default=0.06)
     ap.add_argument("--cooldown", type=float, default=6.0)

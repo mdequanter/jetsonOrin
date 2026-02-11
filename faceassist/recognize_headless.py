@@ -223,7 +223,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     frame_id = 0
 
     if not args.no_tts:
-        if (args.speak == True):
+        if (args.speak == "True"):
             tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
 
     try:
@@ -262,7 +262,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                 key = (best_name, direction)
                 last = last_spoken.get(key, 0.0)
                 if now - last >= args.cooldown:
-                    if (args.speak == True):
+                    if (args.speak == "True"):
                         tts_enqueue(tts_queue, f"{best_name} {direction}")
                         last_spoken[key] = now
 

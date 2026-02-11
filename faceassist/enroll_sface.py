@@ -14,6 +14,8 @@ import sys
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
+naam = input("Wat is jouw naam? ")
+
 
 def download_if_missing(url: str, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)

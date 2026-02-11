@@ -61,7 +61,7 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
         if msg is None:
             break
 
-        print("[TTS]", msg)
+        #print("[TTS]", msg)
         espeak_say(msg, args.tts_rate, args.espeak_voice,
                    args.espeak_pitch, args.espeak_amp)
 

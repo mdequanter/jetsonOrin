@@ -13,6 +13,9 @@ YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
 
+activate_voice = True
+
+
 def download_if_missing(url: str, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
@@ -82,7 +85,7 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
         print("[INFO] Camera opened via GStreamer.", flush=True)
         return cap
 
-    print("[WARN] GStreamer open failed. Falling back to V4L2...", flush=True)
+    #print("[WARN] GStreamer open failed. Falling back to V4L2...", flush=True)
 
     cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
     if cap.isOpened():
@@ -221,7 +224,8 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     frame_id = 0
 
     if not args.no_tts:
-        tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
+        if (activate_voice == True):
+            tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
 
     try:
         while not stop_event.is_set():
@@ -259,8 +263,9 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                 key = (best_name, direction)
                 last = last_spoken.get(key, 0.0)
                 if now - last >= args.cooldown:
-                    tts_enqueue(tts_queue, f"{best_name} {direction}")
-                    last_spoken[key] = now
+                    if (activate_voice == True):
+                        tts_enqueue(tts_queue, f"{best_name} {direction}")
+                        last_spoken[key] = now
 
     finally:
         cap.release()

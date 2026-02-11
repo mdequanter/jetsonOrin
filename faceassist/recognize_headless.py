@@ -13,7 +13,6 @@ YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
 
-activate_voice = True
 
 
 def download_if_missing(url: str, path: str) -> None:
@@ -224,7 +223,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     frame_id = 0
 
     if not args.no_tts:
-        if (activate_voice == True):
+        if (args.speak == True):
             tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
 
     try:
@@ -263,7 +262,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                 key = (best_name, direction)
                 last = last_spoken.get(key, 0.0)
                 if now - last >= args.cooldown:
-                    if (activate_voice == True):
+                    if (args.speak == True):
                         tts_enqueue(tts_queue, f"{best_name} {direction}")
                         last_spoken[key] = now
 
@@ -308,7 +307,7 @@ def main():
     stop_event = mp.Event()
 
     if args.speak == True:
-        print
+        print("[INFO] Voice output enabled.", flush=True)
         activate_voice = True
     else :
         print("[INFO] Voice output disabled (--speak False).", flush=True)

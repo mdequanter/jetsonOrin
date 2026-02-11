@@ -111,7 +111,7 @@ def piper_say(text: str, model_path: str, sample_rate: int = 22050):
       echo "text" | piper --model MODEL --output_raw | aplay -r 22050 -f S16_LE -t raw -
     """
     p1 = subprocess.Popen(
-        ["piper", "--model", model_path, "--output_raw", "--length_scale", "0.2"],
+        ["piper", "--model", model_path, "--output_raw", "--length_scale", "0.5"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

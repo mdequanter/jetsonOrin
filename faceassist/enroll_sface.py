@@ -87,7 +87,7 @@ def main():
                 cv2.rectangle(frame, (x, y), (x + fw, y + fh), (0, 255, 0), 2)
 
                 now = time.time()
-                if now - last_capture > 0.5 and len(features) < args.samples:
+                if now - last_capture > 0.25 and len(features) < args.samples:
                     aligned = recognizer.alignCrop(frame, face)
                     feat = recognizer.feature(aligned).astype(np.float32)
                     features.append(feat)

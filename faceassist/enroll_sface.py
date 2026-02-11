@@ -165,7 +165,6 @@ def main():
             tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
             tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
 
-            print("\n[INPUT] Camera pauzeert nu voor invoer.", flush=True)
             name = sanitize_name(input("Naam: "))
 
             if not name:

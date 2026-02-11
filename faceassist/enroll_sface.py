@@ -93,7 +93,7 @@ def main():
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--samples", type=int, default=20)
     ap.add_argument("--outdir", type=str, default="known")
-    ap.add_argument("--min_face", type=int, default=120, help="Min face width in pixels")
+    ap.add_argument("--min_face", type=int, default=50, help="Min face width in pixels")
     ap.add_argument("--score_th", type=float, default=0.9)
     ap.add_argument("--nms_th", type=float, default=0.3)
     ap.add_argument("--topk", type=int, default=5000)
@@ -164,10 +164,10 @@ def main():
     print("[INFO] Druk 'q' om te stoppen.")
 
     if not args.no_tts:
-        tts_enqueue(tts_queue, f"We gaan {args.samples} voorbeelden opnemen voor {args.name}.")
+        #tts_enqueue(tts_queue, f"We gaan {args.samples} voorbeelden opnemen voor {args.name}.")
         tts_enqueue(tts_queue, "Kijk naar de camera en beweeg langzaam je hoofd links en rechts.")
         tts_enqueue(tts_queue, "Verander ook een beetje hoogte: iets omhoog en omlaag.")
-        tts_enqueue(tts_queue, "Zorg voor goed licht. Druk op Q om te stoppen.")
+        #tts_enqueue(tts_queue, "Zorg voor goed licht. Druk op Q om te stoppen.")
 
     try:
         while True:

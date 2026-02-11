@@ -6,12 +6,7 @@ import numpy as np
 import cv2
 import multiprocessing as mp
 import signal
-
-try:
-    import pyttsx3
-    TTS_OK = True
-except Exception:
-    TTS_OK = False
+import subprocess
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
@@ -63,22 +58,40 @@ def best_match(recognizer, feat, known: dict):
     return best_name, best_score, second_score
 
 
-def speak(engine, text: str):
-    """Blocking TTS call. Keep usage throttled with cooldown."""
+def speak_espeak(
+    text: str,
+    rate: int = 175,
+    voice: str = "en",
+    pitch: int = 50,
+    amplitude: int = 100,
+    blocking: bool = True,
+):
+    """
+    Speak text using espeak. Designed for Jetson/Ubuntu.
+    - voice: e.g. 'en', 'en-us', 'nl', ...
+    - rate: words per minute (typical 120-200)
+    - pitch: 0-99
+    - amplitude: 0-200 (volume-ish)
+    """
     print("[TTS]", text)
-    if engine is None:
-        return
+
+    # Use stdin to avoid shell quoting issues.
+    cmd = ["espeak", "-v", str(voice), "-s", str(rate), "-p", str(pitch), "-a", str(amplitude)]
     try:
-        engine.say(text)
-        engine.runAndWait()
+        subprocess.run(
+            cmd,
+            input=text.encode("utf-8"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        print("[WARN] 'espeak' not found. Install with: sudo apt-get install espeak")
     except Exception as e:
-        print("[WARN] TTS failed:", e)
+        print("[WARN] espeak failed:", e)
 
 
 def face_direction(x: int, w_face: int, frame_w: int) -> str:
-    """
-    Return left/center/right based on face center position in the frame.
-    """
     cx = x + (w_face // 2)
     if cx < frame_w / 3:
         return "left"
@@ -90,7 +103,6 @@ def face_direction(x: int, w_face: int, frame_w: int) -> str:
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     dev = f"/dev/video{cam_index}"
 
-    # MJPEG GStreamer (typical for USB cams on Jetson)
     gst_pipeline = (
         f"v4l2src device={dev} ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -124,12 +136,8 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
 
 
 def worker_loop(args, stop_event: mp.Event):
-    """
-    Vision loop runs in a separate process so Ctrl+C always works from the parent.
-    """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # Models
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
 
@@ -139,30 +147,6 @@ def worker_loop(args, stop_event: mp.Event):
         return
     print("[INFO] Known:", ", ".join(sorted(known.keys())))
 
-    # TTS engine (English)
-    engine = None
-    if TTS_OK and not args.no_tts:
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", args.tts_rate)
-            # Optional: try to pick an English voice if present
-            if args.force_en_voice:
-                try:
-                    for v in engine.getProperty("voices"):
-                        # voice.languages can vary by platform; do a best-effort check
-                        langs = str(getattr(v, "languages", "")).lower()
-                        name = str(getattr(v, "name", "")).lower()
-                        vid = str(getattr(v, "id", "")).lower()
-                        if "en" in langs or "english" in name or "english" in vid:
-                            engine.setProperty("voice", v.id)
-                            break
-                except Exception:
-                    pass
-        except Exception as e:
-            print("[WARN] TTS init failed:", e)
-            engine = None
-
-    # Camera
     WIDTH, HEIGHT, FPS = args.width, args.height, args.fps
     cap = open_camera_linux(args.cam, WIDTH, HEIGHT, FPS)
     if not cap.isOpened():
@@ -179,7 +163,7 @@ def worker_loop(args, stop_event: mp.Event):
     detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h), args.score_th, args.nms_th, args.topk)
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    last_spoken = {}  # key -> timestamp, where key = (name, direction) or ("Unknown", direction)
+    last_spoken = {}  # (name, direction) -> timestamp
 
     frame_id = 0
     last_label = "..."
@@ -192,8 +176,14 @@ def worker_loop(args, stop_event: mp.Event):
     print("[INFO] Running. Stop with Ctrl+C in the terminal.")
 
     try:
-
-        speak(engine, f"Face recognition started. {len(known)} known identities loaded.")
+        if not args.no_tts:
+            speak_espeak(
+                f"Face recognition started. {len(known)} known identities loaded.",
+                rate=args.tts_rate,
+                voice=args.espeak_voice,
+                pitch=args.espeak_pitch,
+                amplitude=args.espeak_amp,
+            )
 
         while not stop_event.is_set():
             ok, frame = cap.read()
@@ -222,8 +212,7 @@ def worker_loop(args, stop_event: mp.Event):
 
             if face is not None:
                 x, y, fw, fh = face[:4].astype(int)
-
-                direction = face_direction(x, fw, w)  # left/center/right
+                direction = face_direction(x, fw, w)
 
                 if fw >= args.min_face:
                     aligned = recognizer.alignCrop(frame, face)
@@ -232,28 +221,39 @@ def worker_loop(args, stop_event: mp.Event):
                     best_name, best_score, second_score = best_match(recognizer, feat, known)
                     confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
+                    now = time.time()
+
                     if confident:
                         label = f"{best_name} ({best_score:.2f}) - {direction}"
                         color = (0, 255, 0)
 
-                        if engine is not None:
-                            now = time.time()
+                        if not args.no_tts:
                             key = (best_name, direction)
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
-                                # English TTS message
-                                speak(engine, f"{best_name} is on the {direction}")
+                                speak_espeak(
+                                    f"{best_name} is on the {direction}",
+                                    rate=args.tts_rate,
+                                    voice=args.espeak_voice,
+                                    pitch=args.espeak_pitch,
+                                    amplitude=args.espeak_amp,
+                                )
                                 last_spoken[key] = now
                     else:
                         label = f"Unknown ({best_score:.2f}) - {direction}"
                         color = (0, 165, 255)
 
-                        if engine is not None and args.speak_unknown:
-                            now = time.time()
+                        if (not args.no_tts) and args.speak_unknown:
                             key = ("Unknown", direction)
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
-                                speak(engine, f"Unknown person on the {direction}")
+                                speak_espeak(
+                                    f"Unknown person on the {direction}",
+                                    rate=args.tts_rate,
+                                    voice=args.espeak_voice,
+                                    pitch=args.espeak_pitch,
+                                    amplitude=args.espeak_amp,
+                                )
                                 last_spoken[key] = now
 
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
@@ -290,10 +290,12 @@ def main():
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=15)
 
-    # TTS options
+    # TTS options (espeak)
     ap.add_argument("--no_tts", action="store_true", help="Disable TTS")
     ap.add_argument("--tts_rate", type=int, default=175)
-    ap.add_argument("--force_en_voice", action="store_true", help="Try to select an English voice if available")
+    ap.add_argument("--espeak_voice", type=str, default="en", help="espeak voice, e.g. en, en-us, nl")
+    ap.add_argument("--espeak_pitch", type=int, default=50, help="0-99")
+    ap.add_argument("--espeak_amp", type=int, default=100, help="0-200")
     ap.add_argument("--speak_unknown", action="store_true", help="Also speak when person is unknown")
 
     args = ap.parse_args()

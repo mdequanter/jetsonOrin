@@ -9,6 +9,7 @@ import signal
 import subprocess
 import queue as pyqueue
 import sys
+import json
 
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -32,22 +33,91 @@ def largest_face(faces: np.ndarray):
 
 
 # -----------------------------
-# Async TTS Process
+# Async TTS Process (Piper)
 # -----------------------------
 
-def espeak_say(text: str, rate: int, voice: str, pitch: int, amp: int):
-    cmd = ["espeak", "-v", voice, "-s", str(rate), "-p", str(pitch), "-a", str(amp)]
-    subprocess.run(
-        cmd,
-        input=text.encode("utf-8"),
+def read_piper_sample_rate(model_path: str, default_rate: int = 22050) -> int:
+    """
+    Try to read sample_rate from the accompanying .onnx.json.
+    If not found, return default_rate.
+    """
+    json_path = model_path + ".json"
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Common keys in piper voice json
+        for key in ("sample_rate", "audio.sample_rate", "audio_sample_rate"):
+            if key in data and isinstance(data[key], int):
+                return int(data[key])
+        # Sometimes nested
+        if isinstance(data.get("audio"), dict) and isinstance(data["audio"].get("sample_rate"), int):
+            return int(data["audio"]["sample_rate"])
+    except Exception:
+        pass
+    return default_rate
+
+
+def piper_say(text: str, model_path: str, sample_rate: int):
+    """
+    Equivalent to:
+      echo "text" | piper --model MODEL --output_raw | aplay -r <rate> -f S16_LE -t raw -
+    Uses Popen to avoid shell quoting issues.
+    """
+    p1 = subprocess.Popen(
+        ["piper", "--model", model_path, "--output_raw"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+    p2 = subprocess.Popen(
+        ["aplay", "-r", str(sample_rate), "-f", "S16_LE", "-t", "raw", "-"],
+        stdin=p1.stdout,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        check=False
     )
+
+    try:
+        if p1.stdin is not None:
+            p1.stdin.write((text + "\n").encode("utf-8"))
+            p1.stdin.close()
+    except Exception:
+        pass
+
+    if p1.stdout is not None:
+        p1.stdout.close()
+
+    # Wait (avoid hanging forever)
+    try:
+        p2.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        p2.kill()
+
+    try:
+        p1.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        p1.kill()
 
 
 def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    try:
+        subprocess.run(["piper", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except FileNotFoundError:
+        print("[WARN] 'piper' not found in PATH.", flush=True)
+        return
+
+    model_path = os.path.expanduser(args.piper_model)
+    if not os.path.exists(model_path):
+        print(f"[WARN] Piper model not found: {model_path}", flush=True)
+        return
+
+    # Auto sample rate from json unless explicitly forced
+    sample_rate = args.piper_rate
+    if args.piper_rate_auto:
+        sample_rate = read_piper_sample_rate(model_path, default_rate=args.piper_rate)
+
     while not stop_event.is_set():
         try:
             msg = tts_queue.get(timeout=0.1)
@@ -55,7 +125,15 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
             continue
         if msg is None:
             break
-        espeak_say(msg, args.tts_rate, args.espeak_voice, args.espeak_pitch, args.espeak_amp)
+
+        text = str(msg).strip()
+        if not text:
+            continue
+
+        try:
+            piper_say(text, model_path=model_path, sample_rate=sample_rate)
+        except Exception:
+            pass
 
 
 def tts_enqueue(tts_queue, text):
@@ -92,12 +170,11 @@ def main():
     ap.add_argument("--min_face", type=int, default=80)
     ap.add_argument("--capture_interval", type=float, default=0.5)
 
-    # TTS options
-    ap.add_argument("--tts_rate", type=int, default=175)
-    ap.add_argument("--espeak_voice", type=str, default="nl")
-    ap.add_argument("--espeak_pitch", type=int, default=50)
-    ap.add_argument("--espeak_amp", type=int, default=100)
-    ap.add_argument("--tts_queue_size", type=int, default=10)
+    # Piper options
+    ap.add_argument("--piper_model", type=str, default="~/jetsonOrin/voices/en_GB-alan-medium.onnx")
+    ap.add_argument("--piper_rate", type=int, default=22050, help="Fallback aplay sample rate")
+    ap.add_argument("--piper_rate_auto", action="store_true", help="Read sample_rate from <model>.onnx.json")
+    ap.add_argument("--tts_queue_size", type=int, default=20)
 
     args = ap.parse_args()
 
@@ -121,21 +198,19 @@ def main():
 
     ok, frame = cap.read()
     if not ok or frame is None:
-        print("[ERROR] Camera werkt niet.", flush=True)
+        print("[ERROR] Camera not working.", flush=True)
         return
 
     h, w = frame.shape[:2]
     detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h))
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    tts_enqueue(tts_queue, "Systeem gestart. Ik wacht op een gezicht. Druk Control C om te stoppen.")
-    print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
+    tts_enqueue(tts_queue, "System started. I am waiting for a face. Press Control C to stop.")
+    print("[INFO] Running. Ctrl+C to stop.", flush=True)
 
     try:
         while True:
-            # ---------------------------
-            # 1) Wacht op een groot genoeg gezicht
-            # ---------------------------
+            # 1) Wait for a sufficiently large face
             face = None
             while True:
                 ok, frame = cap.read()
@@ -157,95 +232,13 @@ def main():
             if face is None:
                 continue
 
-            # ---------------------------
-            # 2) Pauzeer capture en vraag naam (input)
-            # ---------------------------
-            tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
-            tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
+            # 2) Ask for the person's name (terminal input)
+            tts_enqueue(tts_queue, "Face detected.")
+            tts_enqueue(tts_queue, "Please type the person's name in the terminal and press Enter.")
 
-            name = sanitize_name(ask_input("Naam: "))
+            name = sanitize_name(ask_input("Name: "))
 
             if not name:
-                tts_enqueue(tts_queue, "Geen naam ingegeven. Ik wacht opnieuw op een gezicht.")
-                print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
-                time.sleep(0.3)
-                continue
-
-            tts_enqueue(tts_queue, f"Oké {name}. Ik neem nu voorbeelden op.")
-            print(f"[INFO] Capturing samples for: {name}", flush=True)
-
-            # ---------------------------
-            # 3) Samples opnemen
-            # ---------------------------
-            features = []
-            last_capture = 0.0
-
-            while len(features) < args.samples:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    break
-
-                detector.setInputSize((w, h))
-                _, faces = detector.detect(frame)
-                face = largest_face(faces)
-
-                if face is None:
-                    tts_enqueue(tts_queue, "Gezicht kwijt. Kijk naar de camera.")
-                    time.sleep(0.4)
-                    continue
-
-                x, y, fw, fh = face[:4].astype(int)
-                if fw < args.min_face:
-                    tts_enqueue(tts_queue, "Kom iets dichter bij de camera.")
-                    time.sleep(0.6)
-                    continue
-
-                now = time.time()
-                if now - last_capture >= args.capture_interval:
-                    aligned = recognizer.alignCrop(frame, face)
-                    feat = recognizer.feature(aligned).astype(np.float32)
-                    features.append(feat)
-                    last_capture = now
-
-            tts_enqueue(tts_queue, "Klaar met opnemen.")
-            print("[INFO] Capture done.", flush=True)
-
-            # ---------------------------
-            # 4) Vraag opslaan (input)
-            # ---------------------------
-            tts_enqueue(tts_queue, "Mag ik deze persoon opslaan? Typ j of n en druk op Enter.")
-
-            ans = ask_input("Opslaan? (j/n): ").strip().lower()
-
-            if ans.startswith("j") and len(features) >= 8:
-                out_path = os.path.join(args.outdir, f"{name}.npz")
-                np.savez_compressed(out_path, features=np.stack(features, axis=0))
-                tts_enqueue(tts_queue, f"{name} is opgeslagen.")
-                print("[OK] Saved:", out_path, flush=True)
-                exit(0)
-            else:
-                tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
-                print("[INFO] Not saved.", flush=True)
-                exit(0)
-
-            tts_enqueue(tts_queue, "Ik wacht opnieuw op een gezicht.")
-
-    except KeyboardInterrupt:
-        print("\n[INFO] Stoppen...", flush=True)
-
-    finally:
-        cap.release()
-        stop_event.set()
-        try:
-            tts_queue.put_nowait(None)
-        except Exception:
-            pass
-        tts_proc.join(timeout=1.0)
-        if tts_proc.is_alive():
-            tts_proc.terminate()
-            tts_proc.join()
-
-
-if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
-    main()
+                tts_enqueue(tts_queue, "No name entered. I will wait for a face again.")
+                print("[INFO] No name. Back to waiting.\n", flush=True)
+                ti

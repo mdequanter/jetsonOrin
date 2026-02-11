@@ -241,4 +241,81 @@ def main():
             if not name:
                 tts_enqueue(tts_queue, "No name entered. I will wait for a face again.")
                 print("[INFO] No name. Back to waiting.\n", flush=True)
-                ti
+                time.sleep(0.3)
+                continue
+
+            tts_enqueue(tts_queue, f"Okay {name}. I will now record samples.")
+            print(f"[INFO] Capturing samples for: {name}", flush=True)
+
+            # 3) Capture samples
+            features = []
+            last_capture = 0.0
+
+            while len(features) < args.samples:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(frame)
+                face = largest_face(faces)
+
+                if face is None:
+                    tts_enqueue(tts_queue, "I lost the face. Please look at the camera.")
+                    time.sleep(0.4)
+                    continue
+
+                x, y, fw, fh = face[:4].astype(int)
+                if fw < args.min_face:
+                    tts_enqueue(tts_queue, "Please move a bit closer to the camera.")
+                    time.sleep(0.6)
+                    continue
+
+                now = time.time()
+                if now - last_capture >= args.capture_interval:
+                    aligned = recognizer.alignCrop(frame, face)
+                    feat = recognizer.feature(aligned).astype(np.float32)
+                    features.append(feat)
+                    last_capture = now
+
+                    if len(features) % 5 == 0:
+                        tts_enqueue(tts_queue, f"{len(features)} samples recorded.")
+
+            tts_enqueue(tts_queue, "Recording complete.")
+            print("[INFO] Capture done.", flush=True)
+
+            # 4) Ask to save (terminal input)
+            tts_enqueue(tts_queue, "May I save this person? Type y or n and press Enter.")
+
+            ans = ask_input("Save? (y/n): ").strip().lower()
+
+            if ans.startswith("y") and len(features) >= 8:
+                out_path = os.path.join(args.outdir, f"{name}.npz")
+                np.savez_compressed(out_path, features=np.stack(features, axis=0))
+                tts_enqueue(tts_queue, f"Saved. {name} has been added.")
+                print("[OK] Saved:", out_path, flush=True)
+                return
+            else:
+                tts_enqueue(tts_queue, "Okay. I will not save anything.")
+                print("[INFO] Not saved.", flush=True)
+                return
+
+    except KeyboardInterrupt:
+        print("\n[INFO] Stopping...", flush=True)
+
+    finally:
+        cap.release()
+        stop_event.set()
+        try:
+            tts_queue.put_nowait(None)
+        except Exception:
+            pass
+        tts_proc.join(timeout=1.0)
+        if tts_proc.is_alive():
+            tts_proc.terminate()
+            tts_proc.join()
+
+
+if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
+    main()

@@ -62,10 +62,10 @@ def best_match(recognizer, feat, known: dict):
 def face_direction(x: int, w_face: int, frame_w: int) -> str:
     cx = x + (w_face // 2)
     if cx < frame_w / 3:
-        return "links"
+        return "staat links van jou"
     elif cx > 2 * frame_w / 3:
-        return "rechts"
-    return "midden"
+        return "staat rechts van jou"
+    return "staat voor jou"
 
 
 def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
@@ -268,7 +268,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
                                 # Dutch message
-                                tts_enqueue(tts_queue, f"{best_name} is {direction}.")
+                                tts_enqueue(tts_queue, f"{best_name}  {direction}.")
                                 last_spoken[key] = now
                     else:
                         label = f"Onbekend ({best_score:.2f}) - {direction}"

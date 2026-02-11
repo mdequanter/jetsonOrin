@@ -9,9 +9,6 @@ import signal
 import subprocess
 import queue as pyqueue
 import sys
-import select
-import termios
-import tty
 
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -22,9 +19,9 @@ def download_if_missing(url: str, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
         return
-    print(f"[INFO] Downloading {os.path.basename(path)} ...")
+    print(f"[INFO] Downloading {os.path.basename(path)} ...", flush=True)
     urllib.request.urlretrieve(url, path)
-    print(f"[OK] Saved to {path}")
+    print(f"[OK] Saved to {path}", flush=True)
 
 
 def largest_face(faces: np.ndarray):
@@ -76,119 +73,11 @@ def sanitize_name(name: str) -> str:
     return name
 
 
-# -----------------------------
-# Non-blocking keyboard input
-# -----------------------------
-
-class RawStdin:
-    """
-    Put stdin in raw mode so we can read single keys without blocking.
-    """
-    def __init__(self):
-        self.fd = sys.stdin.fileno()
-        self.old = None
-
-    def __enter__(self):
-        if not sys.stdin.isatty():
-            return self
-        self.old = termios.tcgetattr(self.fd)
-        tty.setraw(self.fd)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if self.old is not None:
-            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
-
-
-def read_key_nonblocking(timeout=0.0):
-    """
-    Return a single character if available, else None.
-    """
-    r, _, _ = select.select([sys.stdin], [], [], timeout)
-    if r:
-        ch = sys.stdin.read(1)
-        return ch
-    return None
-
-
-def collect_name_via_keys(tts_queue, max_len=32, timeout_s=30):
-    """
-    Collect a name using typed keys. ENTER confirms, ESC cancels.
-    Backspace supported.
-    """
-    tts_enqueue(tts_queue, "Typ de naam op het toetsenbord. Druk op Enter om te bevestigen. Escape om te annuleren.")
-    print("\n[INPUT] Typ naam (Enter=OK, Esc=Annuleer): ", end="", flush=True)
-
-    buf = ""
-    start = time.time()
-
-    while True:
-        if timeout_s and (time.time() - start) > timeout_s:
-            print("\n[INPUT] Timeout.")
-            tts_enqueue(tts_queue, "Geen invoer. Timeout.")
-            return ""
-
-        ch = read_key_nonblocking(timeout=0.1)
-        if ch is None:
-            continue
-
-        # ESC cancels
-        if ch == "\x1b":
-            print("\n[INPUT] Geannuleerd.")
-            tts_enqueue(tts_queue, "Geannuleerd.")
-            return ""
-
-        # ENTER confirms
-        if ch in ("\r", "\n"):
-            name = sanitize_name(buf)
-            print()  # newline
-            return name
-
-        # Backspace (Linux terminals: \x7f)
-        if ch in ("\x7f", "\b"):
-            if len(buf) > 0:
-                buf = buf[:-1]
-                # remove last char on screen
-                print("\b \b", end="", flush=True)
-            continue
-
-        # Accept simple printable chars
-        if ch.isprintable() and ch not in ("\t",):
-            if len(buf) < max_len:
-                buf += ch
-                print(ch, end="", flush=True)
-
-
-def confirm_yes_no_via_keys(tts_queue, question_tts, timeout_s=20):
-    """
-    Ask J/N using single key press.
-    Returns True for yes, False for no/timeout/cancel.
-    """
-    tts_enqueue(tts_queue, question_tts + " Druk op J voor ja, of N voor nee.")
-    print("\n[INPUT] (J/N): ", end="", flush=True)
-
-    start = time.time()
-    while True:
-        if timeout_s and (time.time() - start) > timeout_s:
-            print("\n[INPUT] Timeout -> nee.")
-            tts_enqueue(tts_queue, "Geen antwoord. Ik neem nee.")
-            return False
-
-        ch = read_key_nonblocking(timeout=0.1)
-        if ch is None:
-            continue
-        c = ch.lower()
-
-        if c == "j":
-            print("j")
-            return True
-        if c == "n":
-            print("n")
-            return False
-        if ch == "\x1b":  # ESC
-            print("\n[INPUT] Geannuleerd -> nee.")
-            tts_enqueue(tts_queue, "Geannuleerd.")
-            return False
+def ask_input(prompt: str) -> str:
+    # ensure prompt shows immediately
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    return input()
 
 
 # -----------------------------
@@ -232,7 +121,7 @@ def main():
 
     ok, frame = cap.read()
     if not ok or frame is None:
-        print("[ERROR] Camera werkt niet.")
+        print("[ERROR] Camera werkt niet.", flush=True)
         return
 
     h, w = frame.shape[:2]
@@ -240,90 +129,112 @@ def main():
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
     tts_enqueue(tts_queue, "Systeem gestart. Ik wacht op een gezicht. Druk Control C om te stoppen.")
+    print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
 
     try:
-        with RawStdin():  # raw keyboard input mode
+        while True:
+            # ---------------------------
+            # 1) Wacht op een groot genoeg gezicht
+            # ---------------------------
+            face = None
             while True:
-                # 1) wait for face
-                face = None
-                while face is None:
-                    ok, frame = cap.read()
-                    if not ok or frame is None:
-                        break
-                    detector.setInputSize((w, h))
-                    _, faces = detector.detect(frame)
-                    face = largest_face(faces)
-                    time.sleep(0.05)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    face = None
+                    break
+
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(frame)
+                face = largest_face(faces)
+
+                if face is not None:
+                    x, y, fw, fh = face[:4].astype(int)
+                    if fw >= args.min_face:
+                        break  # face good enough
+
+                time.sleep(0.05)
+
+            if face is None:
+                continue
+
+            # ---------------------------
+            # 2) Pauzeer capture en vraag naam (input)
+            # ---------------------------
+            tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
+            tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
+
+            print("\n[INPUT] Camera pauzeert nu voor invoer.", flush=True)
+            name = sanitize_name(ask_input("Naam: "))
+
+            if not name:
+                tts_enqueue(tts_queue, "Geen naam ingegeven. Ik wacht opnieuw op een gezicht.")
+                print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
+                time.sleep(0.3)
+                continue
+
+            tts_enqueue(tts_queue, f"Oké {name}. Ik neem nu voorbeelden op.")
+            print(f"[INFO] Capturing samples for: {name}", flush=True)
+
+            # ---------------------------
+            # 3) Samples opnemen
+            # ---------------------------
+            features = []
+            last_capture = 0.0
+
+            while len(features) < args.samples:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(frame)
+                face = largest_face(faces)
 
                 if face is None:
+                    tts_enqueue(tts_queue, "Gezicht kwijt. Kijk naar de camera.")
+                    time.sleep(0.4)
                     continue
 
                 x, y, fw, fh = face[:4].astype(int)
                 if fw < args.min_face:
                     tts_enqueue(tts_queue, "Kom iets dichter bij de camera.")
-                    time.sleep(1.0)
+                    time.sleep(0.6)
                     continue
 
-                # 2) ask name (keys, no blocking input())
-                tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
-                name = collect_name_via_keys(tts_queue, timeout_s=30)
+                now = time.time()
+                if now - last_capture >= args.capture_interval:
+                    aligned = recognizer.alignCrop(frame, face)
+                    feat = recognizer.feature(aligned).astype(np.float32)
+                    features.append(feat)
+                    last_capture = now
 
-                if not name:
-                    tts_enqueue(tts_queue, "Geen naam. Ik wacht opnieuw op een gezicht.")
-                    time.sleep(0.5)
-                    continue
+                    if len(features) % 5 == 0:
+                        tts_enqueue(tts_queue, f"{len(features)} voorbeelden opgenomen.")
+                        print(f"[INFO] {len(features)}/{args.samples}", flush=True)
 
-                tts_enqueue(tts_queue, f"Oké {name}. Ik neem nu voorbeelden op.")
+            tts_enqueue(tts_queue, "Klaar met opnemen.")
+            print("[INFO] Capture done.", flush=True)
 
-                # 3) capture features
-                features = []
-                last_capture = 0.0
-                while len(features) < args.samples:
-                    ok, frame = cap.read()
-                    if not ok or frame is None:
-                        break
+            # ---------------------------
+            # 4) Vraag opslaan (input)
+            # ---------------------------
+            tts_enqueue(tts_queue, "Mag ik deze persoon opslaan? Typ j of n en druk op Enter.")
 
-                    detector.setInputSize((w, h))
-                    _, faces = detector.detect(frame)
-                    face = largest_face(faces)
+            ans = ask_input("Opslaan? (j/n): ").strip().lower()
 
-                    if face is None:
-                        tts_enqueue(tts_queue, "Gezicht kwijt. Kijk naar de camera.")
-                        time.sleep(0.5)
-                        continue
+            if ans.startswith("j") and len(features) >= 8:
+                out_path = os.path.join(args.outdir, f"{name}.npz")
+                np.savez_compressed(out_path, features=np.stack(features, axis=0))
+                tts_enqueue(tts_queue, f"{name} is opgeslagen.")
+                print("[OK] Saved:", out_path, flush=True)
+            else:
+                tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
+                print("[INFO] Not saved.", flush=True)
 
-                    x, y, fw, fh = face[:4].astype(int)
-                    if fw < args.min_face:
-                        tts_enqueue(tts_queue, "Kom iets dichter bij de camera.")
-                        time.sleep(0.8)
-                        continue
-
-                    now = time.time()
-                    if now - last_capture >= args.capture_interval:
-                        aligned = recognizer.alignCrop(frame, face)
-                        feat = recognizer.feature(aligned).astype(np.float32)
-                        features.append(feat)
-                        last_capture = now
-
-                        if len(features) % 5 == 0:
-                            tts_enqueue(tts_queue, f"{len(features)} voorbeelden opgenomen.")
-
-                tts_enqueue(tts_queue, "Klaar met opnemen.")
-
-                # 4) confirm save via single key
-                do_save = confirm_yes_no_via_keys(tts_queue, f"Mag ik {name} opslaan?", timeout_s=20)
-                if do_save and len(features) >= 8:
-                    out_path = os.path.join(args.outdir, f"{name}.npz")
-                    np.savez_compressed(out_path, features=np.stack(features, axis=0))
-                    tts_enqueue(tts_queue, f"{name} is opgeslagen.")
-                    print("[OK] Saved:", out_path)
-                else:
-                    tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
-
-                tts_enqueue(tts_queue, "Ik wacht opnieuw op een gezicht.")
+            tts_enqueue(tts_queue, "Ik wacht opnieuw op een gezicht.")
 
     except KeyboardInterrupt:
-        print("\n[INFO] Stoppen...")
+        print("\n[INFO] Stoppen...", flush=True)
 
     finally:
         cap.release()

@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
-import sys
-import time
-import queue
+import sys, queue
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-# -------- Audio device (jouw webcam mic) --------
 DEVICE_ID = 0
-CHANNELS = 2          # device zegt "2 in"
-IN_SR = 44100         # probeer 44100; als het niet werkt: 48000
+CHANNELS = 2
 TARGET_SR = 16000
 
-# -------- Streaming parameters --------
-CHUNK_SEC = 0.25      # hoe vaak we audio binnenhalen
-WINDOW_SEC = 2.0      # hoeveel audio we telkens transcriben
-OVERLAP_SEC = 0.7     # overlap om woorden niet te knippen
-MIN_PRINT_CHARS = 2
-
-# -------- Model choice (CPU realtime) --------
-# tiny = snelste (aanrader voor live)
-# base = iets beter, iets trager
-MODEL_SIZE = "tiny"   # zet op "base" als het snel genoeg blijft
+CHUNK_SEC = 0.25
+WINDOW_SEC = 2.0
+OVERLAP_SEC = 0.7
 
 q = queue.Queue()
 
@@ -46,37 +35,45 @@ def common_prefix_len(a: str, b: str) -> int:
         i += 1
     return i
 
-def main():
-    print("Starting live Dutch STT (Ctrl+C to stop)")
-    print(f"Device={DEVICE_ID}, model={MODEL_SIZE}, IN_SR={IN_SR} -> {TARGET_SR}")
-
-    model = WhisperModel(
-        MODEL_SIZE,
-        device="cpu",
-        compute_type="int8"  # snel op CPU
+def pick_input_samplerate(device_id: int, channels: int) -> int:
+    candidates = [16000, 48000, 44100, 32000, 24000, 8000]
+    for sr in candidates:
+        try:
+            sd.check_input_settings(device=device_id, channels=channels, samplerate=sr)
+            return sr
+        except Exception:
+            pass
+    raise RuntimeError(
+        f"No supported samplerate found for device {device_id}. "
+        f"Tried {candidates}. Check ALSA/Pulse device."
     )
 
-    chunk_size = int(IN_SR * CHUNK_SEC)
-    window_len = int(IN_SR * WINDOW_SEC)
-    overlap_len = int(IN_SR * OVERLAP_SEC)
+def main():
+    in_sr = pick_input_samplerate(DEVICE_ID, CHANNELS)
+    print("Starting live Dutch STT (Ctrl+C to stop)")
+    print(f"Device={DEVICE_ID}, model=tiny, IN_SR={in_sr} -> {TARGET_SR}")
+
+    model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+    chunk_size = int(in_sr * CHUNK_SEC)
+    window_len = int(in_sr * WINDOW_SEC)
+    overlap_len = int(in_sr * OVERLAP_SEC)
 
     ring = np.zeros(window_len, dtype=np.float32)
     filled = 0
-
     last_full_text = ""
 
     with sd.InputStream(
         device=DEVICE_ID,
         channels=CHANNELS,
-        samplerate=IN_SR,
+        samplerate=in_sr,
         dtype="float32",
         blocksize=chunk_size,
         callback=callback
     ):
         while True:
-            chunk = q.get()  # mono float32 op IN_SR
+            chunk = q.get()
 
-            # ring buffer update
             n = len(chunk)
             if n >= window_len:
                 ring[:] = chunk[-window_len:]
@@ -86,44 +83,30 @@ def main():
                 ring[-n:] = chunk
                 filled = min(window_len, filled + n)
 
-            # pas starten als we genoeg audio hebben
             if filled < window_len:
                 continue
 
-            # neem window + resample
-            audio_16k = resample_linear(ring, IN_SR, TARGET_SR)
+            audio_16k = resample_linear(ring, in_sr, TARGET_SR)
 
-            segments, info = model.transcribe(
+            segments, _info = model.transcribe(
                 audio_16k,
                 language="nl",
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 300},
                 beam_size=1
             )
+
             full_text = " ".join(s.text.strip() for s in segments).strip()
             if not full_text:
                 continue
 
-            # print enkel wat nieuw is (t.o.v. vorige output)
             p = common_prefix_len(last_full_text, full_text)
             new = full_text[p:].strip()
 
-            # soms “verschuift” de zin; als new leeg is, maar full_text anders is, herstart
-            if len(new) < MIN_PRINT_CHARS and full_text != last_full_text:
-                # kleine reset om niet te missen
-                new = full_text
-
-            if len(new) >= MIN_PRINT_CHARS:
+            if len(new) >= 2:
                 print(new)
-                # ---- HIER is je "assistant hook" ----
-                # bv. stuur 'new' naar je LLM, of trigger acties:
-                # handle_text(new)
 
             last_full_text = full_text
-
-            # overlap behouden: schuif "window" zodat we niet alles opnieuw horen
-            # (we laten overlap staan en “vergeten” een stuk van het begin)
-            # => simuleer door 'filled' wat terug te zetten
             filled = window_len - overlap_len
 
 if __name__ == "__main__":

@@ -233,7 +233,7 @@ def main():
                             tts_enqueue(tts_queue, "Wat is de naam van deze persoon? Typ de naam in de terminal.")
 
                         # IMPORTANT: freeze this moment, then ask for name
-                        cv2.imshow(win, frame)
+                        #cv2.imshow(win, frame)
                         cv2.waitKey(1)
 
                         name = safe_input("\nNaam van de persoon (ENTER om te annuleren): ").strip()
@@ -300,8 +300,8 @@ def main():
                 # Show final frame and ask confirmation (blocking input)
                 cv2.putText(frame, "Opname klaar. Zie terminal: opslaan? (j/n)", (10, 95),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
-                cv2.imshow(win, frame)
-                cv2.waitKey(1)
+                #cv2.imshow(win, frame)
+                #cv2.waitKey(1)
 
                 ans = safe_input(f"\n{current_name} opslaan? (j/n): ").strip().lower()
                 if ans.startswith("j"):
@@ -333,7 +333,7 @@ def main():
                 state = STATE_WAIT_FACE
 
             # show
-            cv2.imshow(win, frame)
+            #cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 if not args.no_tts:

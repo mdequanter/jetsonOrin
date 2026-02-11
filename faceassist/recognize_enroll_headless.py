@@ -2,17 +2,21 @@
 """
 Headless face recognition + "auto-enroll on unknown" (OpenCV YuNet + SFace)
 
-Behavior:
-- Continuously detects the largest face.
-- If the face matches a known identity confidently -> announce on entry (optional TTS).
-- If the face is NOT confidently recognized and remains present for --unknown_seconds
-  -> take a snapshot, then ask (terminal) whether to save this person.
-    - If yes: ask for a name (terminal), record --samples feature vectors, and save to <known>/<name>.npz
-    - Optionally save the snapshot to <unknown_photos>/<timestamp>_<name-or-unknown>.jpg
+UPDATED behavior (per your request):
+- As soon as an unknown person is detected (after --unknown_confirm_frames),
+  we immediately start collecting "snapshots" (SFace feature vectors) every
+  --unknown_capture_interval seconds.
+- Only after the unknown persists for --unknown_seconds, we ask:
+    "New person detected, you want to save this person?"
+- If YES:
+    - Ask for a name
+    - Save immediately using the already-collected snapshots (NO new snapshots taken)
+    - Optionally save ONE photo from the last seen frame (no extra capture)
+- If NO: discard the collected snapshots and go into cooldown.
 
-This script is built by combining logic from:
-- enroll_sface.py (sampling + save .npz + piper TTS)  fileciteturn0file0L1-L110
-- recognize_headless.py (headless recognition loop, open_camera_linux, best_match, entry logic) fileciteturn0file1L1-L210
+This script combines logic from:
+- enroll_sface.py (sampling + save .npz + piper TTS)
+- recognize_headless.py (headless loop, open_camera_linux, best_match, entry logic)
 """
 
 import os
@@ -242,50 +246,8 @@ def tts_enqueue(tts_queue, text: str):
 
 
 # -----------------------------
-# Enrollment helper
+# Snapshot storage
 # -----------------------------
-
-def record_samples(cap, detector, recognizer, w: int, h: int, *,
-                   samples: int, min_face: int, capture_interval: float,
-                   tts_queue=None):
-    """
-    Record `samples` feature vectors with basic quality gates.
-    """
-    feats = []
-    last_capture = 0.0
-
-    while len(feats) < samples:
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-
-        detector.setInputSize((w, h))
-        _, faces = detector.detect(frame)
-        face = largest_face(faces)
-
-        if face is None:
-            tts_enqueue(tts_queue, "I lost the face. Please look at the camera.")
-            time.sleep(0.4)
-            continue
-
-        x, y, fw, fh = face[:4].astype(int)
-        if fw < min_face:
-            tts_enqueue(tts_queue, "Please move a bit closer to the camera.")
-            time.sleep(0.5)
-            continue
-
-        now = time.time()
-        if now - last_capture >= capture_interval:
-            aligned = recognizer.alignCrop(frame, face)
-            feat = recognizer.feature(aligned).astype(np.float32)
-            feats.append(feat)
-            last_capture = now
-
-            if len(feats) % 5 == 0:
-                tts_enqueue(tts_queue, f"{len(feats)} samples recorded.")
-
-    return feats
-
 
 def save_snapshot(frame, out_dir: str, tag: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
@@ -326,23 +288,27 @@ def main():
 
     # Unknown handling
     ap.add_argument("--unknown_seconds", type=float, default=5.0,
-                    help="If an unknown face stays visible this long, trigger snapshot + ask to enroll.")
+                    help="If an unknown face stays visible this long, prompt to enroll.")
     ap.add_argument("--unknown_confirm_frames", type=int, default=5,
-                    help="How many consecutive 'unknown' frames before starting the unknown timer.")
+                    help="How many consecutive 'unknown' frames before starting unknown logic.")
     ap.add_argument("--cooldown_after_unknown", type=float, default=10.0,
-                    help="After handling an unknown (enroll or skip), ignore unknown triggers for this many seconds.")
+                    help="After handling an unknown (save or skip), ignore unknown triggers for this many seconds.")
 
-    # Enrollment
+    # NEW: unknown capture behavior (start capturing immediately)
+    ap.add_argument("--unknown_capture_interval", type=float, default=0.5,
+                    help="While unknown is present, capture a feature snapshot every N seconds.")
+    ap.add_argument("--unknown_max_snaps", type=int, default=60,
+                    help="Max number of unknown feature snapshots to keep before prompting.")
+
+    # Enrollment / storage
     ap.add_argument("--known", type=str, default="known", help="Directory with .npz identities")
-    ap.add_argument("--samples", type=int, default=20, help="How many samples to record for a new person")
-    ap.add_argument("--capture_interval", type=float, default=0.5)
-    ap.add_argument("--min_save_samples", type=int, default=8, help="Don't save if fewer samples were captured")
+    ap.add_argument("--min_save_samples", type=int, default=8, help="Don't save if fewer snapshots were captured")
 
     # Snapshot storage
     ap.add_argument("--unknown_photos", type=str, default="unknown_photos",
-                    help="Where to store snapshots taken for unknown faces")
+                    help="Where to store optional snapshots")
     ap.add_argument("--save_unknown_snapshot", action="store_true",
-                    help="Also save a snapshot to --unknown_photos when unknown triggers")
+                    help="Also save a JPG snapshot (using the last frame) when saving a new person.")
 
     # Piper TTS
     ap.add_argument("--no_tts", action="store_true")
@@ -405,7 +371,7 @@ def main():
         if speak_enabled:
             tts_enqueue(tts_queue, "No known identities loaded. I can enroll new people when I see them.")
 
-    # Present/entry state (like recognize_headless.py) fileciteturn0file1L132-L209
+    # Present/entry state (like recognize_headless.py)
     present = False
     present_name = None
     last_seen = 0.0
@@ -413,7 +379,6 @@ def main():
     consec_needed = args.enter_confirm_frames
     consec_count = 0
     candidate_name = None
-
     last_announced_at = {}  # name -> time
 
     # Unknown state
@@ -421,8 +386,12 @@ def main():
     unknown_started_at = None
     last_unknown_handled_at = 0.0
 
-    frame_id = 0
+    # NEW: collect snapshots (features) immediately for unknown
+    unknown_feats = []          # list of np.float32 feature vectors
+    unknown_last_cap = 0.0      # time of last feature snapshot
+    unknown_last_frame = None   # last frame for optional JPG save
 
+    frame_id = 0
     print("[INFO] Headless running. Ctrl+C to stop.", flush=True)
 
     try:
@@ -454,6 +423,9 @@ def main():
                 # reset unknown tracking when face absent
                 unknown_consec = 0
                 unknown_started_at = None
+                unknown_feats = []
+                unknown_last_cap = 0.0
+                unknown_last_frame = None
                 continue
 
             x, y, fw, fh = face[:4].astype(int)
@@ -466,6 +438,9 @@ def main():
 
                 unknown_consec = 0
                 unknown_started_at = None
+                unknown_feats = []
+                unknown_last_cap = 0.0
+                unknown_last_frame = None
                 consec_count = 0
                 candidate_name = None
                 continue
@@ -479,7 +454,7 @@ def main():
             confident = (best_name is not None) and (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
             # -------------------------
-            # Handle UNKNOWN
+            # Handle UNKNOWN (start capturing immediately)
             # -------------------------
             if not confident:
                 # update "present" leave logic (unknown doesn't refresh last_seen)
@@ -492,33 +467,53 @@ def main():
                 if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
                     unknown_consec = 0
                     unknown_started_at = None
+                    unknown_feats = []
+                    unknown_last_cap = 0.0
+                    unknown_last_frame = None
                     continue
 
-                # require a few consecutive unknown frames before starting timer
+                # require a few consecutive unknown frames before starting unknown logic
                 unknown_consec += 1
                 if unknown_consec < args.unknown_confirm_frames:
                     continue
 
+                # unknown begins now
                 if unknown_started_at is None:
                     unknown_started_at = now
-                    print("[INFO] Unknown face detected (starting timer).", flush=True)
+                    unknown_feats = []
+                    unknown_last_cap = 0.0
+                    unknown_last_frame = None
+                    print("[INFO] Unknown face detected. Capturing snapshots...", flush=True)
                     if speak_enabled:
                         tts_enqueue(tts_queue, "I see someone I do not recognize.")
 
-                # if unknown persists long enough -> trigger
+                # keep last frame for optional saving later (no extra capture)
+                unknown_last_frame = frame
+
+                # capture feature "snapshots" immediately while unknown is present
+                if (now - unknown_last_cap) >= args.unknown_capture_interval:
+                    try:
+                        aligned_u = recognizer.alignCrop(frame, face)
+                        feat_u = recognizer.feature(aligned_u).astype(np.float32)
+                        unknown_feats.append(feat_u)
+                        unknown_last_cap = now
+
+                        if len(unknown_feats) > args.unknown_max_snaps:
+                            unknown_feats = unknown_feats[-args.unknown_max_snaps:]
+
+                        if len(unknown_feats) % 10 == 0:
+                            print(f"[INFO] Unknown snapshots: {len(unknown_feats)}", flush=True)
+                    except Exception:
+                        pass
+
+                # after unknown_seconds -> ask to save
                 if (now - unknown_started_at) >= args.unknown_seconds:
-                    print("[INFO] Unknown persisted. Triggering snapshot/enroll prompt.", flush=True)
-
-                    snapshot_path = None
-                    if args.save_unknown_snapshot:
-                        snapshot_path = save_snapshot(frame, args.unknown_photos, "unknown")
-                        print("[OK] Snapshot saved:", snapshot_path, flush=True)
-
+                    print("[INFO] New person detected. Prompting to save...", flush=True)
                     if speak_enabled:
-                        tts_enqueue(tts_queue, "Unknown person detected. I will take a photo.")
-                        tts_enqueue(tts_queue, "May I save this person? Type y or n in the terminal.")
+                        tts_enqueue(tts_queue, "New person detected, you want to save this person? Type y or n in the terminal.")
 
-                    ans = ask_input("Save this unknown person? (y/n): ").strip().lower()
+                    ans = ask_input("New person detected, you want to save this person? (y/n): ").strip().lower()
+
                     if ans.startswith("y"):
                         if speak_enabled:
                             tts_enqueue(tts_queue, "Please type the person's name and press Enter.")
@@ -529,36 +524,26 @@ def main():
                             if speak_enabled:
                                 tts_enqueue(tts_queue, "No name entered. I will not save anything.")
                         else:
-                            if speak_enabled:
-                                tts_enqueue(tts_queue, f"Okay {name}. I will now record samples.")
-                            print(f"[INFO] Capturing samples for: {name}", flush=True)
-
-                            feats = record_samples(
-                                cap, detector, recognizer, w, h,
-                                samples=args.samples,
-                                min_face=args.min_face,
-                                capture_interval=args.capture_interval,
-                                tts_queue=tts_queue if speak_enabled else None
-                            )
-
-                            if len(feats) >= args.min_save_samples:
+                            # save directly from collected snapshots (NO new captures!)
+                            if len(unknown_feats) >= args.min_save_samples:
                                 out_path = os.path.join(args.known, f"{name}.npz")
-                                np.savez_compressed(out_path, features=np.stack(feats, axis=0))
+                                np.savez_compressed(out_path, features=np.stack(unknown_feats, axis=0))
                                 print("[OK] Saved:", out_path, flush=True)
+
                                 if speak_enabled:
                                     tts_enqueue(tts_queue, f"Saved. {name} has been added.")
 
-                                # reload in-memory known dict so recognition works immediately
+                                # reload so recognition works immediately
                                 known = load_known(args.known)
 
-                                # optionally also save a tagged snapshot (with name)
-                                if args.save_unknown_snapshot:
-                                    tagged_path = save_snapshot(frame, args.unknown_photos, name)
+                                # optional: save ONE photo from the last frame we already have
+                                if args.save_unknown_snapshot and unknown_last_frame is not None:
+                                    tagged_path = save_snapshot(unknown_last_frame, args.unknown_photos, name)
                                     print("[OK] Snapshot saved:", tagged_path, flush=True)
                             else:
-                                print("[WARN] Too few samples captured. Not saving.", flush=True)
+                                print(f"[WARN] Too few snapshots ({len(unknown_feats)}). Not saving.", flush=True)
                                 if speak_enabled:
-                                    tts_enqueue(tts_queue, "I could not capture enough samples. I will not save.")
+                                    tts_enqueue(tts_queue, "I could not capture enough snapshots. I will not save.")
 
                     else:
                         print("[INFO] User chose not to save.", flush=True)
@@ -569,14 +554,23 @@ def main():
                     last_unknown_handled_at = time.time()
                     unknown_consec = 0
                     unknown_started_at = None
+                    unknown_feats = []
+                    unknown_last_cap = 0.0
+                    unknown_last_frame = None
+
                 continue  # done with unknown path
 
             # -------------------------
             # Handle KNOWN (entry announcement)
             # -------------------------
             last_seen = now
+
+            # reset unknown tracking
             unknown_consec = 0
             unknown_started_at = None
+            unknown_feats = []
+            unknown_last_cap = 0.0
+            unknown_last_frame = None
 
             if present and best_name == present_name:
                 continue

@@ -261,7 +261,8 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
             if confident and not args.no_tts:
                 key = (best_name, direction)
                 last = last_spoken.get(key, 0.0)
-                time_since_last = (now - last)/1000000000
+                time_since_last = (now - last)/1000000
+                print (f"[DEBUG] Time since last spoken for {key}: {time_since_last:.2f} seconds", flush=True)
                 if time_since_last >= args.cooldown:
                     print (f"[INFO] {time_since_last} Detected {best_name} {direction} (score={best_score:.2f}, second={second_score:.2f})", flush=True)
                     if (args.speak == "True"):

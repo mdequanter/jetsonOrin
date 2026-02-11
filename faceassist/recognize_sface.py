@@ -278,7 +278,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                             key = ("Onbekend", direction)
                             last = last_spoken.get(key, 0.0)
                             if now - last >= args.cooldown:
-                                tts_enqueue(tts_queue, f"Onbekende persoon {direction}.")
+                                #tts_enqueue(tts_queue, f"Onbekende persoon {direction}.")
                                 last_spoken[key] = now
 
                     cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)

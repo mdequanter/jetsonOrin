@@ -262,7 +262,7 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
                 key = (best_name, direction)
                 last = last_spoken.get(key, 0.0)
                 time_since_last = (now - last)/1000
-                if (time_since_last >= args.cooldown:
+                if time_since_last >= args.cooldown:
                     print (f"[INFO] {time_since_last} Detected {best_name} {direction} (score={best_score:.2f}, second={second_score:.2f})", flush=True)
                     if (args.speak == "True"):
                         tts_enqueue(tts_queue, f"{best_name} {direction}")

@@ -208,10 +208,6 @@ def main():
                     features.append(feat)
                     last_capture = now
 
-                    if len(features) % 5 == 0:
-                        tts_enqueue(tts_queue, f"{len(features)} voorbeelden opgenomen.")
-                        print(f"[INFO] {len(features)}/{args.samples}", flush=True)
-
             tts_enqueue(tts_queue, "Klaar met opnemen.")
             print("[INFO] Capture done.", flush=True)
 

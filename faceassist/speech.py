@@ -29,8 +29,8 @@ def simple_resample(x, in_sr, out_sr):
     return y
 
 def main():
-    print("Beschikbare devices:")
-    print(sd.query_devices())
+    #print("Beschikbare devices:")
+    #print(sd.query_devices())
 
     model = WhisperModel("small", device="cuda", compute_type="float16")
 

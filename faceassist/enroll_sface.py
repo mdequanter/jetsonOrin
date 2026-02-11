@@ -164,7 +164,7 @@ def main():
             tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
 
             print("\n[INPUT] Camera pauzeert nu voor invoer.", flush=True)
-            name = sanitize_name(ask_input("Naam: "))
+            name = sanitize_name(input("Naam: "))
 
             if not name:
                 tts_enqueue(tts_queue, "Geen naam ingegeven. Ik wacht opnieuw op een gezicht.")
@@ -220,7 +220,7 @@ def main():
             # ---------------------------
             tts_enqueue(tts_queue, "Mag ik deze persoon opslaan? Typ j of n en druk op Enter.")
 
-            ans = ask_input("Opslaan? (j/n): ").strip().lower()
+            ans = input("Opslaan? (j/n): ").strip().lower()
 
             if ans.startswith("j") and len(features) >= 8:
                 out_path = os.path.join(args.outdir, f"{name}.npz")

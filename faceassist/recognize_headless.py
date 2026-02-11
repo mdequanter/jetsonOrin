@@ -273,6 +273,8 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
 
 def main():
     ap = argparse.ArgumentParser()
+
+    ap.add_argument("--speak", type=bool, default=True)
     ap.add_argument("--cam", type=int, default=0)
     ap.add_argument("--known", type=str, default="known")
 
@@ -304,6 +306,11 @@ def main():
     download_if_missing(SFACE_URL, sface_path)
 
     stop_event = mp.Event()
+
+    if args.speak == True:
+        activate_voice = True
+    else :
+        activate_voice = False
 
     tts_queue = None
     tts_proc = None

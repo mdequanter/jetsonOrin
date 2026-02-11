@@ -163,7 +163,6 @@ def main():
             tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
             tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
 
-            print("\n[INPUT] Camera pauzeert nu voor invoer.", flush=True)
             name = sanitize_name(ask_input("Naam: "))
 
             if not name:
@@ -223,9 +222,11 @@ def main():
                 np.savez_compressed(out_path, features=np.stack(features, axis=0))
                 tts_enqueue(tts_queue, f"{name} is opgeslagen.")
                 print("[OK] Saved:", out_path, flush=True)
+                exit(0)
             else:
                 tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
                 print("[INFO] Not saved.", flush=True)
+                exit(0)
 
             tts_enqueue(tts_queue, "Ik wacht opnieuw op een gezicht.")
 

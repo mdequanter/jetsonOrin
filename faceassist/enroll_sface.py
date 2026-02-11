@@ -131,7 +131,7 @@ def main():
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
     tts_enqueue(tts_queue, "Systeem gestart. Ik wacht op een gezicht. Druk Control C om te stoppen.")
-    print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
+    #print("[INFO] Running. Ctrl+C om te stoppen.", flush=True)
 
     try:
         while True:
@@ -165,11 +165,11 @@ def main():
             tts_enqueue(tts_queue, "Gezicht gedetecteerd.")
             tts_enqueue(tts_queue, "Typ nu de naam in de terminal en druk op Enter.")
 
-            name = sanitize_name(input("Naam: "))
+            name = input("Naam: ")
 
             if not name:
                 tts_enqueue(tts_queue, "Geen naam ingegeven. Ik wacht opnieuw op een gezicht.")
-                print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
+                #print("[INFO] Geen naam. Terug naar wachten.\n", flush=True)
                 time.sleep(0.3)
                 continue
 

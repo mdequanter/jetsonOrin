@@ -13,8 +13,6 @@ YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 
 
-
-
 def download_if_missing(url: str, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
@@ -84,8 +82,6 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
         print("[INFO] Camera opened via GStreamer.", flush=True)
         return cap
 
-    #print("[WARN] GStreamer open failed. Falling back to V4L2...", flush=True)
-
     cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
     if cap.isOpened():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -114,7 +110,6 @@ def piper_say(text: str, model_path: str, sample_rate: int = 22050):
     Equivalent to:
       echo "text" | piper --model MODEL --output_raw | aplay -r 22050 -f S16_LE -t raw -
     """
-    # Start piper
     p1 = subprocess.Popen(
         ["piper", "--model", model_path, "--output_raw"],
         stdin=subprocess.PIPE,
@@ -122,7 +117,6 @@ def piper_say(text: str, model_path: str, sample_rate: int = 22050):
         stderr=subprocess.DEVNULL,
     )
 
-    # Pipe into aplay
     p2 = subprocess.Popen(
         ["aplay", "-r", str(sample_rate), "-f", "S16_LE", "-t", "raw", "-"],
         stdin=p1.stdout,
@@ -130,26 +124,28 @@ def piper_say(text: str, model_path: str, sample_rate: int = 22050):
         stderr=subprocess.DEVNULL,
     )
 
-    # Send text to piper
     try:
         p1.stdin.write((text + "\n").encode("utf-8"))
         p1.stdin.close()
     except Exception:
         pass
 
-    # Ensure pipes close
     if p1.stdout is not None:
         p1.stdout.close()
 
-    # Wait for aplay to finish
-    p2.wait(timeout=30)
-    p1.wait(timeout=30)
+    try:
+        p2.wait(timeout=30)
+    except Exception:
+        pass
+    try:
+        p1.wait(timeout=30)
+    except Exception:
+        pass
 
 
 def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # quick check
     try:
         subprocess.run(["piper", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except FileNotFoundError:
@@ -188,6 +184,10 @@ def tts_enqueue(tts_queue: mp.Queue, text: str):
         pass
 
 
+def str2bool(s: str) -> bool:
+    return str(s).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 # -----------------------------
 # Vision worker process (HEADLESS)
 # -----------------------------
@@ -219,38 +219,73 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
     detector = cv2.FaceDetectorYN.create(yunet_path, "", (w, h), args.score_th, args.nms_th, args.topk)
     recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-    last_spoken = {}
-    frame_id = 0
+    speak_enabled = (not args.no_tts) and str2bool(args.speak)
 
-    if not args.no_tts:
-        if (args.speak == "True"):
-            tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
+    if speak_enabled:
+        tts_enqueue(tts_queue, f"Face recognition started. {len(known)} identities loaded.")
+
+    # --- Announce-on-entry state ---
+    # We only speak when someone "enters": transition absent -> present.
+    present = False
+    present_name = None
+    present_direction = None
+    present_since = 0.0
+    last_seen = 0.0
+
+    # To avoid announcing on a single noisy frame: require N consecutive confident frames
+    consec_needed = args.enter_confirm_frames
+    consec_count = 0
+    candidate_name = None
+    candidate_direction = None
+
+    # Re-announce only if the person has been absent long enough
+    last_announced_at = {}  # name -> time
+
+    frame_id = 0
 
     try:
         while not stop_event.is_set():
             ok, frame = cap.read()
             if not ok or frame is None:
-                time.sleep(0.2)
+                time.sleep(0.1)
                 continue
 
             frame_id += 1
             if frame_id % args.infer_every != 0:
                 continue
 
+            now = time.time()
+
             detector.setInputSize((w, h))
             _, faces = detector.detect(frame)
             face = largest_face(faces)
 
-            now = time.time()
-
+            # If no face, handle "leave" timeout
             if face is None:
+                if present and (now - last_seen) >= args.lost_timeout:
+                    print(f"[INFO] {present_name} left the frame.", flush=True)
+                    present = False
+                    present_name = None
+                    present_direction = None
+                    consec_count = 0
+                    candidate_name = None
+                    candidate_direction = None
                 continue
 
             x, y, fw, fh = face[:4].astype(int)
-            direction = face_direction(x, fw, w)
-
             if fw < args.min_face:
+                # small face: treat like "not confidently present"
+                if present and (now - last_seen) >= args.lost_timeout:
+                    print(f"[INFO] {present_name} left the frame.", flush=True)
+                    present = False
+                    present_name = None
+                    present_direction = None
+                consec_count = 0
+                candidate_name = None
+                candidate_direction = None
                 continue
+
+            direction = face_direction(x, fw, w)
 
             aligned = recognizer.alignCrop(frame, face)
             feat = recognizer.feature(aligned).astype(np.float32)
@@ -258,16 +293,64 @@ def worker_loop(args, stop_event: mp.Event, tts_queue: mp.Queue):
             best_name, best_score, second_score = best_match(recognizer, feat, known)
             confident = (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
-            if confident and not args.no_tts:
-                key = (best_name, direction)
-                last = last_spoken.get(key, 0.0)
-                time_since_last = (now - last)/1000000000
-                print (f"[DEBUG] {time_since_last:.2f} <<<>>>>>  {args.cooldown}", flush=True)
-                if time_since_last >= args.cooldown:
-                    print (f"[INFO] {time_since_last} Detected {best_name} {direction} (score={best_score:.2f}, second={second_score:.2f})", flush=True)
-                    if (args.speak == "True"):
-                        tts_enqueue(tts_queue, f"{best_name} {direction}")
-                        last_spoken[key] = now
+            if not confident or best_name is None:
+                # Not confident: decay candidate/present state using lost_timeout
+                if present and (now - last_seen) >= args.lost_timeout:
+                    print(f"[INFO] {present_name} left the frame.", flush=True)
+                    present = False
+                    present_name = None
+                    present_direction = None
+                consec_count = 0
+                candidate_name = None
+                candidate_direction = None
+                continue
+
+            # Confident detection
+            last_seen = now
+
+            # If already present with the same person, do nothing (no repeated speech)
+            if present and best_name == present_name:
+                # Optionally keep latest direction for debug, but don't speak
+                present_direction = direction
+                continue
+
+            # Otherwise: build up candidate confirmation
+            if candidate_name == best_name:
+                consec_count += 1
+            else:
+                candidate_name = best_name
+                candidate_direction = direction
+                consec_count = 1
+
+            if consec_count < consec_needed:
+                continue
+
+            # Candidate confirmed as "entered"
+            # Check re-announce rule (must be absent for reannounce_after)
+            last_spoke = last_announced_at.get(candidate_name, 0.0)
+            if (now - last_spoke) < args.reannounce_after:
+                # Consider as present but don't speak again so soon
+                present = True
+                present_name = candidate_name
+                present_direction = candidate_direction
+                present_since = now
+                print(f"[INFO] {candidate_name} detected again but not re-announced (reannounce_after={args.reannounce_after}s).", flush=True)
+                continue
+
+            present = True
+            present_name = candidate_name
+            present_direction = candidate_direction
+            present_since = now
+            last_announced_at[present_name] = now
+
+            print(f"[INFO] ENTER: {present_name} {present_direction} (score={best_score:.2f}, second={second_score:.2f})", flush=True)
+            if speak_enabled:
+                tts_enqueue(tts_queue, f"{present_name} {present_direction}")
+
+            # Reset candidate counter so we don't immediately re-trigger
+            consec_count = 0
+            candidate_name = None
+            candidate_direction = None
 
     finally:
         cap.release()
@@ -283,7 +366,14 @@ def main():
     ap.add_argument("--min_face", type=int, default=50)
     ap.add_argument("--threshold", type=float, default=0.50)
     ap.add_argument("--margin", type=float, default=0.06)
-    ap.add_argument("--cooldown", type=float, default=6.0)
+
+    # Only announce when someone enters the frame
+    ap.add_argument("--lost_timeout", type=float, default=1.0,
+                    help="Seconds without a confident face before considering the person 'gone'.")
+    ap.add_argument("--enter_confirm_frames", type=int, default=3,
+                    help="How many consecutive confident frames are needed to confirm entry.")
+    ap.add_argument("--reannounce_after", type=float, default=6.0,
+                    help="Minimum seconds before the same person can be announced again (after leaving).")
 
     ap.add_argument("--score_th", type=float, default=0.9)
     ap.add_argument("--nms_th", type=float, default=0.3)
@@ -296,8 +386,10 @@ def main():
 
     # Piper TTS
     ap.add_argument("--no_tts", action="store_true")
-    ap.add_argument("--piper_model", type=str, default=os.path.expanduser("~/jetsonOrin/voices/en_GB-alan-medium.onnx"))
-    ap.add_argument("--piper_rate", type=int, default=22050, help="aplay sample rate (usually 22050 for piper voices)")
+    ap.add_argument("--piper_model", type=str,
+                    default=os.path.expanduser("~/jetsonOrin/voices/en_GB-alan-medium.onnx"))
+    ap.add_argument("--piper_rate", type=int, default=22050,
+                    help="aplay sample rate (usually 22050 for piper voices)")
     ap.add_argument("--tts_queue_size", type=int, default=20)
 
     args = ap.parse_args()
@@ -309,11 +401,10 @@ def main():
 
     stop_event = mp.Event()
 
-    if args.speak == "True":
+    if str2bool(args.speak) and (not args.no_tts):
         print("[INFO] Voice output enabled.", flush=True)
-    else :
-        print("[INFO] Voice output disabled (--speak False).", flush=True)
-
+    else:
+        print("[INFO] Voice output disabled.", flush=True)
 
     tts_queue = None
     tts_proc = None

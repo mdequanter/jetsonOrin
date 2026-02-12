@@ -2,15 +2,15 @@
 import sys, queue, threading
 import numpy as np
 import sounddevice as sd
-from faster_whisper import WhisperModel
+import whisper
 
 DEVICE_ID = 0
 CHANNELS = 2
 TARGET_SR = 16000
 
 CHUNK_SEC = 0.25
-WINDOW_SEC = 2.0
-OVERLAP_SEC = 0.7
+WINDOW_SEC = 3.0      # iets langer helpt Whisper
+OVERLAP_SEC = 1.0
 
 q = queue.Queue()
 stop_event = threading.Event()
@@ -30,7 +30,7 @@ def resample_linear(x: np.ndarray, in_sr: int, out_sr: int) -> np.ndarray:
     return np.interp(xnew, xp, x).astype(np.float32)
 
 def pick_input_samplerate(device_id: int, channels: int) -> int:
-    candidates = [16000, 48000, 44100, 32000, 24000, 8000]
+    candidates = [48000, 16000, 44100, 32000, 24000, 8000]  # 48k eerst (vaak Jetson/webcam)
     for sr in candidates:
         try:
             sd.check_input_settings(device=device_id, channels=channels, samplerate=sr)
@@ -57,14 +57,14 @@ def main():
     vraag = input("Wat is jouw naam? ")
     print(f"Vraag: {vraag}")
 
-    # start thread die ENTER opvangt
     threading.Thread(target=wait_for_enter, daemon=True).start()
 
     in_sr = pick_input_samplerate(DEVICE_ID, CHANNELS)
     print("Luisteren... spreek nu.")
-    print(f"Device={DEVICE_ID}, model=tiny, IN_SR={in_sr} -> {TARGET_SR}")
+    print(f"Device={DEVICE_ID}, Whisper (PyTorch), IN_SR={in_sr} -> {TARGET_SR}")
 
-    model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    # Kies model: tiny/base/small. base is vaak goeie balans.
+    model = whisper.load_model("base")
 
     chunk_size = int(in_sr * CHUNK_SEC)
     window_len = int(in_sr * WINDOW_SEC)
@@ -103,28 +103,25 @@ def main():
 
             audio_16k = resample_linear(ring, in_sr, TARGET_SR)
 
-            segments, _info = model.transcribe(
+            # PyTorch Whisper verwacht float32 audio @ 16kHz
+            result = model.transcribe(
                 audio_16k,
                 language="nl",
-                vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 300},
-                beam_size=1
+                fp16=False,        # CPU safe; zet op True als je GPU via torch.cuda gebruikt
+                temperature=0.0,   # stabieler
+                condition_on_previous_text=False
             )
-
-            full_text = " ".join(s.text.strip() for s in segments).strip()
+            full_text = (result.get("text") or "").strip()
             if not full_text:
                 continue
 
-            # update enkel met "nieuwe" stukken (optioneel)
             p = common_prefix_len(last_full_text, full_text)
             new = full_text[p:].strip()
 
             if len(new) >= 2:
                 print(new)
 
-            # dit is de variabele die je wil bij Enter
             speechantwoord = full_text
-
             last_full_text = full_text
             filled = window_len - overlap_len
 

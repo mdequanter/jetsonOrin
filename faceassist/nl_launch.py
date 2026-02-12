@@ -469,113 +469,114 @@ def main():
             # -------------------------
             # ONBEKEND: meteen snapshots verzamelen + 1 FOTO bij start
             # -------------------------
-            if not confident:
-                if present and (now - last_seen) >= args.lost_timeout:
-                    print(f"[INFO] {present_name} is uit beeld.", flush=True)
-                    present = False
-                    present_name = None
+            # if not confident:
+            #     if present and (now - last_seen) >= args.lost_timeout:
+            #         print(f"[INFO] {present_name} is uit beeld.", flush=True)
+            #         present = False
+            #         present_name = None
 
-                if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
-                    unknown_consec = 0
-                    unknown_started_at = None
-                    unknown_feats = []
-                    unknown_last_cap = 0.0
-                    unknown_last_frame = None
-                    continue
+            #     if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
+            #         unknown_consec = 0
+            #         unknown_started_at = None
+            #         unknown_feats = []
+            #         unknown_last_cap = 0.0
+            #         unknown_last_frame = None
+            #         continue
 
-                unknown_consec += 1
-                if unknown_consec < args.unknown_confirm_frames:
-                    continue
+            #     unknown_consec += 1
+            #     if unknown_consec < args.unknown_confirm_frames:
+            #         continue
 
-                # start unknown sessie
-                if unknown_started_at is None:
-                    unknown_started_at = now
-                    unknown_feats = []
-                    unknown_last_cap = 0.0
-                    unknown_last_frame = None
+                
+                # # start unknown sessie
+                # if unknown_started_at is None:
+                #     unknown_started_at = now
+                #     unknown_feats = []
+                #     unknown_last_cap = 0.0
+                #     unknown_last_frame = None
 
-                    if speak_enabled:
-                        tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
-                    else:
-                        print("[INFO] Ik zie iemand die ik nog niet ken.", flush=True)
+                #     if speak_enabled:
+                #         tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
+                #     else:
+                #         print("[INFO] Ik zie iemand die ik nog niet ken.", flush=True)
 
-                    # NIEUW: foto snapshot opslaan (Onbekend_yyyy_mm_dd_hh_mm_ss.jpg)
-                    # (met cooldown, zodat het niet voortdurend schrijft)
-                    name_for_photo = "Onbekend"
-                    last_t = last_person_photo_at.get(name_for_photo, 0.0)
-                    if (now - last_t) >= person_photo_cooldown:
-                        p = save_person_snapshot(frame, name_for_photo, out_dir="snapshots")
-                        last_person_photo_at[name_for_photo] = now
-                        print("[OK] Snapshot opgeslagen:", p, flush=True)
+                #     # NIEUW: foto snapshot opslaan (Onbekend_yyyy_mm_dd_hh_mm_ss.jpg)
+                #     # (met cooldown, zodat het niet voortdurend schrijft)
+                #     name_for_photo = "Onbekend"
+                #     last_t = last_person_photo_at.get(name_for_photo, 0.0)
+                #     if (now - last_t) >= person_photo_cooldown:
+                #         p = save_person_snapshot(frame, name_for_photo, out_dir="snapshots")
+                #         last_person_photo_at[name_for_photo] = now
+                #         print("[OK] Snapshot opgeslagen:", p, flush=True)
 
-                unknown_last_frame = frame
+                # unknown_last_frame = frame
 
-                if (now - unknown_last_cap) >= args.unknown_capture_interval:
-                    try:
-                        aligned_u = recognizer.alignCrop(frame, face)
-                        feat_u = recognizer.feature(aligned_u).astype(np.float32)
-                        unknown_feats.append(feat_u)
-                        unknown_last_cap = now
+                # if (now - unknown_last_cap) >= args.unknown_capture_interval:
+                #     try:
+                #         aligned_u = recognizer.alignCrop(frame, face)
+                #         feat_u = recognizer.feature(aligned_u).astype(np.float32)
+                #         unknown_feats.append(feat_u)
+                #         unknown_last_cap = now
 
-                        if len(unknown_feats) > args.unknown_max_snaps:
-                            unknown_feats = unknown_feats[-args.unknown_max_snaps:]
+                #         if len(unknown_feats) > args.unknown_max_snaps:
+                #             unknown_feats = unknown_feats[-args.unknown_max_snaps:]
 
-                        if len(unknown_feats) % 10 == 0:
-                            print(f"[INFO] Onbekende snapshots: {len(unknown_feats)}", flush=True)
-                    except Exception:
-                        pass
+                #         if len(unknown_feats) % 10 == 0:
+                #             print(f"[INFO] Onbekende snapshots: {len(unknown_feats)}", flush=True)
+                #     except Exception:
+                #         pass
 
-                if (now - unknown_started_at) >= args.unknown_seconds:
-                    if speak_enabled:
-                        tts_enqueue(tts_queue, "Nieuwe persoon gedetecteerd. Wil je deze persoon opslaan? Typ ja of nee in de terminal.")
+                # if (now - unknown_started_at) >= args.unknown_seconds:
+                #     if speak_enabled:
+                #         tts_enqueue(tts_queue, "Nieuwe persoon gedetecteerd. Wil je deze persoon opslaan? Typ ja of nee in de terminal.")
 
-                    ans = ask_input("Nieuwe persoon gedetecteerd, wil je deze persoon opslaan? (ja/nee): ").strip().lower()
+                #     ans = ask_input("Nieuwe persoon gedetecteerd, wil je deze persoon opslaan? (ja/nee): ").strip().lower()
 
-                    if ans.startswith("j") or ans.startswith("y"):
-                        if speak_enabled:
-                            tts_enqueue(tts_queue, "Typ de naam van de persoon en druk op Enter.")
-                        name = sanitize_name(ask_input("Typ de naam van de persoon en druk op Enter:"))
+                #     if ans.startswith("j") or ans.startswith("y"):
+                #         if speak_enabled:
+                #             tts_enqueue(tts_queue, "Typ de naam van de persoon en druk op Enter.")
+                #         name = sanitize_name(ask_input("Typ de naam van de persoon en druk op Enter:"))
 
-                        if not name:
-                            if speak_enabled:
-                                tts_enqueue(tts_queue, "Geen naam ingevoerd. Ik sla niets op.")
-                            else :
-                                print("[INFO] Geen naam ingevoerd. Niet opslaan.", flush=True)
-                        else:
-                            if len(unknown_feats) >= args.min_save_samples:
-                                out_path = os.path.join(args.known, f"{name}.npz")
-                                np.savez_compressed(out_path, features=np.stack(unknown_feats, axis=0))
+                #         if not name:
+                #             if speak_enabled:
+                #                 tts_enqueue(tts_queue, "Geen naam ingevoerd. Ik sla niets op.")
+                #             else :
+                #                 print("[INFO] Geen naam ingevoerd. Niet opslaan.", flush=True)
+                #         else:
+                #             if len(unknown_feats) >= args.min_save_samples:
+                #                 out_path = os.path.join(args.known, f"{name}.npz")
+                #                 np.savez_compressed(out_path, features=np.stack(unknown_feats, axis=0))
 
-                                if speak_enabled:
-                                    tts_enqueue(tts_queue, f"Opgeslagen. {name} is toegevoegd.")
-                                else :
-                                    print(f"[INFO] Opgeslagen. {name} is toegevoegd.", flush=True)
+                #                 if speak_enabled:
+                #                     tts_enqueue(tts_queue, f"Opgeslagen. {name} is toegevoegd.")
+                #                 else :
+                #                     print(f"[INFO] Opgeslagen. {name} is toegevoegd.", flush=True)
 
-                                known = load_known(args.known)
+                #                 known = load_known(args.known)
 
-                                if args.save_unknown_snapshot and unknown_last_frame is not None:
-                                    tagged_path = save_snapshot(unknown_last_frame, args.unknown_photos, name)
-                                    print("[OK] Foto opgeslagen:", tagged_path, flush=True)
-                            else:
-                                if speak_enabled:
-                                    tts_enqueue(tts_queue, "Ik kon niet genoeg snapshots nemen. Ik sla niets op.")
-                                else :
-                                    print("[INFO] Te weinig snapshots. Niet opslaan.", flush=True)
+                #                 if args.save_unknown_snapshot and unknown_last_frame is not None:
+                #                     tagged_path = save_snapshot(unknown_last_frame, args.unknown_photos, name)
+                #                     print("[OK] Foto opgeslagen:", tagged_path, flush=True)
+                #             else:
+                #                 if speak_enabled:
+                #                     tts_enqueue(tts_queue, "Ik kon niet genoeg snapshots nemen. Ik sla niets op.")
+                #                 else :
+                #                     print("[INFO] Te weinig snapshots. Niet opslaan.", flush=True)
 
-                    else:
-                        if speak_enabled:
-                            tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
-                        else :
-                            print("[INFO] Oké. Niet opslaan.", flush=True)
+                #     else:
+                #         if speak_enabled:
+                #             tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
+                #         else :
+                #             print("[INFO] Oké. Niet opslaan.", flush=True)
 
-                    last_unknown_handled_at = time.time()
-                    unknown_consec = 0
-                    unknown_started_at = None
-                    unknown_feats = []
-                    unknown_last_cap = 0.0
-                    unknown_last_frame = None
+                #     last_unknown_handled_at = time.time()
+                #     unknown_consec = 0
+                #     unknown_started_at = None
+                #     unknown_feats = []
+                #     unknown_last_cap = 0.0
+                #     unknown_last_frame = None
 
-                continue
+                # continue
 
             # -------------------------
             # BEKEND: entry announcement + 1 FOTO bij "BINNEN"

@@ -493,9 +493,11 @@ def main():
                     unknown_feats = []
                     unknown_last_cap = 0.0
                     unknown_last_frame = None
-                    print("[INFO] Onbekend gezicht gedetecteerd. Snapshots verzamelen...", flush=True)
+
                     if speak_enabled:
                         tts_enqueue(tts_queue, "Ik zie iemand die ik niet herken.")
+                    else:
+                        print("[INFO] Ik zie iemand die ik nog niet ken.", flush=True)
 
                     # NIEUW: foto snapshot opslaan (Onbekend_yyyy_mm_dd_hh_mm_ss.jpg)
                     # (met cooldown, zodat het niet voortdurend schrijft)
@@ -524,7 +526,6 @@ def main():
                         pass
 
                 if (now - unknown_started_at) >= args.unknown_seconds:
-                    print("[INFO] Nieuwe persoon gedetecteerd. Vraag om op te slaan...", flush=True)
                     if speak_enabled:
                         tts_enqueue(tts_queue, "Nieuwe persoon gedetecteerd. Wil je deze persoon opslaan? Typ ja of nee in de terminal.")
 
@@ -533,20 +534,22 @@ def main():
                     if ans.startswith("j") or ans.startswith("y"):
                         if speak_enabled:
                             tts_enqueue(tts_queue, "Typ de naam van de persoon en druk op Enter.")
-                        name = sanitize_name(ask_input("Naam: "))
+                        name = sanitize_name(ask_input("Typ de naam van de persoon en druk op Enter:"))
 
                         if not name:
-                            print("[INFO] Geen naam ingevoerd. Niet opslaan.", flush=True)
                             if speak_enabled:
                                 tts_enqueue(tts_queue, "Geen naam ingevoerd. Ik sla niets op.")
+                            else :
+                                print("[INFO] Geen naam ingevoerd. Niet opslaan.", flush=True)
                         else:
                             if len(unknown_feats) >= args.min_save_samples:
                                 out_path = os.path.join(args.known, f"{name}.npz")
                                 np.savez_compressed(out_path, features=np.stack(unknown_feats, axis=0))
-                                print("[OK] Opgeslagen:", out_path, flush=True)
 
                                 if speak_enabled:
                                     tts_enqueue(tts_queue, f"Opgeslagen. {name} is toegevoegd.")
+                                else :
+                                    print(f"[INFO] Opgeslagen. {name} is toegevoegd.", flush=True)
 
                                 known = load_known(args.known)
 
@@ -554,14 +557,16 @@ def main():
                                     tagged_path = save_snapshot(unknown_last_frame, args.unknown_photos, name)
                                     print("[OK] Foto opgeslagen:", tagged_path, flush=True)
                             else:
-                                print(f"[WAARSCHUWING] Te weinig snapshots ({len(unknown_feats)}). Niet opslaan.", flush=True)
                                 if speak_enabled:
                                     tts_enqueue(tts_queue, "Ik kon niet genoeg snapshots nemen. Ik sla niets op.")
+                                else :
+                                    print("[INFO] Te weinig snapshots. Niet opslaan.", flush=True)
 
                     else:
-                        print("[INFO] Gebruiker kiest om niet op te slaan.", flush=True)
                         if speak_enabled:
                             tts_enqueue(tts_queue, "Oké. Ik sla niets op.")
+                        else :
+                            print("[INFO] Oké. Niet opslaan.", flush=True)
 
                     last_unknown_handled_at = time.time()
                     unknown_consec = 0

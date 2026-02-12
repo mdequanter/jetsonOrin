@@ -403,7 +403,7 @@ def main():
 
     # NEW: snapshot-spam preventie
     last_person_photo_at = {}  # name -> time
-    person_photo_cooldown = 3.0  # sec
+    person_photo_cooldown = 99.0  # sec
 
     frame_id = 0
     print("[INFO] Headless actief. Ctrl+C om te stoppen.", flush=True)

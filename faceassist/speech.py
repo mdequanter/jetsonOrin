@@ -117,7 +117,7 @@ def main():
             result = model.transcribe(
                 audio_16k,
                 language="nl",
-                fp16=True,        # CPU safe; zet op True als je GPU via torch.cuda gebruikt
+                fp16=False,        # CPU safe; zet op True als je GPU via torch.cuda gebruikt
                 temperature=0.0,   # stabieler
                 condition_on_previous_text=False
             )

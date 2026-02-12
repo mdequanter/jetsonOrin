@@ -301,7 +301,7 @@ def main():
                     help="Als een onbekend gezicht zo lang zichtbaar blijft, vragen om op te slaan.")
     ap.add_argument("--unknown_confirm_frames", type=int, default=5,
                     help="Aantal opeenvolgende 'onbekend' frames voor we starten.")
-    ap.add_argument("--cooldown_after_unknown", type=float, default=99.0,
+    ap.add_argument("--cooldown_after_unknown", type=float, default=300.0,
                     help="Na een onbekend-afhandeling (save/skip) even wachten.")
 
     # Meteen snapshots (features) verzamelen
@@ -403,7 +403,7 @@ def main():
 
     # NEW: snapshot-spam preventie
     last_person_photo_at = {}  # name -> time
-    person_photo_cooldown = 99.0  # sec
+    person_photo_cooldown = 300.0  # sec
 
     frame_id = 0
     print("[INFO] Headless actief. Ctrl+C om te stoppen.", flush=True)

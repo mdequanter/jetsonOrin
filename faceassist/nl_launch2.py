@@ -626,7 +626,7 @@ def main():
                         prompt_tts="Nieuwe persoon gedetecteerd. Wil je deze persoon opslaan? Zeg ja of nee.",
                         tts_queue=tts_queue,
                         max_seconds=3.0,
-                        silence_threshold=0.010
+                        silence_threshold=0.006
                     ).lower()
                     print("[STT] ja/nee:", ans_spoken, flush=True)
 

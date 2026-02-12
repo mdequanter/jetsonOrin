@@ -614,6 +614,7 @@ def main():
 
             # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
             last_t = last_person_photo_at.get(present_name, 0.0)
+            print (f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
             if (now - last_t) >= person_photo_cooldown:
                 p = save_person_snapshot(frame, present_name, out_dir="snapshots")
                 last_person_photo_at[present_name] = now

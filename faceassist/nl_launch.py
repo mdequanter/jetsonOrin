@@ -495,7 +495,7 @@ def main():
                     unknown_last_frame = None
 
                     if speak_enabled:
-                        tts_enqueue(tts_queue, "Ik zie iemand die ik niet herken.")
+                        tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
                     else:
                         print("[INFO] Ik zie iemand die ik nog niet ken.", flush=True)
 
@@ -621,7 +621,7 @@ def main():
 
             print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
             if speak_enabled:
-                tts_enqueue(tts_queue, f"{present_name} {richting}")
+                tts_enqueue(tts_queue, f"Hallo {present_name}")
 
             consec_count = 0
             candidate_name = None

@@ -620,9 +620,9 @@ def main():
                 last_person_photo_at[present_name] = now
                 print("[OK] Snapshot opgeslagen:", p, flush=True)
 
-            print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
-            if speak_enabled:
-                tts_enqueue(tts_queue, f"Hallo {present_name}")
+                print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
+                if speak_enabled:
+                    tts_enqueue(tts_queue, f"Hallo {present_name}")
 
             consec_count = 0
             candidate_name = None

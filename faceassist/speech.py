@@ -15,6 +15,15 @@ OVERLAP_SEC = 1.0
 q = queue.Queue()
 stop_event = threading.Event()
 
+def beep(frequency=1000, duration=0.2, samplerate=44100, volume=0.5):
+    """
+    Speel een korte sine-beep af.
+    """
+    t = np.linspace(0, duration, int(samplerate * duration), False)
+    tone = volume * np.sin(2 * np.pi * frequency * t)
+    sd.play(tone, samplerate)
+    sd.wait()
+
 def callback(indata, frames, t, status):
     if status:
         print(status, file=sys.stderr)
@@ -75,6 +84,7 @@ def main():
     last_full_text = ""
     speechantwoord = ""
 
+    beep(1200, 0.25) 
     with sd.InputStream(
         device=DEVICE_ID,
         channels=CHANNELS,
@@ -107,7 +117,7 @@ def main():
             result = model.transcribe(
                 audio_16k,
                 language="nl",
-                fp16=False,        # CPU safe; zet op True als je GPU via torch.cuda gebruikt
+                fp16=True,        # CPU safe; zet op True als je GPU via torch.cuda gebruikt
                 temperature=0.0,   # stabieler
                 condition_on_previous_text=False
             )

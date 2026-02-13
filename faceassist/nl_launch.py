@@ -616,21 +616,22 @@ def main():
             present_name = candidate_name
             last_announced_at[present_name] = now
 
-            # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
-            last_t = last_person_photo_at.get(present_name, 0.0)
-            print (f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
-            if (now - last_t) >= person_photo_cooldown:
-                p = save_person_snapshot(frame, present_name, out_dir="snapshots")
-                last_person_photo_at[present_name] = now
-                print("[OK] Snapshot opgeslagen:", p, flush=True)
+            if best_score > args.threshold :
+                # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
+                last_t = last_person_photo_at.get(present_name, 0.0)
+                print (f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
+                if (now - last_t) >= person_photo_cooldown:
+                    p = save_person_snapshot(frame, present_name, out_dir="snapshots")
+                    last_person_photo_at[present_name] = now
+                    print("[OK] Snapshot opgeslagen:", p, flush=True)
 
-                print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
+                    print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
 
-                if speak_enabled and best_score > args.threshold:
-                    tts_enqueue(tts_queue, f"Hallo {present_name}")
+                    if speak_enabled:
+                        tts_enqueue(tts_queue, f"Hallo {present_name}")
 
-            consec_count = 0
-            candidate_name = None
+                consec_count = 0
+                candidate_name = None
 
     except KeyboardInterrupt:
         print("\n[INFO] Stoppen...", flush=True)

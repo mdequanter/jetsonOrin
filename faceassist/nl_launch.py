@@ -583,54 +583,54 @@ def main():
             # -------------------------
             
             
-            if (best_score > args.threshold):
             
-                last_seen = now
+            last_seen = now
 
-                unknown_consec = 0
-                unknown_started_at = None
-                unknown_feats = []
-                unknown_last_cap = 0.0
-                unknown_last_frame = None
+            unknown_consec = 0
+            unknown_started_at = None
+            unknown_feats = []
+            unknown_last_cap = 0.0
+            unknown_last_frame = None
 
-                if present and best_name == present_name:
-                    continue
+            if present and best_name == present_name:
+                continue
 
-                if candidate_name == best_name:
-                    consec_count += 1
-                else:
-                    candidate_name = best_name
-                    consec_count = 1
+            if candidate_name == best_name:
+                consec_count += 1
+            else:
+                candidate_name = best_name
+                consec_count = 1
 
-                if consec_count < consec_needed:
-                    continue
+            if consec_count < consec_needed:
+                continue
 
-                last_spoke = last_announced_at.get(candidate_name, 0.0)
-                if (now - last_spoke) < args.reannounce_after:
-                    present = True
-                    present_name = candidate_name
-                    consec_count = 0
-                    candidate_name = None
-                    continue
-
+            last_spoke = last_announced_at.get(candidate_name, 0.0)
+            if (now - last_spoke) < args.reannounce_after:
                 present = True
                 present_name = candidate_name
-                last_announced_at[present_name] = now
-
-                # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
-                last_t = last_person_photo_at.get(present_name, 0.0)
-                print (f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
-                if (now - last_t) >= person_photo_cooldown:
-                    p = save_person_snapshot(frame, present_name, out_dir="snapshots")
-                    last_person_photo_at[present_name] = now
-                    print("[OK] Snapshot opgeslagen:", p, flush=True)
-
-                    print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
-                    if speak_enabled:
-                        tts_enqueue(tts_queue, f"Hallo {present_name}")
-
                 consec_count = 0
                 candidate_name = None
+                continue
+
+            present = True
+            present_name = candidate_name
+            last_announced_at[present_name] = now
+
+            # NIEUW: foto snapshot opslaan (Naam_yyyy_mm_dd_hh_mm_ss.jpg)
+            last_t = last_person_photo_at.get(present_name, 0.0)
+            print (f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
+            if (now - last_t) >= person_photo_cooldown:
+                p = save_person_snapshot(frame, present_name, out_dir="snapshots")
+                last_person_photo_at[present_name] = now
+                print("[OK] Snapshot opgeslagen:", p, flush=True)
+
+                print(f"[INFO] BINNEN: {present_name} {richting} (score={best_score:.2f}, tweede={second_score:.2f})", flush=True)
+
+                if speak_enabled and best_score > args.threshold:
+                    tts_enqueue(tts_queue, f"Hallo {present_name}")
+
+            consec_count = 0
+            candidate_name = None
 
     except KeyboardInterrupt:
         print("\n[INFO] Stoppen...", flush=True)

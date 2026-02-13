@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% set title = "Personen herkennen" %}
+
+{% block content %}
+  <h1>Personen herkennen</h1>
+
+  <div class="card" role="status" aria-live="polite">
+    <p>
+      Status:
+      {% if running %}
+        <strong>ACTIEF</strong>
+      {% else %}
+        <strong>NIET actief</strong>
+      {% endif %}
+    </p>
+
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      {% if not running %}
+        <form action="{{ url_for('personen_start') }}" method="post">
+          <button class="btn btn-primary" type="submit">Start herkenning</button>
+        </form>
+      {% else %}
+        <form action="{{ url_for('personen_stop') }}" method="post">
+          <button class="btn btn-danger" type="submit">Stop herkenning</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <p class="muted" style="margin-top:10px;">
+      Tip: snapshots komen automatisch op de Snapshots-pagina wanneer iemand herkend wordt.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Bekende personen ({{ known_people|length }})</h2>
+    {% if known_people %}
+      <ul>
+        {% for p in known_people %}
+          <li><span class="mono">{{ p }}</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Nog geen personen in <span class="mono">known/</span> (geen <span class="mono">.npz</span> bestanden).</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Live log</h2>
+    <pre id="log" class="mono" style="white-space:pre-wrap; margin:0;"></pre>
+  </div>
+
+  <script>
+    async function refreshLog() {
+      try {
+        const res = await fetch("{{ url_for('api_personen_log') }}", { cache: "no-store" });
+        const data = await res.json();
+        document.getElementById("log").textContent = (data.lines || []).join("\n");
+      } catch (e) { /* negeren */ }
+    }
+    refreshLog();
+    setInterval(refreshLog, 1000);
+  </script>
+{% endblock %}

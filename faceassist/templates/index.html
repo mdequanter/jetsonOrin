@@ -1,54 +1,25 @@
-<!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Snapshots</title>
-  <style>
-    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
-    h1 { margin-bottom: 10px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 14px;
-    }
-    .card {
-      border: 1px solid #ddd;
-      border-radius: 10px;
-      overflow: hidden;
-      background: #fff;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    .card img {
-      width: 100%;
-      height: 200px;
-      object-fit: cover;
-      display: block;
-      background: #f3f3f3;
-    }
-    .meta { padding: 10px 12px; }
-    .name { font-weight: 700; margin: 0 0 4px; }
-    .dt { color: #555; margin: 0; font-size: 0.95rem; }
-    .file { color: #888; font-size: 0.8rem; margin-top: 6px; word-break: break-all; }
-  </style>
-</head>
-<body>
-  <h1>Snapshot galerij</h1>
-  <p>Totaal: {{ items|length }} foto’s</p>
+{% extends "base.html" %}
+{% set title = "Snapshots" %}
 
-  <div class="grid">
-    {% for it in items %}
-      <div class="card">
-        <a href="{{ url_for('snapshot_file', filename=it.filename) }}" target="_blank" rel="noopener">
-          <img src="{{ url_for('snapshot_file', filename=it.filename) }}" alt="{{ it.name }}">
-        </a>
-        <div class="meta">
-          <p class="name">{{ it.name }}</p>
-          <p class="dt">{{ it.dt_str }}</p>
-          <div class="file">{{ it.filename }}</div>
-        </div>
+{% block content %}
+  <h1>Snapshots</h1>
+  <p class="muted">Foto’s worden automatisch opgeslagen als <span class="mono">Naam_yyyy_mm_dd_hh_mm_ss.jpg</span>.</p>
+
+  {% if not items %}
+    <div class="card">
+      <p>Er zijn nog geen snapshots.</p>
+    </div>
+  {% endif %}
+
+  {% for it in items %}
+    <div class="card">
+      <h2 style="margin:0 0 6px 0;">{{ it.name }}</h2>
+      <div class="muted">{{ it.dt_str }}</div>
+      <div style="margin-top:10px;">
+        <img alt="Snapshot van {{ it.name }} op {{ it.dt_str }}"
+             src="{{ url_for('snapshot_file', filename=it.filename) }}">
       </div>
-    {% endfor %}
-  </div>
-</body>
-</html>
+      <div style="margin-top:8px;" class="muted mono">{{ it.filename }}</div>
+    </div>
+  {% endfor %}
+{% endblock %}

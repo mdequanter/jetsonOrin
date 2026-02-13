@@ -288,7 +288,7 @@ def main():
     ap.add_argument("--topk", type=int, default=5000)
 
     # Herkenning (confidence)
-    ap.add_argument("--threshold", type=float, default=0.50)
+    ap.add_argument("--threshold", type=float, default=0.70)
     ap.add_argument("--margin", type=float, default=0.06)
 
     # Entry / leave

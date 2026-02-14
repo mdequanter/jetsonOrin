@@ -5,13 +5,27 @@
   <h1>Camerastream</h1>
 
   <div class="card">
-    <p class="muted">
-      Live beeld van de camera. Als je herkenning draait, kan de camera bezet zijn.
-    </p>
-    <img
-      src="{{ url_for('video_feed') }}"
-      alt="Live camerastream"
-      style="width:100%; max-width:900px;"
-    />
+    <p>Status: <strong>{{ "ACTIEF" if stream_on else "UIT" }}</strong></p>
+
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      {% if not stream_on %}
+        <form action="{{ url_for('camera_start') }}" method="post">
+          <button class="btn btn-primary" type="submit">Start stream</button>
+        </form>
+      {% else %}
+        <form action="{{ url_for('camera_stop') }}" method="post">
+          <button class="btn btn-danger" type="submit">Stop stream</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <div style="margin-top:14px;">
+      {% if stream_on %}
+        <img src="{{ url_for('video_feed') }}" alt="Live camerastream"
+             style="width:100%; max-width:900px; border-radius:12px;">
+      {% else %}
+        <p class="muted">Stream staat uit. Klik op “Start stream” om live beeld te zien.</p>
+      {% endif %}
+    </div>
   </div>
 {% endblock %}

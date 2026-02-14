@@ -121,36 +121,63 @@ def list_known_people():
     return people
 
 
-# ---- Camera streaming (MJPEG) ----
 _camera = None
 _camera_lock = threading.Lock()
+_stream_enabled = False
+_stream_lock = threading.Lock()
 
 def get_camera(cam_index=0):
     global _camera
     with _camera_lock:
         if _camera is None or not _camera.isOpened():
             _camera = cv2.VideoCapture(cam_index)
-            # Optioneel: zet resolutie
             _camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         return _camera
 
+def release_camera():
+    global _camera
+    with _camera_lock:
+        if _camera is not None:
+            try:
+                _camera.release()
+            except Exception:
+                pass
+        _camera = None
+
+def is_stream_enabled():
+    with _stream_lock:
+        return _stream_enabled
+
+def set_stream_enabled(val: bool):
+    global _stream_enabled
+    with _stream_lock:
+        _stream_enabled = val
+
 def gen_frames():
+    # Wacht tot stream aan staat (of stop meteen)
+    while not is_stream_enabled():
+        time.sleep(0.1)
+
     cam = get_camera(0)
+
     while True:
+        # Als iemand op "stop" drukt: stop generator + release camera
+        if not is_stream_enabled():
+            release_camera()
+            return  # <-- beëindigt de HTTP stream netjes
+
         ok, frame = cam.read()
-        if not ok:
+        if not ok or frame is None:
             time.sleep(0.05)
             continue
 
-        # JPEG encode
         ok, buffer = cv2.imencode(".jpg", frame)
         if not ok:
             continue
 
         frame_bytes = buffer.tobytes()
 
-        # MJPEG chunk
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
@@ -206,9 +233,24 @@ def snapshot_file(filename):
 def camera_page():
     return render_template("camera.html")
 
+@app.route("/camera/start", methods=["POST"])
+def camera_start():
+    set_stream_enabled(True)
+    return redirect(url_for("camera_page"))
+
+@app.route("/camera/stop", methods=["POST"])
+def camera_stop():
+    set_stream_enabled(False)
+    release_camera()
+    return redirect(url_for("camera_page"))
+
 @app.route("/video_feed")
 def video_feed():
+    # Als stream niet aan staat: geen feed (voorkomt eindeloos reconnecten)
+    if not is_stream_enabled():
+        return ("", 204)  # No Content
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

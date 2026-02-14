@@ -1,10 +1,13 @@
-from flask import Flask, render_template, send_from_directory, jsonify, redirect, url_for
+from flask import Flask, render_template, send_from_directory, jsonify, redirect, url_for, Response
 import os
 import re
 from datetime import datetime
 import subprocess
 import threading
 from collections import deque
+import cv2
+import time
+
 
 app = Flask(__name__)
 
@@ -117,6 +120,43 @@ def list_known_people():
     people.sort(key=lambda s: s.lower())
     return people
 
+
+# ---- Camera streaming (MJPEG) ----
+_camera = None
+_camera_lock = threading.Lock()
+
+def get_camera(cam_index=0):
+    global _camera
+    with _camera_lock:
+        if _camera is None or not _camera.isOpened():
+            _camera = cv2.VideoCapture(cam_index)
+            # Optioneel: zet resolutie
+            _camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        return _camera
+
+def gen_frames():
+    cam = get_camera(0)
+    while True:
+        ok, frame = cam.read()
+        if not ok:
+            time.sleep(0.05)
+            continue
+
+        # JPEG encode
+        ok, buffer = cv2.imencode(".jpg", frame)
+        if not ok:
+            continue
+
+        frame_bytes = buffer.tobytes()
+
+        # MJPEG chunk
+        yield (b"--frame\r\n"
+               b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+
+
+
+
 # ---- Routes ----
 @app.route("/")
 def index():
@@ -160,6 +200,16 @@ def api_personen_log():
 @app.route("/snapshots/<path:filename>")
 def snapshot_file(filename):
     return send_from_directory(SNAPSHOT_DIR, filename)
+
+
+@app.route("/camera")
+def camera_page():
+    return render_template("camera.html")
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

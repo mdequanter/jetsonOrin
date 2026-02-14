@@ -200,16 +200,7 @@ def api_personen_log():
 @app.route("/snapshots/<path:filename>")
 def snapshot_file(filename):
     return send_from_directory(SNAPSHOT_DIR, filename)
-
-
-@app.route("/camera")
-def camera_page():
-    return render_template("camera.html")
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
-
+    
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

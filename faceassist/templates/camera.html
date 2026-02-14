@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% set title = "Camerastream" %}
+
+{% block content %}
+  <h1>Camerastream</h1>
+
+  <div class="card">
+    <p class="muted">
+      Live beeld van de camera. Als je herkenning draait, kan de camera bezet zijn.
+    </p>
+    <img
+      src="{{ url_for('video_feed') }}"
+      alt="Live camerastream"
+      style="width:100%; max-width:900px;"
+    />
+  </div>
+{% endblock %}

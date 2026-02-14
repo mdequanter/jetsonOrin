@@ -231,7 +231,7 @@ def snapshot_file(filename):
     
 @app.route("/camera")
 def camera_page():
-    return render_template("camera.html")
+    return render_template("camera.html", stream_on=is_stream_enabled())
 
 @app.route("/camera/start", methods=["POST"])
 def camera_start():

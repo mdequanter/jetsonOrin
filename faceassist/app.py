@@ -98,16 +98,20 @@ def load_known_embeddings():
     known = {}
     if not os.path.isdir(KNOWN_DIR):
         return known
+    
+    print(f"Looking in {KNOWN_DIR} for .npz files...")
     for fn in os.listdir(KNOWN_DIR):
         if not fn.lower().endswith(".npz"):
             continue
         name = os.path.splitext(fn)[0]
         path = os.path.join(KNOWN_DIR, fn)
+        print(f"Loading {name} from {path}...")
         try:
             data = np.load(path)
             feats = data["features"].astype(np.float32)
             if feats.ndim == 2 and len(feats) > 0:
                 known[name] = feats
+                print(f"Loaded {len(feats)} features for {name}.")
         except Exception:
             continue
     return known

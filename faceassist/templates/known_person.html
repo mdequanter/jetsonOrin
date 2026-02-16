@@ -22,6 +22,10 @@
             <img alt="{{ fn }}" src="{{ url_for('known_person_file', person=person, filename=fn) }}" style="width:100%; height:100%; object-fit:contain;">
           </a>
         </div>
+        <form action="{{ url_for('known_delete_photo', person=person) }}" method="post" style="margin-top:10px;" onsubmit="return confirm('Ben je zeker dat je foto {{ fn }} wil verwijderen?');">
+          <input type="hidden" name="filename" value="{{ fn }}">
+          <button class="btn btn-danger" type="submit">Verwijder foto</button>
+        </form>
       </div>
     {% endfor %}
   </div>

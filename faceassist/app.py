@@ -1026,6 +1026,49 @@ def known_person_file(person, filename):
     return send_from_directory(person_dir, filename)
 
 
+@app.route("/known/<person>/delete-photo", methods=["POST"])
+def known_delete_photo(person):
+    person_dir, npz_path = resolve_known_person_dir(person)
+    if person_dir is None or not os.path.isdir(person_dir):
+        return redirect(url_for("unknown_page", level="error", msg="Persoon/map bestaat niet (meer)."))
+
+    filename = os.path.basename((request.form.get("filename") or "").strip())
+    if not filename:
+        return redirect(url_for("known_person_page", person=person))
+    if not is_allowed_image_filename(filename):
+        return redirect(url_for("known_person_page", person=person))
+
+    photo_path = os.path.join(person_dir, filename)
+    if not os.path.isfile(photo_path):
+        return redirect(
+            url_for(
+                "known_person_page",
+                person=person,
+            )
+        )
+
+    try:
+        os.remove(photo_path)
+    except Exception as e:
+        return redirect(url_for("unknown_page", level="error", msg=f"Foto verwijderen mislukt: {e}"))
+
+    # Houd .npz in sync met de resterende foto's.
+    try:
+        feats, total, _ = extract_features_from_unknown_folder(person_dir, min_face=80)
+        if total == 0 or len(feats) == 0:
+            if os.path.isfile(npz_path):
+                os.remove(npz_path)
+            msg = f"Foto verwijderd. Geen bruikbare foto's meer voor {person}; {person}.npz verwijderd."
+        else:
+            np.savez_compressed(npz_path, features=np.stack(feats, axis=0))
+            msg = f"Foto verwijderd. {person}.npz opnieuw opgebouwd met {len(feats)} features."
+    except Exception as e:
+        msg = f"Foto verwijderd, maar .npz heropbouwen mislukt: {e}"
+        return redirect(url_for("unknown_page", level="error", msg=msg))
+
+    return redirect(url_for("unknown_page", level="ok", msg=msg))
+
+
 @app.route("/known/delete", methods=["POST"])
 def known_delete():
     person = (request.form.get("person") or "").strip()

@@ -5,6 +5,24 @@
   <h1>Unknown gezichten</h1>
   <p class="muted">Maak een nieuwe persoon op basis van foto's in <span class="mono">unknown/YYMMDD_HHMMSS/</span>.</p>
 
+  <div class="card">
+    <h2 style="margin:0 0 10px 0;">Nieuwe persoon uploaden (map met foto's)</h2>
+    <form action="{{ url_for('unknown_upload_enroll') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="upload_name" class="muted">Naam:</label>
+      <input id="upload_name" name="name" type="text" required
+             placeholder="Bijv. Lisa"
+             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+
+      <input name="photos" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple webkitdirectory directory
+             style="font-size:16px;">
+
+      <button class="btn btn-primary" type="submit">Upload en maak gezicht</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">
+      Kies bij voorkeur een map met meerdere foto's van dezelfde persoon.
+    </p>
+  </div>
+
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
       <strong>{{ msg }}</strong>

@@ -2,6 +2,7 @@ from flask import Flask, render_template, send_from_directory, jsonify, redirect
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime
 import subprocess
 import threading
@@ -75,6 +76,11 @@ def iter_image_files(folder: str):
             files.append(fn)
     files.sort()
     return files
+
+
+def is_allowed_image_filename(filename: str) -> bool:
+    ext = os.path.splitext((filename or "").lower())[1]
+    return ext in (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -470,6 +476,67 @@ def unknown_delete():
         return redirect(url_for("unknown_page", level="error", msg=f"Verwijderen mislukt: {e}"))
 
     return redirect(url_for("unknown_page", level="ok", msg=f"Map {session} verwijderd."))
+
+
+@app.route("/unknown/upload-enroll", methods=["POST"])
+def unknown_upload_enroll():
+    raw_name = (request.form.get("name") or "").strip()
+    person = sanitize_person_name(raw_name)
+    if not person:
+        return redirect(url_for("unknown_page", level="error", msg="Naam is ongeldig of leeg."))
+
+    uploaded = request.files.getlist("photos")
+    if not uploaded:
+        return redirect(url_for("unknown_page", level="error", msg="Geen foto's geupload."))
+
+    tmp_dir = os.path.join(BASE_DIR, "_tmp_uploads", uuid.uuid4().hex)
+    os.makedirs(tmp_dir, exist_ok=True)
+    saved = 0
+
+    try:
+        for f in uploaded:
+            if not f or not f.filename:
+                continue
+
+            rel = f.filename.replace("\\", "/")
+            rel = os.path.basename(rel)
+            if not is_allowed_image_filename(rel):
+                continue
+
+            safe_name = sanitize_person_name(os.path.splitext(rel)[0]) or f"img_{saved+1:04d}"
+            ext = os.path.splitext(rel)[1].lower()
+            out_name = f"{saved+1:04d}_{safe_name}{ext}"
+            out_path = os.path.join(tmp_dir, out_name)
+            f.save(out_path)
+            saved += 1
+
+        if saved == 0:
+            return redirect(url_for("unknown_page", level="error", msg="Geen geldige image-bestanden gevonden."))
+
+        feats, total, skipped = extract_features_from_unknown_folder(tmp_dir, min_face=80)
+    except Exception as e:
+        return redirect(url_for("unknown_page", level="error", msg=f"Upload verwerken mislukt: {e}"))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if len(feats) < 3:
+        return redirect(
+            url_for(
+                "unknown_page",
+                level="error",
+                msg=f"Te weinig bruikbare gezichten uit upload ({len(feats)}/{total}). Minimaal 3 nodig.",
+            )
+        )
+
+    os.makedirs(KNOWN_DIR, exist_ok=True)
+    out_path = os.path.join(KNOWN_DIR, f"{person}.npz")
+    overwritten = os.path.exists(out_path)
+    np.savez_compressed(out_path, features=np.stack(feats, axis=0))
+
+    msg = f"{person} opgeslagen vanuit upload met {len(feats)} features (geskipt: {skipped}, totaal: {total})."
+    if overwritten:
+        msg = f"{person} overschreven. " + msg
+    return redirect(url_for("unknown_page", level="ok", msg=msg))
 
 @app.route("/camera/start", methods=["POST"])
 def camera_start():

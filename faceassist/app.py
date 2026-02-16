@@ -94,27 +94,56 @@ def sanitize_person_name(name: str) -> str:
 
 
 def load_known_embeddings():
-    print ("Loading known embeddings...")
+    print("Loading known embeddings...")
     known = {}
     if not os.path.isdir(KNOWN_DIR):
+        print(f"KNOWN_DIR does not exist: {KNOWN_DIR}")
         return known
-    
+
     print(f"Looking in {KNOWN_DIR} for .npz files...")
     for fn in os.listdir(KNOWN_DIR):
         if not fn.lower().endswith(".npz"):
             continue
+
         name = os.path.splitext(fn)[0]
         path = os.path.join(KNOWN_DIR, fn)
         print(f"Loading {name} from {path}...")
+
         try:
-            data = np.load(path)
-            feats = data["features"].astype(np.float32)
-            print(f"Loaded features shape: {feats.shape}")
-            if feats.ndim == 2 and len(feats) > 0:
+            data = np.load(path, allow_pickle=True)
+            keys = list(data.keys())
+            print(f"Available keys in {fn}: {keys}")
+
+            # Prefer common keys, then fallback to first available key.
+            key = None
+            for candidate in ("features", "embeddings", "feats", "emb", "arr_0"):
+                if candidate in data:
+                    key = candidate
+                    break
+            if key is None and keys:
+                key = keys[0]
+
+            if key is None:
+                print(f"[WARN] {fn}: no arrays found in npz.")
+                continue
+
+            feats = np.asarray(data[key], dtype=np.float32)
+            print(f"Loaded key '{key}' with shape: {feats.shape}")
+
+            # Accept single embedding vectors as well.
+            if feats.ndim == 1:
+                feats = feats.reshape(1, -1)
+
+            if feats.ndim == 2 and feats.shape[0] > 0 and feats.shape[1] > 0:
                 known[name] = feats
-                print(f"Loaded {len(feats)} features for {name}.")
-        except Exception:
+                print(f"Loaded {feats.shape[0]} features for {name}.")
+            else:
+                print(f"[WARN] {fn}: unsupported feature shape {feats.shape}.")
+        except Exception as e:
+            print(f"[WARN] Failed loading {path}: {e}")
             continue
+
+    print(f"Known identities loaded: {len(known)}")
     return known
 
 

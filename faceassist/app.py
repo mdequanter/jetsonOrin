@@ -142,6 +142,34 @@ def resolve_unknown_session_dir(session: str):
         return None
     return session_dir
 
+
+def move_unknown_session_images_to_known(session_dir: str, person: str, session: str):
+    """
+    Verplaatst snapshots van unknown/<session>/ naar known/<person>/.
+    Bestandsnamen krijgen een session-prefix om collisions te vermijden.
+    """
+    person_dir = os.path.join(KNOWN_DIR, person)
+    os.makedirs(person_dir, exist_ok=True)
+
+    files = iter_image_files(session_dir)
+    moved = 0
+    for idx, fn in enumerate(files, start=1):
+        src = os.path.join(session_dir, fn)
+        ext = os.path.splitext(fn)[1].lower() or ".jpg"
+        base = f"{session}_{idx:04d}"
+        dst = os.path.join(person_dir, f"{base}{ext}")
+
+        # Unieke naam forceren als bestand al bestaat.
+        n = 1
+        while os.path.exists(dst):
+            dst = os.path.join(person_dir, f"{base}_{n}{ext}")
+            n += 1
+
+        shutil.move(src, dst)
+        moved += 1
+
+    return person_dir, moved
+
 # ---- Herkenning procesbeheer ----
 RECOGNITION_SCRIPT = os.path.join(BASE_DIR, "nl_launch.py")  # hetzelfde pad als jouw upload/bronbestand :contentReference[oaicite:1]{index=1}
 _recognition_proc = None
@@ -617,7 +645,22 @@ def unknown_enroll():
     overwritten = os.path.exists(out_path)
     np.savez_compressed(out_path, features=np.stack(feats, axis=0))
 
-    msg = f"{person} opgeslagen met {len(feats)} features (geskipt: {skipped}, totaal: {total})."
+    try:
+        person_dir, moved_count = move_unknown_session_images_to_known(session_dir, person, session)
+        shutil.rmtree(session_dir, ignore_errors=True)
+    except Exception as e:
+        return redirect(
+            url_for(
+                "unknown_page",
+                level="error",
+                msg=f".npz opgeslagen, maar foto's verplaatsen/verwijderen mislukte: {e}",
+            )
+        )
+
+    msg = (
+        f"{person} opgeslagen met {len(feats)} features (geskipt: {skipped}, totaal: {total}). "
+        f"{moved_count} foto's verplaatst naar {person_dir}. Unknown map verwijderd."
+    )
     if overwritten:
         msg = f"{person} overschreven. " + msg
     return redirect(url_for("unknown_page", level="ok", msg=msg))

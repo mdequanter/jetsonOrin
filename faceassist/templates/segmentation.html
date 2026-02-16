@@ -17,6 +17,7 @@
     <p>Model: <span class="mono">{{ model_path }}</span></p>
     <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>
     <p>Heading: <strong id="seg_heading">{{ '%.2f'|format(heading) }}</strong></p>
+    <p>Laatste fout: <span id="seg_error" class="mono muted"></span></p>
 
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not running %}
@@ -47,6 +48,7 @@
         const data = await res.json();
         document.getElementById("seg_connected").textContent = data.connected ? "JA" : "NEE";
         document.getElementById("seg_heading").textContent = Number(data.heading || 0).toFixed(2);
+        document.getElementById("seg_error").textContent = data.last_error || "";
       } catch (e) { }
     }
     setInterval(refreshSegStatus, 1000);

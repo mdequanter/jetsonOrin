@@ -411,26 +411,111 @@ def set_stream_enabled(val: bool):
 
 
 def decode_signal_message_to_frame(msg):
-    print (f"Decoding message of type {type(msg)}")
-    print (f"Message content (truncated): {str(msg)[:100]}")  # Log de eerste 100 tekens van het bericht
-    try:
-        if isinstance(msg, (bytes, bytearray)):
-            jpeg_bytes = bytes(msg)
-        elif isinstance(msg, str):
-            try:
-                payload = json.loads(msg)
-            except json.JSONDecodeError:
-                return None
-            b64 = payload.get("data")
-            if not b64:
-                return None
-            jpeg_bytes = base64.b64decode(b64)
-        else:
+    def _decode_data_url(s: str):
+        if not s.startswith("data:image"):
+            return None
+        parts = s.split(",", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            return base64.b64decode(parts[1])
+        except Exception:
             return None
 
+    def _decode_base64_str(s: str):
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            return base64.b64decode(s, validate=False)
+        except Exception:
+            return None
+
+    def _bytes_to_frame(jpeg_bytes: bytes):
         np_arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        return frame
+        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+    def _extract_b64_from_payload(payload):
+        if isinstance(payload, dict):
+            # meest voorkomende keys
+            for key in ("data", "image", "frame", "jpeg", "img", "blob"):
+                val = payload.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+            # nested payloads
+            for key in ("payload", "frame", "message"):
+                val = payload.get(key)
+                if isinstance(val, dict):
+                    nested = _extract_b64_from_payload(val)
+                    if nested:
+                        return nested
+        return None
+
+    try:
+        if isinstance(msg, (bytes, bytearray)):
+            raw = bytes(msg)
+
+            # Soms komt JSON als bytes binnen.
+            if raw[:1] in (b"{", b"["):
+                try:
+                    txt = raw.decode("utf-8", errors="ignore")
+                    payload = json.loads(txt)
+                    b64 = _extract_b64_from_payload(payload)
+                    if b64:
+                        jpeg_bytes = _decode_data_url(b64) or _decode_base64_str(b64)
+                        if jpeg_bytes:
+                            frame = _bytes_to_frame(jpeg_bytes)
+                            if frame is not None:
+                                return frame
+                except Exception:
+                    pass
+
+            # Eerst proberen als raw jpeg bytes.
+            frame = _bytes_to_frame(raw)
+            if frame is not None:
+                return frame
+
+            # Fallback: bytes bevatten base64-tekst.
+            try:
+                txt = raw.decode("utf-8", errors="ignore")
+                jpeg_bytes = _decode_data_url(txt) or _decode_base64_str(txt)
+                if jpeg_bytes:
+                    return _bytes_to_frame(jpeg_bytes)
+            except Exception:
+                return None
+            return None
+        elif isinstance(msg, str):
+            text = msg.strip()
+
+            # Data URL rechtstreeks.
+            jpeg_bytes = _decode_data_url(text)
+            if jpeg_bytes:
+                frame = _bytes_to_frame(jpeg_bytes)
+                if frame is not None:
+                    return frame
+
+            # JSON payload.
+            try:
+                payload = json.loads(text)
+                b64 = _extract_b64_from_payload(payload)
+                if b64:
+                    jpeg_bytes = _decode_data_url(b64) or _decode_base64_str(b64)
+                    if jpeg_bytes:
+                        frame = _bytes_to_frame(jpeg_bytes)
+                        if frame is not None:
+                            return frame
+            except json.JSONDecodeError:
+                pass
+
+            # Plain base64 string.
+            jpeg_bytes = _decode_base64_str(text)
+            if jpeg_bytes:
+                frame = _bytes_to_frame(jpeg_bytes)
+                if frame is not None:
+                    return frame
+            return None
+        else:
+            return None
     except Exception:
         return None
 

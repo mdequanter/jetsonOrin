@@ -560,7 +560,7 @@ async def segmentation_ws_loop(stop_event: threading.Event):
                             pass
 
                     frame = decode_signal_message_to_frame(msg)
-                    print ("Received frame")
+                    print (f"Received frame {msg}")
                     if frame is None:
                         continue
 

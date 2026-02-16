@@ -411,6 +411,8 @@ def set_stream_enabled(val: bool):
 
 
 def decode_signal_message_to_frame(msg):
+    print (f"Decoding message of type {type(msg)}")
+    print (f"Message content (truncated): {str(msg)[:100]}")  # Log de eerste 100 tekens van het bericht
     try:
         if isinstance(msg, (bytes, bytearray)):
             jpeg_bytes = bytes(msg)

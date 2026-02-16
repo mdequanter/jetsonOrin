@@ -4,6 +4,7 @@ import re
 import shutil
 import uuid
 import base64
+import asyncio
 from datetime import datetime
 import subprocess
 import threading
@@ -12,6 +13,7 @@ import cv2
 import time
 import numpy as np
 import json
+import websockets
 
 
 app = Flask(__name__)
@@ -24,6 +26,10 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 FACE_EXTRACT_TMP_DIR = os.path.join(BASE_DIR, "_tmp_face_extract")
+SIGNALING_SERVER_URL = os.environ.get("SIGNALING_SERVER_URL", "ws://127.0.0.1:9000")
+SEG_MODEL_PATH = os.path.join(BASE_DIR, "models", "unrealsim.pt")
+SEG_DETECTION_CONFIDENCE = 0.3
+SEG_SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -363,6 +369,17 @@ _face_detector = None
 _face_recognizer = None
 _known_cache = {}
 _known_cache_at = 0.0
+_seg_thread = None
+_seg_stop_event = threading.Event()
+_seg_lock = threading.Lock()
+_seg_running = False
+_seg_connected = False
+_seg_last_error = ""
+_seg_last_heading = 90.0
+_seg_last_frame_id = None
+_seg_last_jpeg = None
+_seg_last_update = 0.0
+_seg_model = None
 
 def get_camera(cam_index=0):
     global _camera
@@ -391,6 +408,232 @@ def set_stream_enabled(val: bool):
     global _stream_enabled
     with _stream_lock:
         _stream_enabled = val
+
+
+def decode_signal_message_to_frame(msg):
+    try:
+        if isinstance(msg, (bytes, bytearray)):
+            jpeg_bytes = bytes(msg)
+        elif isinstance(msg, str):
+            try:
+                payload = json.loads(msg)
+            except json.JSONDecodeError:
+                return None
+            b64 = payload.get("data")
+            if not b64:
+                return None
+            jpeg_bytes = base64.b64decode(b64)
+        else:
+            return None
+
+        np_arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        return frame
+    except Exception:
+        return None
+
+
+def get_segmentation_model():
+    global _seg_model
+    if _seg_model is not None:
+        return _seg_model
+    try:
+        from ultralytics import YOLO
+    except Exception as e:
+        raise RuntimeError(f"Ultralytics import faalde: {e}")
+    if not os.path.isfile(SEG_MODEL_PATH):
+        raise RuntimeError(f"Segmentation model niet gevonden: {SEG_MODEL_PATH}")
+    _seg_model = YOLO(SEG_MODEL_PATH, verbose=False)
+    return _seg_model
+
+
+def process_segment_frame(frame):
+    model = get_segmentation_model()
+    h, w = frame.shape[:2]
+    overlay = frame.copy()
+    results = model(frame, conf=SEG_DETECTION_CONFIDENCE, verbose=False)
+
+    midpoints = []
+    for r in results:
+        if r.masks is None or len(r.masks.data) == 0:
+            continue
+
+        mask = r.masks.data[0].cpu().numpy()
+        mask = (mask * 255).astype(np.uint8)
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        green = np.full_like(frame, (0, 255, 0))
+        blended = cv2.addWeighted(frame, 0.3, green, 0.7, 0)
+        overlay[mask > 0] = blended[mask > 0]
+
+        for rr in SEG_SCAN_HEIGHTS:
+            y = int(h * rr)
+            if y >= h:
+                continue
+            scan_row = mask[y, :]
+            idx = np.where(scan_row > 0)[0]
+            if len(idx) > 0:
+                mx = int(np.mean(idx))
+                midpoints.append((mx, y))
+                cv2.circle(overlay, (mx, y), 5, (255, 0, 0), -1)
+            cv2.line(overlay, (0, y), (w, y), (150, 150, 150), 1)
+
+    direction_angle = 90.0
+    start_point = (w // 2, h)
+    if midpoints:
+        avg_x = int(np.mean([p[0] for p in midpoints]))
+        target_point = (avg_x, min([p[1] for p in midpoints]))
+        dx = avg_x - start_point[0]
+        dy = start_point[1] - target_point[1]
+        direction_angle = float(np.degrees(np.arctan2(dy, dx)))
+        cv2.arrowedLine(overlay, start_point, target_point, (0, 0, 255), 5, tipLength=0.2)
+    else:
+        cv2.arrowedLine(overlay, start_point, (w // 2, int(h * 0.6)), (0, 0, 255), 5, tipLength=0.2)
+
+    cv2.putText(
+        overlay,
+        f"Heading: {direction_angle:.2f}",
+        (20, 36),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (255, 255, 255),
+        2,
+    )
+    return overlay, direction_angle
+
+
+def set_seg_state(**kwargs):
+    global _seg_running, _seg_connected, _seg_last_error, _seg_last_heading, _seg_last_frame_id, _seg_last_jpeg, _seg_last_update
+    with _seg_lock:
+        if "running" in kwargs:
+            _seg_running = kwargs["running"]
+        if "connected" in kwargs:
+            _seg_connected = kwargs["connected"]
+        if "last_error" in kwargs:
+            _seg_last_error = kwargs["last_error"]
+        if "last_heading" in kwargs:
+            _seg_last_heading = kwargs["last_heading"]
+        if "last_frame_id" in kwargs:
+            _seg_last_frame_id = kwargs["last_frame_id"]
+        if "last_jpeg" in kwargs:
+            _seg_last_jpeg = kwargs["last_jpeg"]
+        if "last_update" in kwargs:
+            _seg_last_update = kwargs["last_update"]
+
+
+def get_seg_state():
+    with _seg_lock:
+        return {
+            "running": _seg_running,
+            "connected": _seg_connected,
+            "last_error": _seg_last_error,
+            "heading": _seg_last_heading,
+            "frame_id": _seg_last_frame_id,
+            "has_frame": _seg_last_jpeg is not None,
+            "last_update": _seg_last_update,
+        }
+
+
+async def segmentation_ws_loop(stop_event: threading.Event):
+    set_seg_state(running=True, connected=False, last_error="")
+    pending_frame_id = None
+
+    while not stop_event.is_set():
+        try:
+            async with websockets.connect(SIGNALING_SERVER_URL, max_size=None) as ws:
+                set_seg_state(connected=True, last_error="")
+                while not stop_event.is_set():
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    frame_id = None
+                    if isinstance(msg, str):
+                        try:
+                            payload = json.loads(msg)
+                            if payload.get("type") == "frame_meta":
+                                pending_frame_id = payload.get("frame_id")
+                                continue
+                        except json.JSONDecodeError:
+                            pass
+
+                    frame = decode_signal_message_to_frame(msg)
+                    if frame is None:
+                        continue
+
+                    if isinstance(msg, (bytes, bytearray)):
+                        frame_id = pending_frame_id
+                        pending_frame_id = None
+                    elif isinstance(msg, str):
+                        try:
+                            payload = json.loads(msg)
+                            frame_id = payload.get("frame_id", pending_frame_id)
+                        except Exception:
+                            frame_id = pending_frame_id
+                        pending_frame_id = None
+
+                    overlay, heading = process_segment_frame(frame)
+                    ok, enc = cv2.imencode(".jpg", overlay)
+                    if not ok:
+                        continue
+
+                    set_seg_state(
+                        last_jpeg=enc.tobytes(),
+                        last_heading=float(heading),
+                        last_frame_id=frame_id,
+                        last_update=time.time(),
+                    )
+
+                    try:
+                        await ws.send(json.dumps({"heading": round(float(heading), 2), "frame_id": frame_id}))
+                    except Exception:
+                        pass
+        except Exception as e:
+            set_seg_state(connected=False, last_error=str(e))
+            await asyncio.sleep(1.0)
+
+    set_seg_state(running=False, connected=False)
+
+
+def segmentation_thread_target(stop_event: threading.Event):
+    asyncio.run(segmentation_ws_loop(stop_event))
+
+
+def start_segmentation_stream():
+    global _seg_thread
+    st = get_seg_state()
+    if st["running"]:
+        return
+    _seg_stop_event.clear()
+    _seg_thread = threading.Thread(target=segmentation_thread_target, args=(_seg_stop_event,), daemon=True)
+    _seg_thread.start()
+
+
+def stop_segmentation_stream():
+    global _seg_thread
+    _seg_stop_event.set()
+    if _seg_thread is not None and _seg_thread.is_alive():
+        _seg_thread.join(timeout=2.0)
+    _seg_thread = None
+
+
+def gen_segmentation_frames():
+    while True:
+        st = get_seg_state()
+        if not st["running"]:
+            return
+
+        with _seg_lock:
+            frame_bytes = _seg_last_jpeg
+        if frame_bytes is None:
+            time.sleep(0.05)
+            continue
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
 
 def gen_frames():
     # Wacht tot stream aan staat (of stop meteen)
@@ -762,6 +1005,45 @@ def camera_page():
         capture_name=request.args.get("name", ""),
     )
 
+@app.route("/segmentation")
+def segmentation_page():
+    st = get_seg_state()
+    return render_template(
+        "segmentation.html",
+        running=st["running"],
+        connected=st["connected"],
+        heading=st["heading"],
+        msg=request.args.get("msg", ""),
+        level=request.args.get("level", "info"),
+        signaling_server=SIGNALING_SERVER_URL,
+        model_path=SEG_MODEL_PATH,
+    )
+
+@app.route("/segmentation/start", methods=["POST"])
+def segmentation_start():
+    try:
+        start_segmentation_stream()
+        return redirect(url_for("segmentation_page", level="ok", msg="Segmentatie gestart."))
+    except Exception as e:
+        return redirect(url_for("segmentation_page", level="error", msg=f"Start mislukt: {e}"))
+
+@app.route("/segmentation/stop", methods=["POST"])
+def segmentation_stop():
+    stop_segmentation_stream()
+    return redirect(url_for("segmentation_page", level="ok", msg="Segmentatie gestopt."))
+
+@app.route("/segmentation_feed")
+def segmentation_feed():
+    st = get_seg_state()
+    if not st["running"]:
+        return ("", 204)
+    return Response(gen_segmentation_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+@app.route("/api/segmentation/status")
+def api_segmentation_status():
+    st = get_seg_state()
+    return jsonify(st)
+
 @app.route("/annotate-photo", methods=["GET", "POST"])
 def annotate_photo_page():
     msg = ""
@@ -1003,42 +1285,46 @@ def unknown_process_page():
     items = []
 
     known = load_known_embeddings()
-    with _face_lock:
-        detector, recognizer = _get_face_models()
-        for fn in files:
-            p = os.path.join(UNKNOWN_DIR, fn)
-            suggested_name = ""
-            suggested_score = ""
-            best_name = ""
-            best_score = ""
+    try:
+        with _face_lock:
+            detector, recognizer = _get_face_models()
+            for fn in files:
+                p = os.path.join(UNKNOWN_DIR, fn)
+                suggested_name = ""
+                suggested_score = ""
+                best_name = ""
+                best_score = ""
 
-            img = cv2.imread(p)
-            if img is not None:
-                h, w = img.shape[:2]
-                detector.setInputSize((w, h))
-                _, faces = detector.detect(img)
-                face = _largest_face(faces)
-                if face is not None:
-                    try:
-                        aligned = recognizer.alignCrop(img, face)
-                        feat = recognizer.feature(aligned).astype(np.float32)
-                        bname, bscore, sscore = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
-                        if bname:
-                            best_name = bname
-                            best_score = f"{bscore:.4f}"
-                            if (bscore >= 0.70) and ((bscore - sscore) >= 0.06):
-                                suggested_name = bname
-                                suggested_score = f"{bscore:.4f}"
-                    except Exception:
-                        pass
+                img = cv2.imread(p)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    detector.setInputSize((w, h))
+                    _, faces = detector.detect(img)
+                    face = _largest_face(faces)
+                    if face is not None:
+                        try:
+                            aligned = recognizer.alignCrop(img, face)
+                            feat = recognizer.feature(aligned).astype(np.float32)
+                            bname, bscore, sscore = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                            if bname:
+                                best_name = bname
+                                best_score = f"{bscore:.4f}"
+                                if (bscore >= 0.70) and ((bscore - sscore) >= 0.06):
+                                    suggested_name = bname
+                                    suggested_score = f"{bscore:.4f}"
+                        except Exception:
+                            pass
 
-            items.append({
-                "filename": fn,
-                "suggested_name": suggested_name,
-                "suggested_score": suggested_score,
-                "best_name": best_name,
-                "best_score": best_score,
-            })
+                items.append({
+                    "filename": fn,
+                    "suggested_name": suggested_name,
+                    "suggested_score": suggested_score,
+                    "best_name": best_name,
+                    "best_score": best_score,
+                })
+    except Exception as e:
+        msg = f"Analyse niet beschikbaar: {e}"
+        level = "error"
 
     return render_template("unknown_process.html", items=items, msg=msg, level=level)
 

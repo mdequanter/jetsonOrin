@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% set title = "Segmentatie" %}
+
+{% block content %}
+  <h1>Segmentatie</h1>
+  <p class="muted">Live segmentatie + heading berekening (zoals in <span class="mono">segmentVideo.py</span>).</p>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <p>Status: <strong>{{ "ACTIEF" if running else "UIT" }}</strong></p>
+    <p>Signaling: <span class="mono">{{ signaling_server }}</span></p>
+    <p>Model: <span class="mono">{{ model_path }}</span></p>
+    <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>
+    <p>Heading: <strong id="seg_heading">{{ '%.2f'|format(heading) }}</strong></p>
+
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      {% if not running %}
+        <form action="{{ url_for('segmentation_start') }}" method="post">
+          <button class="btn btn-primary" type="submit">Start segmentatie</button>
+        </form>
+      {% else %}
+        <form action="{{ url_for('segmentation_stop') }}" method="post">
+          <button class="btn btn-danger" type="submit">Stop segmentatie</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <div style="margin-top:14px;">
+      {% if running %}
+        <img src="{{ url_for('segmentation_feed') }}" alt="Live segmentatie"
+             style="width:100%; max-width:1000px; border-radius:12px;">
+      {% else %}
+        <p class="muted">Segmentatie staat uit. Klik op "Start segmentatie".</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <script>
+    async function refreshSegStatus() {
+      try {
+        const res = await fetch("{{ url_for('api_segmentation_status') }}", { cache: "no-store" });
+        const data = await res.json();
+        document.getElementById("seg_connected").textContent = data.connected ? "JA" : "NEE";
+        document.getElementById("seg_heading").textContent = Number(data.heading || 0).toFixed(2);
+      } catch (e) { }
+    }
+    setInterval(refreshSegStatus, 1000);
+  </script>
+{% endblock %}

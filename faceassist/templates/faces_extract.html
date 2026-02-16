@@ -29,7 +29,7 @@
         {% for e in manifest.entries %}
           <div class="card" style="margin:10px 0;">
             <div class="mono" style="margin-bottom:8px;">Gezicht {{ e.id }} | bron: {{ e.source_filename }} | box: {{ e.box[0] }}, {{ e.box[1] }}, {{ e.box[2] }}, {{ e.box[3] }}</div>
-            <img alt="Gezicht {{ e.id }}" src="{{ url_for('faces_extract_tmp_file', session=manifest.session, filename=e.image) }}" style="max-height:220px; object-fit:contain;">
+            <img alt="Gezicht {{ e.id }}" src="{{ url_for('faces_extract_tmp_file', session=manifest.session, filename=e.image) }}" style="max-height:300px; object-fit:contain;">
             <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
               <label for="name_{{ e.id }}" class="muted">Naam:</label>
               <input id="name_{{ e.id }}" name="name_{{ e.id }}" type="text" value="{{ e.suggested_name or '' }}" placeholder="Bijv. Jan" style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">

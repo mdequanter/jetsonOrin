@@ -11,8 +11,6 @@
   {% endif %}
 
   <div class="card">
-    <p>Status: <strong>{{ "ACTIEF" if stream_on else "UIT" }}</strong></p>
-
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not stream_on %}
         <form action="{{ url_for('camera_start') }}" method="post">

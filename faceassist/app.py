@@ -370,6 +370,8 @@ _stream_lock = threading.Lock()
 _face_lock = threading.Lock()
 _face_detector = None
 _face_recognizer = None
+_known_cache = {}
+_known_cache_at = 0.0
 
 def get_camera(cam_index=0):
     global _camera
@@ -419,22 +421,44 @@ def gen_frames():
 
         out = frame.copy()
         try:
+            known = get_known_embeddings_cached(refresh_sec=5.0)
             with _face_lock:
-                detector, _ = _get_face_models()
+                detector, recognizer = _get_face_models()
                 h, w = out.shape[:2]
                 detector.setInputSize((w, h))
                 _, faces = detector.detect(out)
                 if faces is not None and len(faces) > 0:
                     for i, face in enumerate(faces, start=1):
                         x, y, fw, fh = face[:4].astype(int)
-                        cv2.rectangle(out, (x, y), (x + fw, y + fh), (0, 255, 0), 2)
+                        label = "Onbekend"
+                        color = (0, 0, 255)
+                        score_txt = ""
+
+                        try:
+                            aligned = recognizer.alignCrop(out, face)
+                            feat = recognizer.feature(aligned).astype(np.float32)
+                            best_name, best_score, second_score = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                            confident = (
+                                best_name is not None
+                                and (best_score >= 0.70)
+                                and ((best_score - second_score) >= 0.06)
+                            )
+                            if confident:
+                                label = best_name
+                                color = (0, 255, 0)
+                            if best_score >= 0:
+                                score_txt = f" {best_score:.2f}"
+                        except Exception:
+                            pass
+
+                        cv2.rectangle(out, (x, y), (x + fw, y + fh), color, 2)
                         cv2.putText(
                             out,
-                            f"Face {i}",
+                            f"{label}{score_txt}",
                             (max(0, x), max(20, y - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.6,
-                            (0, 255, 0),
+                            color,
                             2,
                         )
         except Exception:
@@ -523,6 +547,16 @@ def _get_face_models():
     )
     _face_recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
     return _face_detector, _face_recognizer
+
+
+def get_known_embeddings_cached(refresh_sec: float = 5.0):
+    global _known_cache, _known_cache_at
+    now = time.time()
+    if _known_cache and (now - _known_cache_at) < refresh_sec:
+        return _known_cache
+    _known_cache = load_known_embeddings()
+    _known_cache_at = now
+    return _known_cache
 
 
 def _best_match(recognizer, feat: np.ndarray, known: dict):

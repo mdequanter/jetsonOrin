@@ -31,6 +31,7 @@ import subprocess
 import queue as pyqueue
 import sys
 import json
+import shutil
 from datetime import datetime
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -173,6 +174,24 @@ def save_unknown_photo(frame, out_dir: str, idx: int) -> str:
     path = os.path.join(out_dir, f"{idx:04d}.jpg")
     cv2.imwrite(path, frame)
     return path
+
+
+def discard_incomplete_unknown_dir(unknown_dir: str, photo_count: int, target_count: int = 20) -> None:
+    """
+    Verwijder unknown sessiemap als er minder dan target_count foto's in staan.
+    """
+    if not unknown_dir:
+        return
+    if photo_count >= target_count:
+        return
+    if not os.path.isdir(unknown_dir):
+        return
+
+    try:
+        shutil.rmtree(unknown_dir)
+        print(f"[INFO] Onvolledige unknown sessie verwijderd ({photo_count}/{target_count}): {unknown_dir}", flush=True)
+    except Exception as e:
+        print(f"[WAARSCHUWING] Kon onvolledige unknown map niet verwijderen: {unknown_dir} ({e})", flush=True)
 
 
 # -----------------------------
@@ -447,6 +466,8 @@ def main():
             face = largest_face(faces)
 
             if face is None:
+                discard_incomplete_unknown_dir(unknown_dir, unknown_photo_count, target_count=20)
+
                 # leave detection
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
@@ -465,6 +486,8 @@ def main():
 
             x, y, fw, fh = face[:4].astype(int)
             if fw < args.min_face:
+                discard_incomplete_unknown_dir(unknown_dir, unknown_photo_count, target_count=20)
+
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
                     present = False
@@ -503,6 +526,7 @@ def main():
 
                 # cooldown na vorige unknown sessie
                 if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
+                    discard_incomplete_unknown_dir(unknown_dir, unknown_photo_count, target_count=20)
                     unknown_consec = 0
                     unknown_started_at = None
                     unknown_dir = None
@@ -563,6 +587,7 @@ def main():
             last_seen = now
 
             # reset unknown tracking zodra we weer confident zijn
+            discard_incomplete_unknown_dir(unknown_dir, unknown_photo_count, target_count=20)
             unknown_consec = 0
             unknown_started_at = None
             unknown_dir = None
@@ -614,6 +639,8 @@ def main():
         print("\n[INFO] Stoppen...", flush=True)
 
     finally:
+        discard_incomplete_unknown_dir(unknown_dir, unknown_photo_count, target_count=20)
+
         cap.release()
         stop_event.set()
         if tts_queue is not None:

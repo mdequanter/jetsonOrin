@@ -1,6 +1,7 @@
 from flask import Flask, render_template, send_from_directory, jsonify, redirect, url_for, Response, request
 import os
 import re
+import shutil
 from datetime import datetime
 import subprocess
 import threading
@@ -106,6 +107,17 @@ def list_unknown_sessions():
         reverse=True,
     )
     return sessions
+
+
+def resolve_unknown_session_dir(session: str):
+    session = (session or "").strip()
+    if not session:
+        return None
+    session_dir = os.path.abspath(os.path.join(UNKNOWN_DIR, session))
+    unknown_root = os.path.abspath(UNKNOWN_DIR)
+    if os.path.commonpath([session_dir, unknown_root]) != unknown_root:
+        return None
+    return session_dir
 
 # ---- Herkenning procesbeheer ----
 RECOGNITION_SCRIPT = os.path.join(BASE_DIR, "nl_launch.py")  # hetzelfde pad als jouw upload/bronbestand :contentReference[oaicite:1]{index=1}
@@ -379,6 +391,22 @@ def unknown_page():
     )
 
 
+@app.route("/unknown/session/<session>")
+def unknown_session_page(session):
+    session_dir = resolve_unknown_session_dir(session)
+    if session_dir is None or not os.path.isdir(session_dir):
+        return redirect(url_for("unknown_page", level="error", msg="Map bestaat niet (meer)."))
+
+    _, dt_str = parse_unknown_session_name(session)
+    files = iter_image_files(session_dir)
+    return render_template(
+        "unknown_session.html",
+        session=session,
+        dt_str=dt_str,
+        files=files,
+    )
+
+
 @app.route("/unknown/<session>/<path:filename>")
 def unknown_file(session, filename):
     return send_from_directory(os.path.join(UNKNOWN_DIR, session), filename)
@@ -395,9 +423,8 @@ def unknown_enroll():
     if not person:
         return redirect(url_for("unknown_page", level="error", msg="Naam is ongeldig of leeg."))
 
-    session_dir = os.path.abspath(os.path.join(UNKNOWN_DIR, session))
-    unknown_root = os.path.abspath(UNKNOWN_DIR)
-    if os.path.commonpath([session_dir, unknown_root]) != unknown_root:
+    session_dir = resolve_unknown_session_dir(session)
+    if session_dir is None:
         return redirect(url_for("unknown_page", level="error", msg="Ongeldige mapnaam."))
     if not os.path.isdir(session_dir):
         return redirect(url_for("unknown_page", level="error", msg="Map bestaat niet meer."))
@@ -425,6 +452,24 @@ def unknown_enroll():
     if overwritten:
         msg = f"{person} overschreven. " + msg
     return redirect(url_for("unknown_page", level="ok", msg=msg))
+
+
+@app.route("/unknown/delete", methods=["POST"])
+def unknown_delete():
+    session = (request.form.get("session") or "").strip()
+    session_dir = resolve_unknown_session_dir(session)
+
+    if session_dir is None:
+        return redirect(url_for("unknown_page", level="error", msg="Ongeldige mapnaam."))
+    if not os.path.isdir(session_dir):
+        return redirect(url_for("unknown_page", level="error", msg="Map bestaat niet meer."))
+
+    try:
+        shutil.rmtree(session_dir)
+    except Exception as e:
+        return redirect(url_for("unknown_page", level="error", msg=f"Verwijderen mislukt: {e}"))
+
+    return redirect(url_for("unknown_page", level="ok", msg=f"Map {session} verwijderd."))
 
 @app.route("/camera/start", methods=["POST"])
 def camera_start():

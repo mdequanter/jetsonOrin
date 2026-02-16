@@ -24,11 +24,17 @@
 
       {% if s.preview %}
         <div style="margin-top:10px;">
-          <img alt="Preview van {{ s.folder }}"
-               src="{{ url_for('unknown_file', session=s.folder, filename=s.preview) }}"
-               style="max-height:260px; object-fit:cover;">
+          <a href="{{ url_for('unknown_session_page', session=s.folder) }}" title="Bekijk alle foto's van {{ s.folder }}">
+            <img alt="Preview van {{ s.folder }}"
+                 src="{{ url_for('unknown_file', session=s.folder, filename=s.preview) }}"
+                 style="max-height:260px; object-fit:cover;">
+          </a>
         </div>
       {% endif %}
+
+      <div style="margin-top:10px;">
+        <a href="{{ url_for('unknown_session_page', session=s.folder) }}">Bekijk alle foto's</a>
+      </div>
 
       <form action="{{ url_for('unknown_enroll') }}" method="post" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
         <input type="hidden" name="session" value="{{ s.folder }}">
@@ -37,6 +43,11 @@
                placeholder="Bijv. Jan"
                style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
         <button class="btn btn-primary" type="submit">Maak nieuw gezicht</button>
+      </form>
+
+      <form action="{{ url_for('unknown_delete') }}" method="post" style="margin-top:8px;" onsubmit="return confirm('Weet je zeker dat je map {{ s.folder }} wilt verwijderen?');">
+        <input type="hidden" name="session" value="{{ s.folder }}">
+        <button class="btn btn-danger" type="submit">Verwijder map</button>
       </form>
     </div>
   {% endfor %}

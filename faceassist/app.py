@@ -183,6 +183,20 @@ def list_unknown_sessions():
     return sessions
 
 
+def list_unknown_root_images():
+    os.makedirs(UNKNOWN_DIR, exist_ok=True)
+    files = []
+    for fn in os.listdir(UNKNOWN_DIR):
+        p = os.path.join(UNKNOWN_DIR, fn)
+        if os.path.isfile(p) and is_allowed_image_filename(fn):
+            files.append({
+                "filename": fn,
+                "mtime": os.path.getmtime(p),
+            })
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+    return [x["filename"] for x in files]
+
+
 def resolve_unknown_session_dir(session: str):
     session = (session or "").strip()
     if not session:
@@ -675,6 +689,31 @@ def extract_features_from_unknown_folder(folder_path: str, min_face: int = 80):
     return feats, len(files), skipped
 
 
+def extract_feature_from_image_path(img_path: str, min_face: int = 50):
+    img = cv2.imread(img_path)
+    if img is None:
+        return None, "READ_FAIL"
+
+    with _face_lock:
+        detector, recognizer = _get_face_models()
+        h, w = img.shape[:2]
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img)
+        face = _largest_face(faces)
+        if face is None:
+            return None, "NO_FACE"
+        fw = int(face[2])
+        if fw < min_face:
+            return None, "FACE_TOO_SMALL"
+
+        try:
+            aligned = recognizer.alignCrop(img, face)
+            feat = recognizer.feature(aligned).astype(np.float32)
+            return feat, "OK"
+        except Exception:
+            return None, "FEATURE_FAIL"
+
+
 
 
 
@@ -954,6 +993,112 @@ def faces_extract_save():
 
     msg = f"Opslaan klaar: {saved_photos} foto('s), {saved_faces} feature(s), {skipped} overgeslagen."
     return redirect(url_for("faces_extract_page", level="ok", msg=msg))
+
+
+@app.route("/unknown-process")
+def unknown_process_page():
+    msg = request.args.get("msg", "")
+    level = request.args.get("level", "info")
+    files = list_unknown_root_images()
+    items = []
+
+    known = load_known_embeddings()
+    with _face_lock:
+        detector, recognizer = _get_face_models()
+        for fn in files:
+            p = os.path.join(UNKNOWN_DIR, fn)
+            suggested_name = ""
+            suggested_score = ""
+            best_name = ""
+            best_score = ""
+
+            img = cv2.imread(p)
+            if img is not None:
+                h, w = img.shape[:2]
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(img)
+                face = _largest_face(faces)
+                if face is not None:
+                    try:
+                        aligned = recognizer.alignCrop(img, face)
+                        feat = recognizer.feature(aligned).astype(np.float32)
+                        bname, bscore, sscore = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                        if bname:
+                            best_name = bname
+                            best_score = f"{bscore:.4f}"
+                            if (bscore >= 0.70) and ((bscore - sscore) >= 0.06):
+                                suggested_name = bname
+                                suggested_score = f"{bscore:.4f}"
+                    except Exception:
+                        pass
+
+            items.append({
+                "filename": fn,
+                "suggested_name": suggested_name,
+                "suggested_score": suggested_score,
+                "best_name": best_name,
+                "best_score": best_score,
+            })
+
+    return render_template("unknown_process.html", items=items, msg=msg, level=level)
+
+
+@app.route("/unknown-process/file/<path:filename>")
+def unknown_process_file(filename):
+    return send_from_directory(UNKNOWN_DIR, filename)
+
+
+@app.route("/unknown-process/save-one", methods=["POST"])
+def unknown_process_save_one():
+    filename = os.path.basename((request.form.get("filename") or "").strip())
+    raw_name = (request.form.get("name") or "").strip()
+    person = sanitize_person_name(raw_name)
+    if not filename or not is_allowed_image_filename(filename):
+        return redirect(url_for("unknown_process_page", level="error", msg="Ongeldige bestandsnaam."))
+    if not person:
+        return redirect(url_for("unknown_process_page", level="error", msg="Naam is ongeldig of leeg."))
+
+    src = os.path.join(UNKNOWN_DIR, filename)
+    if not os.path.isfile(src):
+        return redirect(url_for("unknown_process_page", level="error", msg="Bestand bestaat niet meer."))
+
+    feat, status = extract_feature_from_image_path(src, min_face=40)
+
+    person_dir = os.path.join(KNOWN_DIR, person)
+    os.makedirs(person_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = unique_path(os.path.join(person_dir, f"{ts}_{filename}"))
+    try:
+        shutil.move(src, dst)
+    except Exception as e:
+        return redirect(url_for("unknown_process_page", level="error", msg=f"Bestand verplaatsen mislukt: {e}"))
+
+    added = 0
+    if feat is not None and feat.ndim == 1 and feat.shape[0] > 0:
+        added = append_features_for_person(person, [feat])
+
+    if added > 0:
+        msg = f"{filename} opgeslagen bij {person}. Foto + feature toegevoegd."
+    else:
+        msg = f"{filename} opgeslagen bij {person}. Foto toegevoegd, geen feature ({status})."
+    return redirect(url_for("unknown_process_page", level="ok", msg=msg))
+
+
+@app.route("/unknown-process/delete-one", methods=["POST"])
+def unknown_process_delete_one():
+    filename = os.path.basename((request.form.get("filename") or "").strip())
+    if not filename or not is_allowed_image_filename(filename):
+        return redirect(url_for("unknown_process_page", level="error", msg="Ongeldige bestandsnaam."))
+
+    p = os.path.join(UNKNOWN_DIR, filename)
+    if not os.path.isfile(p):
+        return redirect(url_for("unknown_process_page", level="error", msg="Bestand bestaat niet meer."))
+    try:
+        os.remove(p)
+    except Exception as e:
+        return redirect(url_for("unknown_process_page", level="error", msg=f"Verwijderen mislukt: {e}"))
+
+    return redirect(url_for("unknown_process_page", level="ok", msg=f"{filename} verwijderd."))
 
 
 @app.route("/faces")

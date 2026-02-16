@@ -9,11 +9,10 @@ EXTRA:
   - Om spam te vermijden: we bewaren enkel bij "BINNEN" (entry) voor bekende personen,
     en bij start van een onbekende sessie (na unknown_confirm_frames).
 
-NIEUW (gevraagd):
-- Voor iedere onbekende persoon: maak 20 foto's en sla ze op in:
-    unknown/YYMMDD_HH_MM_SS/
-      0001.jpg ... 0020.jpg
-  Je doet er verder niets mee.
+NIEUW (vereenvoudigd):
+- Voor onbekende personen slaan we face-crops rechtstreeks op in:
+    unknown/
+  (dus geen submappen).
 
 TTS (Piper):
 - Standaard voice: nl_BE-nathalie-medium.onnx (+ .json)
@@ -162,16 +161,29 @@ def save_person_snapshot(frame, name: str, out_dir: str = "snapshots") -> str:
 
 
 # -----------------------------
-# NIEUW: Unknown foto reeks (20 stuks in submap)
+# Unknown foto opslag (face-crop in unknown/)
 # -----------------------------
 
-def save_unknown_photo(frame, out_dir: str, idx: int) -> str:
+def save_unknown_photo(frame, face_row, out_dir: str, idx: int) -> str:
     """
-    Slaat een JPG op als 0001.jpg, 0002.jpg, ... in de unknown submap.
+    Slaat een face-crop op in unknown/ met unieke bestandsnaam.
     """
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"{idx:04d}.jpg")
-    cv2.imwrite(path, frame)
+    x, y, fw, fh = face_row[:4].astype(int)
+    h, w = frame.shape[:2]
+    pad_w = int(fw * 0.15)
+    pad_h = int(fh * 0.15)
+    x1 = max(0, x - pad_w)
+    y1 = max(0, y - pad_h)
+    x2 = min(w, x + fw + pad_w)
+    y2 = min(h, y + fh + pad_h)
+    crop = frame[y1:y2, x1:x2]
+    if crop is None or crop.size == 0:
+        raise RuntimeError("Lege face-crop")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(out_dir, f"{ts}_{idx:04d}.jpg")
+    cv2.imwrite(path, crop)
     return path
 
 
@@ -416,8 +428,8 @@ def main():
     unknown_started_at = None
     last_unknown_handled_at = 0.0
 
-    # NEW: unknown foto reeks
-    unknown_dir = None
+    # Unknown foto reeks (rechtstreeks in unknown/)
+    unknown_dir = "unknown"
     unknown_photo_count = 0
     unknown_photo_interval = 0.2  # 20 foto's in ~4s (pas aan)
     unknown_last_photo_at = 0.0
@@ -458,7 +470,7 @@ def main():
                 # reset unknown tracking
                 unknown_consec = 0
                 unknown_started_at = None
-                unknown_dir = None
+                unknown_dir = "unknown"
                 unknown_photo_count = 0
                 unknown_last_photo_at = 0.0
                 continue
@@ -472,7 +484,7 @@ def main():
 
                 unknown_consec = 0
                 unknown_started_at = None
-                unknown_dir = None
+                unknown_dir = "unknown"
                 unknown_photo_count = 0
                 unknown_last_photo_at = 0.0
 
@@ -489,8 +501,7 @@ def main():
             confident = (best_name is not None) and (best_score >= args.threshold) and ((best_score - second_score) >= args.margin)
 
             # -------------------------
-            # ONBEKEND: 20 foto's bewaren in unknown/YYMMDD_HH_MM_SS
-            # + 1 snapshot in snapshots/Onbekend_yyyy_mm_dd_hh_mm_ss.jpg bij start (met cooldown)
+            # ONBEKEND: 20 face-crops bewaren in unknown/
             # -------------------------
             if not confident:
                 # als er net iemand "present" was, kan die verdwijnen
@@ -505,7 +516,7 @@ def main():
                 if (now - last_unknown_handled_at) < args.cooldown_after_unknown:
                     unknown_consec = 0
                     unknown_started_at = None
-                    unknown_dir = None
+                    unknown_dir = "unknown"
                     unknown_photo_count = 0
                     unknown_last_photo_at = 0.0
                     continue
@@ -519,28 +530,17 @@ def main():
                     unknown_started_at = now
                     unknown_photo_count = 0
                     unknown_last_photo_at = 0.0
-
-                    ts_folder = datetime.now().strftime("%y%m%d_%H_%M_%S")
-                    unknown_dir = os.path.join("unknown", ts_folder)
                     os.makedirs(unknown_dir, exist_ok=True)
 
                     print(f"[INFO] Onbekende persoon gedetecteerd -> map: {unknown_dir}", flush=True)
                     if speak_enabled:
                         tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
 
-                    # 1 snapshot in snapshots/ met cooldown
-                    name_for_photo = "Onbekend"
-                    last_t = last_person_photo_at.get(name_for_photo, 0.0)
-                    if (now - last_t) >= person_photo_cooldown:
-                        p = save_person_snapshot(frame, name_for_photo, out_dir="snapshots")
-                        last_person_photo_at[name_for_photo] = now
-                        print("[OK] Snapshot opgeslagen:", p, flush=True)
-
                 # neem foto's tot 20 stuks
                 if unknown_dir is not None and unknown_photo_count < 20:
                     if (now - unknown_last_photo_at) >= unknown_photo_interval:
                         unknown_photo_count += 1
-                        p = save_unknown_photo(frame, unknown_dir, unknown_photo_count)
+                        p = save_unknown_photo(frame, face, unknown_dir, unknown_photo_count)
                         unknown_last_photo_at = now
                         print(f"[OK] Unknown foto {unknown_photo_count}/20: {p}", flush=True)
 
@@ -551,7 +551,7 @@ def main():
 
                     unknown_consec = 0
                     unknown_started_at = None
-                    unknown_dir = None
+                    unknown_dir = "unknown"
                     unknown_photo_count = 0
                     unknown_last_photo_at = 0.0
 
@@ -565,7 +565,7 @@ def main():
             # reset unknown tracking zodra we weer confident zijn
             unknown_consec = 0
             unknown_started_at = None
-            unknown_dir = None
+            unknown_dir = "unknown"
             unknown_photo_count = 0
             unknown_last_photo_at = 0.0
 

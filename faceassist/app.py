@@ -94,6 +94,7 @@ def sanitize_person_name(name: str) -> str:
 
 
 def load_known_embeddings():
+    print ("Loading known embeddings...")
     known = {}
     if not os.path.isdir(KNOWN_DIR):
         return known

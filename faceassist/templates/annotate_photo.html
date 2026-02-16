@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set title = "Foto annoteren" %}
+
+{% block content %}
+  <h1>Foto annoteren</h1>
+  <p class="muted">Upload 1 foto. Alle gedetecteerde gezichten krijgen een box + label (bekend of onbekend).</p>
+
+  <div class="card">
+    <form action="{{ url_for('annotate_photo_page') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <input name="photo" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" required style="font-size:16px;">
+      <button class="btn btn-primary" type="submit">Upload en annoteren</button>
+    </form>
+  </div>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  {% if image_b64 %}
+    <div class="card">
+      {% if filename %}
+        <div class="muted mono" style="margin-bottom:8px;">{{ filename }}</div>
+      {% endif %}
+      <img alt="Geannoteerde foto" src="data:image/jpeg;base64,{{ image_b64 }}">
+    </div>
+  {% endif %}
+
+  {% if results %}
+    <div class="card">
+      <h2 style="margin-top:0;">Resultaten</h2>
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">#</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Label</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Score</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Box (x,y,w,h)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+            <tr>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ r.idx }}</td>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ r.label }}</td>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ r.score }}</td>
+              <td class="mono" style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ r.x }}, {{ r.y }}, {{ r.w }}, {{ r.h }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

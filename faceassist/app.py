@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import uuid
+import base64
 from datetime import datetime
 import subprocess
 import threading
@@ -90,6 +91,25 @@ def sanitize_person_name(name: str) -> str:
     cleaned = SAFE_NAME_RE.sub("_", (name or "").strip())
     cleaned = cleaned.strip("_")
     return cleaned
+
+
+def load_known_embeddings():
+    known = {}
+    if not os.path.isdir(KNOWN_DIR):
+        return known
+    for fn in os.listdir(KNOWN_DIR):
+        if not fn.lower().endswith(".npz"):
+            continue
+        name = os.path.splitext(fn)[0]
+        path = os.path.join(KNOWN_DIR, fn)
+        try:
+            data = np.load(path)
+            feats = data["features"].astype(np.float32)
+            if feats.ndim == 2 and len(feats) > 0:
+                known[name] = feats
+        except Exception:
+            continue
+    return known
 
 
 def list_unknown_sessions():
@@ -296,6 +316,105 @@ def _get_face_models():
     return _face_detector, _face_recognizer
 
 
+def _best_match(recognizer, feat: np.ndarray, known: dict):
+    scores = []
+    for name, feats in known.items():
+        best = -1.0
+        for f in feats:
+            s = float(recognizer.match(feat, f, cv2.FaceRecognizerSF_FR_COSINE))
+            if s > best:
+                best = s
+        scores.append((name, best))
+    if not scores:
+        return None, -1.0, -1.0
+    scores.sort(key=lambda x: x[1], reverse=True)
+    best_name, best_score = scores[0]
+    second_score = scores[1][1] if len(scores) > 1 else -1.0
+    return best_name, best_score, second_score
+
+
+def _annotate_face(img, face_row, label: str, color):
+    x, y, w, h = face_row[:4].astype(int)
+    cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
+    cv2.putText(
+        img,
+        label,
+        (max(0, x), max(20, y - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2,
+    )
+
+
+def annotate_uploaded_image(img: np.ndarray, threshold: float = 0.50, margin: float = 0.06, min_face: int = 80):
+    known = load_known_embeddings()
+    if not known:
+        raise RuntimeError("Geen bekende personen in known/. Voeg eerst .npz profielen toe.")
+
+    with _face_lock:
+        detector, recognizer = _get_face_models()
+        h, w = img.shape[:2]
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img)
+
+        annotated = img.copy()
+        results = []
+        if faces is None or len(faces) == 0:
+            return annotated, results
+
+        for idx, face in enumerate(faces):
+            x, y, fw, fh = face[:4].astype(int)
+
+            if fw < min_face:
+                label = f"SMALL ({fw}px)"
+                _annotate_face(annotated, face, label, (0, 255, 255))
+                results.append({
+                    "idx": idx + 1,
+                    "label": "TOO_SMALL",
+                    "score": "",
+                    "x": x, "y": y, "w": fw, "h": fh,
+                })
+                continue
+
+            try:
+                aligned = recognizer.alignCrop(img, face)
+                feat = recognizer.feature(aligned).astype(np.float32)
+            except Exception:
+                _annotate_face(annotated, face, "FEATURE_FAIL", (0, 0, 255))
+                results.append({
+                    "idx": idx + 1,
+                    "label": "FEATURE_FAIL",
+                    "score": "",
+                    "x": x, "y": y, "w": fw, "h": fh,
+                })
+                continue
+
+            best_name, best_score, second_score = _best_match(recognizer, feat, known)
+            confident = (best_score >= threshold) and ((best_score - second_score) >= margin)
+
+            if confident and best_name:
+                label = f"{best_name} ({best_score:.2f})"
+                _annotate_face(annotated, face, label, (0, 255, 0))
+                results.append({
+                    "idx": idx + 1,
+                    "label": best_name,
+                    "score": f"{best_score:.4f}",
+                    "x": x, "y": y, "w": fw, "h": fh,
+                })
+            else:
+                label = f"UNKNOWN ({best_score:.2f})"
+                _annotate_face(annotated, face, label, (0, 0, 255))
+                results.append({
+                    "idx": idx + 1,
+                    "label": "UNKNOWN",
+                    "score": f"{best_score:.4f}",
+                    "x": x, "y": y, "w": fw, "h": fh,
+                })
+
+    return annotated, results
+
+
 def extract_features_from_unknown_folder(folder_path: str, min_face: int = 80):
     files = iter_image_files(folder_path)
     feats = []
@@ -385,6 +504,52 @@ def snapshot_file(filename):
 @app.route("/camera")
 def camera_page():
     return render_template("camera.html", stream_on=is_stream_enabled())
+
+@app.route("/annotate-photo", methods=["GET", "POST"])
+def annotate_photo_page():
+    msg = ""
+    level = "info"
+    image_b64 = ""
+    results = []
+    filename = ""
+
+    if request.method == "POST":
+        up = request.files.get("photo")
+        if up is None or not up.filename:
+            msg = "Selecteer een foto."
+            level = "error"
+        elif not is_allowed_image_filename(up.filename):
+            msg = "Bestandstype niet ondersteund. Gebruik jpg/jpeg/png/bmp/webp."
+            level = "error"
+        else:
+            filename = os.path.basename(up.filename)
+            data = up.read()
+            arr = np.frombuffer(data, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                msg = "Kon de afbeelding niet lezen."
+                level = "error"
+            else:
+                try:
+                    annotated, results = annotate_uploaded_image(img)
+                    ok, enc = cv2.imencode(".jpg", annotated)
+                    if not ok:
+                        raise RuntimeError("Annotatie kon niet als JPG worden opgeslagen.")
+                    image_b64 = base64.b64encode(enc.tobytes()).decode("ascii")
+                    msg = f"Klaar: {len(results)} gezicht(en) verwerkt."
+                    level = "ok"
+                except Exception as e:
+                    msg = f"Annotatie mislukt: {e}"
+                    level = "error"
+
+    return render_template(
+        "annotate_photo.html",
+        msg=msg,
+        level=level,
+        image_b64=image_b64,
+        results=results,
+        filename=filename,
+    )
 
 
 @app.route("/unknown")

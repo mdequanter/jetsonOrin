@@ -25,29 +25,6 @@ YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 FACE_EXTRACT_TMP_DIR = os.path.join(BASE_DIR, "_tmp_face_extract")
 
-# ---- Snapshot parsing (zoals je had) ----
-# Verwacht: Naam_yyyy_mm_dd_hh_mm_ss.jpg
-FILENAME_RE = re.compile(
-    r"^(?P<name>.+)_(?P<dt>\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})\.jpe?g$",
-    re.IGNORECASE
-)
-
-def parse_snapshot_filename(filename: str):
-    m = FILENAME_RE.match(filename)
-    if not m:
-        return {"filename": filename, "name": "Onbekend", "dt": None, "dt_str": "Onbekende datum"}
-
-    name = m.group("name")
-    dt_raw = m.group("dt")
-    try:
-        dt = datetime.strptime(dt_raw, "%Y_%m_%d_%H_%M_%S")
-        dt_str = dt.strftime("%d/%m/%Y %H:%M:%S")
-    except Exception:
-        dt = None
-        dt_str = dt_raw.replace("_", ":")
-
-    return {"filename": filename, "name": name, "dt": dt, "dt_str": dt_str}
-
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
 UNKNOWN_TS_RE_6 = re.compile(r"^(?P<d>\d{6})_(?P<t>\d{6})$")
@@ -703,13 +680,8 @@ def extract_features_from_unknown_folder(folder_path: str, min_face: int = 80):
 
 # ---- Routes ----
 @app.route("/")
-def index():
-    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-
-    files = [f for f in os.listdir(SNAPSHOT_DIR) if f.lower().endswith((".jpg", ".jpeg"))]
-    items = [parse_snapshot_filename(f) for f in files]
-    items.sort(key=lambda x: (x["dt"] is not None, x["dt"] or datetime.min, x["filename"]), reverse=True)
-    return render_template("index.html", items=items)
+def root_redirect():
+    return redirect(url_for("unknown_page"))
 
 @app.route("/personen")
 def personen():
@@ -741,10 +713,6 @@ def api_personen_log():
     with _log_lock:
         return jsonify({"lines": list(_log_lines)})
 
-@app.route("/snapshots/<path:filename>")
-def snapshot_file(filename):
-    return send_from_directory(SNAPSHOT_DIR, filename)
-    
 @app.route("/camera")
 def camera_page():
     return render_template(

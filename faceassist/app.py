@@ -352,6 +352,17 @@ def list_known_people_with_photos():
     return items
 
 
+def list_known_photo_dirs():
+    os.makedirs(KNOWN_DIR, exist_ok=True)
+    dirs = []
+    for name in os.listdir(KNOWN_DIR):
+        full = os.path.join(KNOWN_DIR, name)
+        if os.path.isdir(full):
+            dirs.append(name)
+    dirs.sort(key=lambda s: s.lower())
+    return dirs
+
+
 _camera = None
 _camera_lock = threading.Lock()
 _stream_enabled = False
@@ -896,6 +907,41 @@ def known_delete():
         return redirect(url_for("unknown_page", level="error", msg=f"Verwijderen van {person} mislukt: {e}"))
 
     return redirect(url_for("unknown_page", level="ok", msg=f"Persoon {person} verwijderd."))
+
+
+@app.route("/known/reprocess", methods=["POST"])
+def known_reprocess():
+    person_dirs = list_known_photo_dirs()
+    if not person_dirs:
+        return redirect(url_for("unknown_page", level="error", msg="Geen mappen gevonden in known/."))
+
+    processed = 0
+    skipped = 0
+    total_features = 0
+
+    for person in person_dirs:
+        folder = os.path.join(KNOWN_DIR, person)
+        try:
+            feats, total, _ = extract_features_from_unknown_folder(folder, min_face=80)
+        except Exception:
+            skipped += 1
+            continue
+
+        if total == 0 or len(feats) == 0:
+            skipped += 1
+            continue
+
+        out_path = os.path.join(KNOWN_DIR, f"{person}.npz")
+        np.savez_compressed(out_path, features=np.stack(feats, axis=0))
+        processed += 1
+        total_features += len(feats)
+
+    msg = (
+        f"Gezichten verwerkt: {processed} map(pen), {skipped} overgeslagen, "
+        f"{total_features} feature(s) opgeslagen."
+    )
+    level = "ok" if processed > 0 else "error"
+    return redirect(url_for("unknown_page", level=level, msg=msg))
 
 
 @app.route("/unknown/enroll", methods=["POST"])

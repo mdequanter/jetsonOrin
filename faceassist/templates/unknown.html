@@ -6,6 +6,15 @@
   <p class="muted">Overzicht van gekende personen en tools om nieuwe gezichten toe te voegen.</p>
 
   <div class="card">
+    <form action="{{ url_for('known_reprocess') }}" method="post" onsubmit="return confirm('Ben je zeker dat je alle mappen in known wil verwerken?');">
+      <button class="btn btn-primary" type="submit">Gezichten verwerken</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">
+      Bouwt voor elke map in <span class="mono">known/</span> opnieuw de <span class="mono">.npz</span> op.
+    </p>
+  </div>
+
+  <div class="card">
     <h2 style="margin:0 0 10px 0;">Nieuwe persoon uploaden (map met foto's)</h2>
     <form action="{{ url_for('unknown_upload_enroll') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <label for="upload_name" class="muted">Naam:</label>

@@ -13,12 +13,14 @@
     </div>
   {% endif %}
 
-  {% for fn in files %}
-    <div class="card">
-      <div class="mono" style="margin-bottom:8px;">{{ fn }}</div>
-      <a href="{{ url_for('known_person_file', person=person, filename=fn) }}" target="_blank" rel="noopener">
-        <img alt="{{ fn }}" src="{{ url_for('known_person_file', person=person, filename=fn) }}" style="max-height:420px; object-fit:contain;">
-      </a>
-    </div>
-  {% endfor %}
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;">
+    {% for fn in files %}
+      <div class="card" style="margin:0;">
+        <div class="mono" style="margin-bottom:8px;">{{ fn }}</div>
+        <a href="{{ url_for('known_person_file', person=person, filename=fn) }}" target="_blank" rel="noopener">
+          <img alt="{{ fn }}" src="{{ url_for('known_person_file', person=person, filename=fn) }}" style="max-height:420px; object-fit:contain;">
+        </a>
+      </div>
+    {% endfor %}
+  </div>
 {% endblock %}

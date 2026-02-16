@@ -539,6 +539,7 @@ async def segmentation_ws_loop(stop_event: threading.Event):
     pending_frame_id = None
 
     while not stop_event.is_set():
+        print ("Starting segmentation WebSocket loop")
         try:
             async with websockets.connect(SIGNALING_SERVER_URL, max_size=None) as ws:
                 set_seg_state(connected=True, last_error="")
@@ -554,7 +555,6 @@ async def segmentation_ws_loop(stop_event: threading.Event):
                             payload = json.loads(msg)
                             if payload.get("type") == "frame_meta":
                                 pending_frame_id = payload.get("frame_id")
-                                print(f"Received frame_meta with frame_id: {pending_frame_id}")
                                 continue
                         except json.JSONDecodeError:
                             pass

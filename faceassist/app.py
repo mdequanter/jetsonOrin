@@ -356,6 +356,7 @@ def _annotate_face(img, face_row, label: str, color):
 
 def annotate_uploaded_image(img: np.ndarray, threshold: float = 0.50, margin: float = 0.06, min_face: int = 80):
     known = load_known_embeddings()
+    print(f"Annotating image with {len(known)} known people loaded.")
     if not known:
         raise RuntimeError("Geen bekende personen in known/. Voeg eerst .npz profielen toe.")
 

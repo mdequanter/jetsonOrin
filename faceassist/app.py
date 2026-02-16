@@ -696,89 +696,102 @@ def faces_extract_page():
     session = ""
 
     if request.method == "POST":
-        up = request.files.get("photo")
-        if up is None or not up.filename:
-            msg = "Selecteer een foto."
-            level = "error"
-        elif not is_allowed_image_filename(up.filename):
-            msg = "Bestandstype niet ondersteund. Gebruik jpg/jpeg/png/bmp/webp."
+        uploads = request.files.getlist("photos")
+        if not uploads:
+            one = request.files.get("photo")
+            if one is not None:
+                uploads = [one]
+
+        valid_uploads = [u for u in uploads if u is not None and u.filename]
+        if not valid_uploads:
+            msg = "Selecteer minstens 1 foto."
             level = "error"
         else:
-            data = up.read()
-            arr = np.frombuffer(data, dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                msg = "Kon de afbeelding niet lezen."
-                level = "error"
-            else:
-                try:
-                    with _face_lock:
-                        detector, recognizer = _get_face_models()
+            try:
+                with _face_lock:
+                    detector, recognizer = _get_face_models()
+                    session = uuid.uuid4().hex
+                    session_dir = os.path.join(FACE_EXTRACT_TMP_DIR, session)
+                    os.makedirs(session_dir, exist_ok=True)
+
+                    entries = []
+                    source_files = []
+                    face_id = 0
+
+                    for up in valid_uploads:
+                        src_name = os.path.basename(up.filename or "")
+                        if not is_allowed_image_filename(src_name):
+                            continue
+
+                        data = up.read()
+                        arr = np.frombuffer(data, dtype=np.uint8)
+                        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if img is None:
+                            continue
+
+                        source_files.append(src_name)
                         h, w = img.shape[:2]
                         detector.setInputSize((w, h))
                         _, faces = detector.detect(img)
-
                         if faces is None or len(faces) == 0:
-                            msg = "Geen gezichten gevonden."
-                            level = "error"
-                        else:
-                            session = uuid.uuid4().hex
-                            session_dir = os.path.join(FACE_EXTRACT_TMP_DIR, session)
-                            os.makedirs(session_dir, exist_ok=True)
+                            continue
 
-                            # Sorteer links->rechts voor voorspelbare volgorde.
-                            face_rows = sorted(list(faces), key=lambda r: float(r[0]))
-                            entries = []
+                        # Sorteer links->rechts voor voorspelbare volgorde.
+                        face_rows = sorted(list(faces), key=lambda r: float(r[0]))
+                        for face in face_rows:
+                            x, y, fw, fh = face[:4].astype(int)
+                            pad_w = int(fw * 0.15)
+                            pad_h = int(fh * 0.15)
+                            x1 = max(0, x - pad_w)
+                            y1 = max(0, y - pad_h)
+                            x2 = min(w, x + fw + pad_w)
+                            y2 = min(h, y + fh + pad_h)
 
-                            for idx, face in enumerate(face_rows, start=1):
-                                x, y, fw, fh = face[:4].astype(int)
-                                pad_w = int(fw * 0.15)
-                                pad_h = int(fh * 0.15)
-                                x1 = max(0, x - pad_w)
-                                y1 = max(0, y - pad_h)
-                                x2 = min(w, x + fw + pad_w)
-                                y2 = min(h, y + fh + pad_h)
+                            crop = img[y1:y2, x1:x2]
+                            if crop is None or crop.size == 0:
+                                continue
 
-                                crop = img[y1:y2, x1:x2]
-                                if crop is None or crop.size == 0:
-                                    continue
+                            face_id += 1
+                            img_name = f"face_{face_id:04d}.jpg"
+                            img_path = os.path.join(session_dir, img_name)
+                            cv2.imwrite(img_path, crop)
 
-                                img_name = f"face_{idx:04d}.jpg"
-                                img_path = os.path.join(session_dir, img_name)
-                                cv2.imwrite(img_path, crop)
-
+                            feat_name = None
+                            try:
+                                aligned = recognizer.alignCrop(img, face)
+                                feat = recognizer.feature(aligned).astype(np.float32)
+                                feat_name = f"face_{face_id:04d}.npy"
+                                np.save(os.path.join(session_dir, feat_name), feat)
+                            except Exception:
                                 feat_name = None
-                                try:
-                                    aligned = recognizer.alignCrop(img, face)
-                                    feat = recognizer.feature(aligned).astype(np.float32)
-                                    feat_name = f"face_{idx:04d}.npy"
-                                    np.save(os.path.join(session_dir, feat_name), feat)
-                                except Exception:
-                                    feat_name = None
 
-                                entries.append({
-                                    "id": idx,
-                                    "image": img_name,
-                                    "feature": feat_name,
-                                    "box": [int(x), int(y), int(fw), int(fh)],
-                                })
+                            entries.append({
+                                "id": face_id,
+                                "image": img_name,
+                                "feature": feat_name,
+                                "box": [int(x), int(y), int(fw), int(fh)],
+                                "source_filename": src_name,
+                            })
 
-                            if not entries:
-                                shutil.rmtree(session_dir, ignore_errors=True)
-                                msg = "Geen bruikbare gezicht-crops kunnen maken."
-                                level = "error"
-                            else:
-                                manifest = {
-                                    "session": session,
-                                    "source_filename": os.path.basename(up.filename),
-                                    "entries": entries,
-                                }
-                                save_face_extract_manifest(session_dir, manifest)
-                                msg = f"{len(entries)} gezicht(en) gevonden. Vul per gezicht een naam in."
-                                level = "ok"
-                except Exception as e:
-                    msg = f"Verwerken mislukt: {e}"
-                    level = "error"
+                    if not entries:
+                        shutil.rmtree(session_dir, ignore_errors=True)
+                        msg = "Geen bruikbare gezichten gevonden in de geselecteerde foto('s)."
+                        level = "error"
+                    else:
+                        manifest = {
+                            "session": session,
+                            "source_files": source_files,
+                            "entries": entries,
+                        }
+                        save_face_extract_manifest(session_dir, manifest)
+                        msg = (
+                            f"{len(entries)} gezicht(en) gevonden in "
+                            f"{len(source_files)} foto('s). Vul per gezicht een naam in."
+                        )
+                        level = "ok"
+            except Exception as e:
+                msg = f"Verwerken mislukt: {e}"
+                level = "error"
 
     return render_template(
         "faces_extract.html",

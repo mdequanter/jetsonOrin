@@ -417,7 +417,30 @@ def gen_frames():
             time.sleep(0.05)
             continue
 
-        ok, buffer = cv2.imencode(".jpg", frame)
+        out = frame.copy()
+        try:
+            with _face_lock:
+                detector, _ = _get_face_models()
+                h, w = out.shape[:2]
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(out)
+                if faces is not None and len(faces) > 0:
+                    for i, face in enumerate(faces, start=1):
+                        x, y, fw, fh = face[:4].astype(int)
+                        cv2.rectangle(out, (x, y), (x + fw, y + fh), (0, 255, 0), 2)
+                        cv2.putText(
+                            out,
+                            f"Face {i}",
+                            (max(0, x), max(20, y - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (0, 255, 0),
+                            2,
+                        )
+        except Exception:
+            pass
+
+        ok, buffer = cv2.imencode(".jpg", out)
         if not ok:
             continue
 
@@ -425,6 +448,57 @@ def gen_frames():
 
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+
+
+def capture_known_person_from_camera(person: str, cam_index: int = 0):
+    person = sanitize_person_name(person)
+    if not person:
+        raise RuntimeError("Naam is ongeldig of leeg.")
+
+    cam = get_camera(cam_index)
+    ok, frame = cam.read()
+    if not ok or frame is None:
+        raise RuntimeError("Kan geen frame lezen van camera.")
+
+    with _face_lock:
+        detector, recognizer = _get_face_models()
+        h, w = frame.shape[:2]
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(frame)
+        face = _largest_face(faces)
+        if face is None:
+            raise RuntimeError("Geen gezicht gedetecteerd.")
+
+        x, y, fw, fh = face[:4].astype(int)
+        pad_w = int(fw * 0.15)
+        pad_h = int(fh * 0.15)
+        x1 = max(0, x - pad_w)
+        y1 = max(0, y - pad_h)
+        x2 = min(w, x + fw + pad_w)
+        y2 = min(h, y + fh + pad_h)
+
+        crop = frame[y1:y2, x1:x2]
+        if crop is None or crop.size == 0:
+            raise RuntimeError("Kon geen geldige crop maken.")
+
+        feat = None
+        try:
+            aligned = recognizer.alignCrop(frame, face)
+            feat = recognizer.feature(aligned).astype(np.float32)
+        except Exception:
+            feat = None
+
+    person_dir = os.path.join(KNOWN_DIR, person)
+    os.makedirs(person_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = unique_path(os.path.join(person_dir, f"{ts}_camera.jpg"))
+    cv2.imwrite(out_path, crop)
+
+    added = 0
+    if feat is not None and feat.ndim == 1 and feat.shape[0] > 0:
+        added = append_features_for_person(person, [feat])
+
+    return out_path, added
 
 
 def _largest_face(faces: np.ndarray):
@@ -639,7 +713,12 @@ def snapshot_file(filename):
     
 @app.route("/camera")
 def camera_page():
-    return render_template("camera.html", stream_on=is_stream_enabled())
+    return render_template(
+        "camera.html",
+        stream_on=is_stream_enabled(),
+        msg=request.args.get("msg", ""),
+        level=request.args.get("level", "info"),
+    )
 
 @app.route("/annotate-photo", methods=["GET", "POST"])
 def annotate_photo_page():
@@ -1116,6 +1195,24 @@ def camera_stop():
     set_stream_enabled(False)
     release_camera()
     return redirect(url_for("camera_page"))
+
+
+@app.route("/camera/capture", methods=["POST"])
+def camera_capture():
+    raw_name = (request.form.get("name") or "").strip()
+    person = sanitize_person_name(raw_name)
+    if not person:
+        return redirect(url_for("camera_page", level="error", msg="Naam is ongeldig of leeg."))
+
+    try:
+        out_path, added = capture_known_person_from_camera(person, cam_index=0)
+    except Exception as e:
+        return redirect(url_for("camera_page", level="error", msg=f"Capture mislukt: {e}"))
+
+    msg = f"Foto opgeslagen voor {person}: {out_path}"
+    if added > 0:
+        msg += f" | {added} feature toegevoegd aan {person}.npz"
+    return redirect(url_for("camera_page", level="ok", msg=msg))
 
 @app.route("/video_feed")
 def video_feed():

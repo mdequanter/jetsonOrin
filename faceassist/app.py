@@ -752,6 +752,7 @@ def camera_page():
         stream_on=is_stream_enabled(),
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
+        capture_name=request.args.get("name", ""),
     )
 
 @app.route("/annotate-photo", methods=["GET", "POST"])
@@ -1236,17 +1237,17 @@ def camera_capture():
     raw_name = (request.form.get("name") or "").strip()
     person = sanitize_person_name(raw_name)
     if not person:
-        return redirect(url_for("camera_page", level="error", msg="Naam is ongeldig of leeg."))
+        return redirect(url_for("camera_page", level="error", msg="Naam is ongeldig of leeg.", name=raw_name))
 
     try:
         out_path, added = capture_known_person_from_camera(person, cam_index=0)
     except Exception as e:
-        return redirect(url_for("camera_page", level="error", msg=f"Capture mislukt: {e}"))
+        return redirect(url_for("camera_page", level="error", msg=f"Capture mislukt: {e}", name=person))
 
     msg = f"Foto opgeslagen voor {person}: {out_path}"
     if added > 0:
         msg += f" | {added} feature toegevoegd aan {person}.npz"
-    return redirect(url_for("camera_page", level="ok", msg=msg))
+    return redirect(url_for("camera_page", level="ok", msg=msg, name=person))
 
 @app.route("/video_feed")
 def video_feed():

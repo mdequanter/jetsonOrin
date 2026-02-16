@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% set title = "Gezichten Uit Foto" %}
+
+{% block content %}
+  <h1>Gezichten uit foto halen</h1>
+  <p class="muted">Upload 1 foto met 1 of meerdere gezichten. Daarna kan je per gezicht een naam kiezen.</p>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <form action="{{ url_for('faces_extract_page') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <input name="photo" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" required style="font-size:16px;">
+      <button class="btn btn-primary" type="submit">Upload en detecteer gezichten</button>
+    </form>
+  </div>
+
+  {% if manifest and manifest.entries %}
+    <div class="card">
+      <h2 style="margin-top:0;">Gevonden gezichten ({{ manifest.entries|length }})</h2>
+      <p class="muted">Bronbestand: <span class="mono">{{ manifest.source_filename }}</span></p>
+
+      <form action="{{ url_for('faces_extract_save') }}" method="post">
+        <input type="hidden" name="session" value="{{ manifest.session }}">
+
+        {% for e in manifest.entries %}
+          <div class="card" style="margin:10px 0;">
+            <div class="mono" style="margin-bottom:8px;">Gezicht {{ e.id }} | box: {{ e.box[0] }}, {{ e.box[1] }}, {{ e.box[2] }}, {{ e.box[3] }}</div>
+            <img alt="Gezicht {{ e.id }}" src="{{ url_for('faces_extract_tmp_file', session=manifest.session, filename=e.image) }}" style="max-height:220px; object-fit:contain;">
+            <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <label for="name_{{ e.id }}" class="muted">Naam:</label>
+              <input id="name_{{ e.id }}" name="name_{{ e.id }}" type="text" placeholder="Bijv. Jan" style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+              {% if not e.feature %}
+                <span class="muted">Waarschuwing: geen feature voor dit gezicht, enkel foto wordt bewaard.</span>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+
+        <button class="btn btn-primary" type="submit">Opslaan in known</button>
+      </form>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -11,6 +11,7 @@ from collections import deque
 import cv2
 import time
 import numpy as np
+import json
 
 
 app = Flask(__name__)
@@ -22,6 +23,7 @@ UNKNOWN_DIR = os.path.join(BASE_DIR, "unknown")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
+FACE_EXTRACT_TMP_DIR = os.path.join(BASE_DIR, "_tmp_face_extract")
 
 # ---- Snapshot parsing (zoals je had) ----
 # Verwacht: Naam_yyyy_mm_dd_hh_mm_ss.jpg
@@ -91,6 +93,78 @@ def sanitize_person_name(name: str) -> str:
     cleaned = SAFE_NAME_RE.sub("_", (name or "").strip())
     cleaned = cleaned.strip("_")
     return cleaned
+
+
+def unique_path(path: str) -> str:
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 1
+    while True:
+        cand = f"{base}_{n}{ext}"
+        if not os.path.exists(cand):
+            return cand
+        n += 1
+
+
+def load_npz_features(npz_path: str):
+    data = np.load(npz_path, allow_pickle=True)
+    keys = list(data.keys())
+    key = "features" if "features" in data else (keys[0] if keys else None)
+    if key is None:
+        return None
+    arr = np.asarray(data[key], dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return None
+    return arr
+
+
+def append_features_for_person(person: str, new_features: list):
+    if not new_features:
+        return 0
+
+    os.makedirs(KNOWN_DIR, exist_ok=True)
+    npz_path = os.path.join(KNOWN_DIR, f"{person}.npz")
+    new_stack = np.stack(new_features, axis=0).astype(np.float32)
+
+    if os.path.isfile(npz_path):
+        old = load_npz_features(npz_path)
+        if old is not None:
+            merged = np.concatenate([old, new_stack], axis=0)
+        else:
+            merged = new_stack
+    else:
+        merged = new_stack
+
+    np.savez_compressed(npz_path, features=merged)
+    return int(new_stack.shape[0])
+
+
+def resolve_face_extract_session_dir(session: str):
+    session = (session or "").strip()
+    if not session:
+        return None
+    d = os.path.abspath(os.path.join(FACE_EXTRACT_TMP_DIR, session))
+    root = os.path.abspath(FACE_EXTRACT_TMP_DIR)
+    if os.path.commonpath([d, root]) != root:
+        return None
+    return d
+
+
+def load_face_extract_manifest(session_dir: str):
+    path = os.path.join(session_dir, "manifest.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_face_extract_manifest(session_dir: str, manifest: dict):
+    path = os.path.join(session_dir, "manifest.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
 
 
 
@@ -601,6 +675,170 @@ def annotate_photo_page():
         results=results,
         filename=filename,
     )
+
+
+@app.route("/faces-extract", methods=["GET", "POST"])
+def faces_extract_page():
+    msg = request.args.get("msg", "")
+    level = request.args.get("level", "info")
+    manifest = None
+    session = ""
+
+    if request.method == "POST":
+        up = request.files.get("photo")
+        if up is None or not up.filename:
+            msg = "Selecteer een foto."
+            level = "error"
+        elif not is_allowed_image_filename(up.filename):
+            msg = "Bestandstype niet ondersteund. Gebruik jpg/jpeg/png/bmp/webp."
+            level = "error"
+        else:
+            data = up.read()
+            arr = np.frombuffer(data, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                msg = "Kon de afbeelding niet lezen."
+                level = "error"
+            else:
+                try:
+                    with _face_lock:
+                        detector, recognizer = _get_face_models()
+                        h, w = img.shape[:2]
+                        detector.setInputSize((w, h))
+                        _, faces = detector.detect(img)
+
+                        if faces is None or len(faces) == 0:
+                            msg = "Geen gezichten gevonden."
+                            level = "error"
+                        else:
+                            session = uuid.uuid4().hex
+                            session_dir = os.path.join(FACE_EXTRACT_TMP_DIR, session)
+                            os.makedirs(session_dir, exist_ok=True)
+
+                            # Sorteer links->rechts voor voorspelbare volgorde.
+                            face_rows = sorted(list(faces), key=lambda r: float(r[0]))
+                            entries = []
+
+                            for idx, face in enumerate(face_rows, start=1):
+                                x, y, fw, fh = face[:4].astype(int)
+                                pad_w = int(fw * 0.15)
+                                pad_h = int(fh * 0.15)
+                                x1 = max(0, x - pad_w)
+                                y1 = max(0, y - pad_h)
+                                x2 = min(w, x + fw + pad_w)
+                                y2 = min(h, y + fh + pad_h)
+
+                                crop = img[y1:y2, x1:x2]
+                                if crop is None or crop.size == 0:
+                                    continue
+
+                                img_name = f"face_{idx:04d}.jpg"
+                                img_path = os.path.join(session_dir, img_name)
+                                cv2.imwrite(img_path, crop)
+
+                                feat_name = None
+                                try:
+                                    aligned = recognizer.alignCrop(img, face)
+                                    feat = recognizer.feature(aligned).astype(np.float32)
+                                    feat_name = f"face_{idx:04d}.npy"
+                                    np.save(os.path.join(session_dir, feat_name), feat)
+                                except Exception:
+                                    feat_name = None
+
+                                entries.append({
+                                    "id": idx,
+                                    "image": img_name,
+                                    "feature": feat_name,
+                                    "box": [int(x), int(y), int(fw), int(fh)],
+                                })
+
+                            if not entries:
+                                shutil.rmtree(session_dir, ignore_errors=True)
+                                msg = "Geen bruikbare gezicht-crops kunnen maken."
+                                level = "error"
+                            else:
+                                manifest = {
+                                    "session": session,
+                                    "source_filename": os.path.basename(up.filename),
+                                    "entries": entries,
+                                }
+                                save_face_extract_manifest(session_dir, manifest)
+                                msg = f"{len(entries)} gezicht(en) gevonden. Vul per gezicht een naam in."
+                                level = "ok"
+                except Exception as e:
+                    msg = f"Verwerken mislukt: {e}"
+                    level = "error"
+
+    return render_template(
+        "faces_extract.html",
+        msg=msg,
+        level=level,
+        manifest=manifest,
+        session=session,
+    )
+
+
+@app.route("/faces-extract/tmp/<session>/<path:filename>")
+def faces_extract_tmp_file(session, filename):
+    session_dir = resolve_face_extract_session_dir(session)
+    if session_dir is None or not os.path.isdir(session_dir):
+        return ("", 404)
+    return send_from_directory(session_dir, filename)
+
+
+@app.route("/faces-extract/save", methods=["POST"])
+def faces_extract_save():
+    session = (request.form.get("session") or "").strip()
+    session_dir = resolve_face_extract_session_dir(session)
+    if session_dir is None or not os.path.isdir(session_dir):
+        return redirect(url_for("faces_extract_page", level="error", msg="Sessie niet gevonden of verlopen."))
+
+    manifest = load_face_extract_manifest(session_dir)
+    if not manifest or not manifest.get("entries"):
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return redirect(url_for("faces_extract_page", level="error", msg="Geen sessiegegevens gevonden."))
+
+    by_person_features = {}
+    saved_photos = 0
+    saved_faces = 0
+    skipped = 0
+
+    try:
+        for e in manifest["entries"]:
+            rid = str(e.get("id"))
+            raw_name = (request.form.get(f"name_{rid}") or "").strip()
+            person = sanitize_person_name(raw_name)
+            if not person:
+                skipped += 1
+                continue
+
+            person_dir = os.path.join(KNOWN_DIR, person)
+            os.makedirs(person_dir, exist_ok=True)
+
+            src_img = os.path.join(session_dir, e.get("image", ""))
+            if os.path.isfile(src_img):
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dst_img = os.path.join(person_dir, f"{ts}_{rid}.jpg")
+                dst_img = unique_path(dst_img)
+                shutil.copy2(src_img, dst_img)
+                saved_photos += 1
+
+            feat_file = e.get("feature")
+            if feat_file:
+                feat_path = os.path.join(session_dir, feat_file)
+                if os.path.isfile(feat_path):
+                    feat = np.load(feat_path).astype(np.float32)
+                    if feat.ndim == 1 and feat.shape[0] > 0:
+                        by_person_features.setdefault(person, []).append(feat)
+                        saved_faces += 1
+
+        for person, feats in by_person_features.items():
+            append_features_for_person(person, feats)
+    finally:
+        shutil.rmtree(session_dir, ignore_errors=True)
+
+    msg = f"Opslaan klaar: {saved_photos} foto('s), {saved_faces} feature(s), {skipped} overgeslagen."
+    return redirect(url_for("faces_extract_page", level="ok", msg=msg))
 
 
 @app.route("/unknown")

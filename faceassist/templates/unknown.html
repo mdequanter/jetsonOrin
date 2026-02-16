@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% set title = "Unknown gezichten" %}
+
+{% block content %}
+  <h1>Unknown gezichten</h1>
+  <p class="muted">Maak een nieuwe persoon op basis van foto's in <span class="mono">unknown/YYMMDD_HHMMSS/</span>.</p>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  {% if not sessions %}
+    <div class="card">
+      <p>Geen unknown mappen gevonden.</p>
+    </div>
+  {% endif %}
+
+  {% for s in sessions %}
+    <div class="card">
+      <h2 style="margin:0 0 6px 0;">{{ s.folder }}</h2>
+      <div class="muted">{{ s.dt_str }} | {{ s.count }} foto's</div>
+
+      {% if s.preview %}
+        <div style="margin-top:10px;">
+          <img alt="Preview van {{ s.folder }}"
+               src="{{ url_for('unknown_file', session=s.folder, filename=s.preview) }}"
+               style="max-height:260px; object-fit:cover;">
+        </div>
+      {% endif %}
+
+      <form action="{{ url_for('unknown_enroll') }}" method="post" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input type="hidden" name="session" value="{{ s.folder }}">
+        <label for="name_{{ loop.index }}" class="muted">Naam:</label>
+        <input id="name_{{ loop.index }}" name="name" type="text" required
+               placeholder="Bijv. Jan"
+               style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+        <button class="btn btn-primary" type="submit">Maak nieuw gezicht</button>
+      </form>
+    </div>
+  {% endfor %}
+{% endblock %}

@@ -253,6 +253,31 @@ def list_known_people():
     return people
 
 
+def resolve_known_person_dir(person: str):
+    person = (person or "").strip()
+    if not person:
+        return None, None
+    person_dir = os.path.abspath(os.path.join(KNOWN_DIR, person))
+    known_root = os.path.abspath(KNOWN_DIR)
+    if os.path.commonpath([person_dir, known_root]) != known_root:
+        return None, None
+    npz_path = os.path.join(KNOWN_DIR, f"{person}.npz")
+    return person_dir, npz_path
+
+
+def list_known_people_with_photos():
+    items = []
+    for person in list_known_people():
+        person_dir = os.path.join(KNOWN_DIR, person)
+        files = iter_image_files(person_dir) if os.path.isdir(person_dir) else []
+        items.append({
+            "name": person,
+            "count": len(files),
+            "preview": files[0] if files else None,
+        })
+    return items
+
+
 _camera = None
 _camera_lock = threading.Lock()
 _stream_enabled = False
@@ -582,31 +607,32 @@ def annotate_photo_page():
 def unknown_page():
     return render_template(
         "unknown.html",
-        sessions=list_unknown_sessions(),
+        people=list_known_people_with_photos(),
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
     )
 
 
-@app.route("/unknown/session/<session>")
-def unknown_session_page(session):
-    session_dir = resolve_unknown_session_dir(session)
-    if session_dir is None or not os.path.isdir(session_dir):
-        return redirect(url_for("unknown_page", level="error", msg="Map bestaat niet (meer)."))
+@app.route("/unknown/person/<person>")
+def known_person_page(person):
+    person_dir, npz_path = resolve_known_person_dir(person)
+    if person_dir is None or not os.path.isfile(npz_path):
+        return redirect(url_for("unknown_page", level="error", msg="Persoon bestaat niet (meer)."))
 
-    _, dt_str = parse_unknown_session_name(session)
-    files = iter_image_files(session_dir)
+    files = iter_image_files(person_dir) if os.path.isdir(person_dir) else []
     return render_template(
-        "unknown_session.html",
-        session=session,
-        dt_str=dt_str,
+        "known_person.html",
+        person=person,
         files=files,
     )
 
 
-@app.route("/unknown/<session>/<path:filename>")
-def unknown_file(session, filename):
-    return send_from_directory(os.path.join(UNKNOWN_DIR, session), filename)
+@app.route("/known/<person>/<path:filename>")
+def known_person_file(person, filename):
+    person_dir, npz_path = resolve_known_person_dir(person)
+    if person_dir is None or not os.path.isfile(npz_path):
+        return ("", 404)
+    return send_from_directory(person_dir, filename)
 
 
 @app.route("/unknown/enroll", methods=["POST"])

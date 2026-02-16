@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set title = "Gezichten - " + person %}
+
+{% block content %}
+  <h1>{{ person }}</h1>
+  <p class="muted">Alle foto's van deze persoon in <span class="mono">known/{{ person }}/</span>.</p>
+
+  <p><a href="{{ url_for('unknown_page') }}">Terug naar gezichten</a></p>
+
+  {% if not files %}
+    <div class="card">
+      <p>Geen foto's gevonden voor deze persoon.</p>
+    </div>
+  {% endif %}
+
+  {% for fn in files %}
+    <div class="card">
+      <div class="mono" style="margin-bottom:8px;">{{ fn }}</div>
+      <a href="{{ url_for('known_person_file', person=person, filename=fn) }}" target="_blank" rel="noopener">
+        <img alt="{{ fn }}" src="{{ url_for('known_person_file', person=person, filename=fn) }}" style="max-height:420px; object-fit:contain;">
+      </a>
+    </div>
+  {% endfor %}
+{% endblock %}

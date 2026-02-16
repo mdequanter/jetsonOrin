@@ -5,6 +5,12 @@
   <h1>{{ person }}</h1>
   <p class="muted">Alle foto's van deze persoon in <span class="mono">known/{{ person }}/</span>.</p>
 
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
   <p><a href="{{ url_for('unknown_page') }}">Terug naar gezichten</a></p>
 
   {% if not files %}

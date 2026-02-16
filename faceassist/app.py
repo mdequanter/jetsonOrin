@@ -1015,6 +1015,8 @@ def known_person_page(person):
         "known_person.html",
         person=person,
         files=files,
+        msg=request.args.get("msg", ""),
+        level=request.args.get("level", "info"),
     )
 
 
@@ -1050,7 +1052,7 @@ def known_delete_photo(person):
     try:
         os.remove(photo_path)
     except Exception as e:
-        return redirect(url_for("unknown_page", level="error", msg=f"Foto verwijderen mislukt: {e}"))
+        return redirect(url_for("known_person_page", person=person, level="error", msg=f"Foto verwijderen mislukt: {e}"))
 
     # Houd .npz in sync met de resterende foto's.
     try:
@@ -1064,9 +1066,9 @@ def known_delete_photo(person):
             msg = f"Foto verwijderd. {person}.npz opnieuw opgebouwd met {len(feats)} features."
     except Exception as e:
         msg = f"Foto verwijderd, maar .npz heropbouwen mislukt: {e}"
-        return redirect(url_for("unknown_page", level="error", msg=msg))
+        return redirect(url_for("known_person_page", person=person, level="error", msg=msg))
 
-    return redirect(url_for("unknown_page", level="ok", msg=msg))
+    return redirect(url_for("known_person_page", person=person, level="ok", msg=msg))
 
 
 @app.route("/known/delete", methods=["POST"])

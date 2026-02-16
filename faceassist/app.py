@@ -608,6 +608,7 @@ def unknown_page():
     return render_template(
         "unknown.html",
         people=list_known_people_with_photos(),
+        sessions=list_unknown_sessions(),
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
     )

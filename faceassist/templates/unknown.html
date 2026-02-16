@@ -3,7 +3,25 @@
 
 {% block content %}
   <h1>Gezichten</h1>
-  <p class="muted">Overzicht van gekende personen.</p>
+  <p class="muted">Overzicht van gekende personen en tools om nieuwe gezichten toe te voegen.</p>
+
+  <div class="card">
+    <h2 style="margin:0 0 10px 0;">Nieuwe persoon uploaden (map met foto's)</h2>
+    <form action="{{ url_for('unknown_upload_enroll') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="upload_name" class="muted">Naam:</label>
+      <input id="upload_name" name="name" type="text" required
+             placeholder="Bijv. Lisa"
+             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+
+      <input name="photos" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple webkitdirectory directory
+             style="font-size:16px;">
+
+      <button class="btn btn-primary" type="submit">Upload en maak gezicht</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">
+      Kies bij voorkeur meerdere foto's van dezelfde persoon.
+    </p>
+  </div>
 
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
@@ -37,6 +55,36 @@
       <div style="margin-top:10px;">
         <a href="{{ url_for('known_person_page', person=p.name) }}">Bekijk alle foto's</a>
       </div>
+    </div>
+  {% endfor %}
+
+  <h2 style="margin-top:20px;">Unknown mappen verwerken</h2>
+  <p class="muted">Zet een unknown sessie om naar een nieuwe gekende persoon.</p>
+
+  {% if not sessions %}
+    <div class="card">
+      <p>Geen unknown mappen gevonden.</p>
+    </div>
+  {% endif %}
+
+  {% for s in sessions %}
+    <div class="card">
+      <h3 style="margin:0 0 6px 0;">{{ s.folder }}</h3>
+      <div class="muted">{{ s.dt_str }} | {{ s.count }} foto's</div>
+
+      <form action="{{ url_for('unknown_enroll') }}" method="post" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input type="hidden" name="session" value="{{ s.folder }}">
+        <label for="name_{{ loop.index }}" class="muted">Naam:</label>
+        <input id="name_{{ loop.index }}" name="name" type="text" required
+               placeholder="Bijv. Jan"
+               style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+        <button class="btn btn-primary" type="submit">Maak nieuw gezicht</button>
+      </form>
+
+      <form action="{{ url_for('unknown_delete') }}" method="post" style="margin-top:8px;" onsubmit="return confirm('Weet je zeker dat je map {{ s.folder }} wilt verwijderen?');">
+        <input type="hidden" name="session" value="{{ s.folder }}">
+        <button class="btn btn-danger" type="submit">Verwijder map</button>
+      </form>
     </div>
   {% endfor %}
 {% endblock %}

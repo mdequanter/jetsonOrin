@@ -554,6 +554,7 @@ async def segmentation_ws_loop(stop_event: threading.Event):
                             payload = json.loads(msg)
                             if payload.get("type") == "frame_meta":
                                 pending_frame_id = payload.get("frame_id")
+                                print(f"Received frame_meta with frame_id: {pending_frame_id}")
                                 continue
                         except json.JSONDecodeError:
                             pass

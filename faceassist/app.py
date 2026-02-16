@@ -109,6 +109,7 @@ def load_known_embeddings():
         try:
             data = np.load(path)
             feats = data["features"].astype(np.float32)
+            print(f"Loaded features shape: {feats.shape}")
             if feats.ndim == 2 and len(feats) > 0:
                 known[name] = feats
                 print(f"Loaded {len(feats)} features for {name}.")

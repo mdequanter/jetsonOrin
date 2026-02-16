@@ -32,7 +32,10 @@
             <img alt="Gezicht {{ e.id }}" src="{{ url_for('faces_extract_tmp_file', session=manifest.session, filename=e.image) }}" style="max-height:220px; object-fit:contain;">
             <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
               <label for="name_{{ e.id }}" class="muted">Naam:</label>
-              <input id="name_{{ e.id }}" name="name_{{ e.id }}" type="text" placeholder="Bijv. Jan" style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+              <input id="name_{{ e.id }}" name="name_{{ e.id }}" type="text" value="{{ e.suggested_name or '' }}" placeholder="Bijv. Jan" style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+              {% if e.suggested_name %}
+                <span class="muted">Beste match: {{ e.suggested_name }} (score {{ e.suggested_score }})</span>
+              {% endif %}
               {% if not e.feature %}
                 <span class="muted">Waarschuwing: geen feature voor dit gezicht, enkel foto wordt bewaard.</span>
               {% endif %}

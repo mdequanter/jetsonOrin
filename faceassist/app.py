@@ -710,6 +710,7 @@ def faces_extract_page():
             try:
                 with _face_lock:
                     detector, recognizer = _get_face_models()
+                    known = load_known_embeddings()
                     session = uuid.uuid4().hex
                     session_dir = os.path.join(FACE_EXTRACT_TMP_DIR, session)
                     os.makedirs(session_dir, exist_ok=True)
@@ -757,11 +758,17 @@ def faces_extract_page():
                             cv2.imwrite(img_path, crop)
 
                             feat_name = None
+                            suggested_name = ""
+                            suggested_score = ""
                             try:
                                 aligned = recognizer.alignCrop(img, face)
                                 feat = recognizer.feature(aligned).astype(np.float32)
                                 feat_name = f"face_{face_id:04d}.npy"
                                 np.save(os.path.join(session_dir, feat_name), feat)
+                                best_name, best_score, _ = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                                if best_name:
+                                    suggested_name = best_name
+                                    suggested_score = f"{best_score:.4f}"
                             except Exception:
                                 feat_name = None
 
@@ -771,6 +778,8 @@ def faces_extract_page():
                                 "feature": feat_name,
                                 "box": [int(x), int(y), int(fw), int(fh)],
                                 "source_filename": src_name,
+                                "suggested_name": suggested_name,
+                                "suggested_score": suggested_score,
                             })
 
                     if not entries:

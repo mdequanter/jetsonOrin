@@ -120,6 +120,7 @@ def list_unknown_sessions():
         if not os.path.isdir(full):
             continue
         files = iter_image_files(full)
+        print(f"Session '{folder}': found {len(files)} image files.")
         dt, dt_str = parse_unknown_session_name(folder)
         sessions.append({
             "folder": folder,

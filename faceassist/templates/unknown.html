@@ -14,24 +14,6 @@
     </p>
   </div>
 
-  <div class="card">
-    <h2 style="margin:0 0 10px 0;">Nieuwe persoon uploaden (map met foto's)</h2>
-    <form action="{{ url_for('unknown_upload_enroll') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <label for="upload_name" class="muted">Naam:</label>
-      <input id="upload_name" name="name" type="text" required
-             placeholder="Bijv. Lisa"
-             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
-
-      <input name="photos" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple webkitdirectory directory
-             style="font-size:16px;">
-
-      <button class="btn btn-primary" type="submit">Upload en maak gezicht</button>
-    </form>
-    <p class="muted" style="margin-top:8px;">
-      Kies bij voorkeur meerdere foto's van dezelfde persoon.
-    </p>
-  </div>
-
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
       <strong>{{ msg }}</strong>
@@ -44,33 +26,35 @@
     </div>
   {% endif %}
 
-  {% for p in people %}
-    <div class="card">
-      <h2 style="margin:0 0 6px 0;">{{ p.name }}</h2>
-      <div class="muted">{{ p.count }} foto's</div>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px;">
+    {% for p in people %}
+      <div class="card" style="margin:0;">
+        <h2 style="margin:0 0 6px 0;">{{ p.name }}</h2>
+        <div class="muted">{{ p.count }} foto's</div>
 
-      {% if p.preview %}
+        {% if p.preview %}
+          <div style="margin-top:10px;">
+            <a href="{{ url_for('known_person_page', person=p.name) }}" title="Bekijk alle foto's van {{ p.name }}">
+              <img alt="Preview van {{ p.name }}"
+                   src="{{ url_for('known_person_file', person=p.name, filename=p.preview) }}"
+                   style="max-height:260px; object-fit:cover;">
+            </a>
+          </div>
+        {% else %}
+          <p class="muted" style="margin-top:10px;">Nog geen foto's in <span class="mono">known/{{ p.name }}/</span>.</p>
+        {% endif %}
+
         <div style="margin-top:10px;">
-          <a href="{{ url_for('known_person_page', person=p.name) }}" title="Bekijk alle foto's van {{ p.name }}">
-            <img alt="Preview van {{ p.name }}"
-                 src="{{ url_for('known_person_file', person=p.name, filename=p.preview) }}"
-                 style="max-height:260px; object-fit:cover;">
-          </a>
+          <a href="{{ url_for('known_person_page', person=p.name) }}">Bekijk alle foto's</a>
         </div>
-      {% else %}
-        <p class="muted" style="margin-top:10px;">Nog geen foto's in <span class="mono">known/{{ p.name }}/</span>.</p>
-      {% endif %}
 
-      <div style="margin-top:10px;">
-        <a href="{{ url_for('known_person_page', person=p.name) }}">Bekijk alle foto's</a>
+        <form action="{{ url_for('known_delete') }}" method="post" style="margin-top:8px;" onsubmit="return confirm('Ben je zeker dat je persoon {{ p.name }} wil verwijderen?');">
+          <input type="hidden" name="person" value="{{ p.name }}">
+          <button class="btn btn-danger" type="submit">Verwijder persoon</button>
+        </form>
       </div>
-
-      <form action="{{ url_for('known_delete') }}" method="post" style="margin-top:8px;" onsubmit="return confirm('Ben je zeker dat je persoon {{ p.name }} wil verwijderen?');">
-        <input type="hidden" name="person" value="{{ p.name }}">
-        <button class="btn btn-danger" type="submit">Verwijder persoon</button>
-      </form>
-    </div>
-  {% endfor %}
+    {% endfor %}
+  </div>
 
   <h2 style="margin-top:20px;">Unknown mappen verwerken</h2>
   <p class="muted">Zet een unknown sessie om naar een nieuwe gekende persoon.</p>
@@ -101,4 +85,22 @@
       </form>
     </div>
   {% endfor %}
+
+  <div class="card">
+    <h2 style="margin:0 0 10px 0;">Nieuwe persoon uploaden (map met foto's)</h2>
+    <form action="{{ url_for('unknown_upload_enroll') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="upload_name" class="muted">Naam:</label>
+      <input id="upload_name" name="name" type="text" required
+             placeholder="Bijv. Lisa"
+             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+
+      <input name="photos" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple webkitdirectory directory
+             style="font-size:16px;">
+
+      <button class="btn btn-primary" type="submit">Upload en maak gezicht</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">
+      Kies bij voorkeur meerdere foto's van dezelfde persoon.
+    </p>
+  </div>
 {% endblock %}

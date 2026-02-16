@@ -874,7 +874,7 @@ def faces_extract_save():
     return redirect(url_for("faces_extract_page", level="ok", msg=msg))
 
 
-@app.route("/unknown")
+@app.route("/faces")
 def unknown_page():
     return render_template(
         "unknown.html",
@@ -883,6 +883,11 @@ def unknown_page():
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
     )
+
+
+@app.route("/unknown")
+def unknown_legacy_redirect():
+    return redirect(url_for("unknown_page"))
 
 
 @app.route("/unknown/person/<person>")

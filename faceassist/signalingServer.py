@@ -1,7 +1,6 @@
 import asyncio
 import websockets
 
-
 clients = set()
 
 async def signaling(websocket):
@@ -10,7 +9,7 @@ async def signaling(websocket):
     
     try:
         async for message in websocket:
-            print(f"📩 Bericht ontvangen van {websocket.remote_address}: {message}")
+            #print(f"📩 Bericht ontvangen van {websocket.remote_address}: {message}")
             for client in clients:
                 if client != websocket:
                     await client.send(message)

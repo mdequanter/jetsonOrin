@@ -636,6 +636,30 @@ def known_person_file(person, filename):
     return send_from_directory(person_dir, filename)
 
 
+@app.route("/known/delete", methods=["POST"])
+def known_delete():
+    person = (request.form.get("person") or "").strip()
+    person_dir, npz_path = resolve_known_person_dir(person)
+
+    if person_dir is None:
+        return redirect(url_for("unknown_page", level="error", msg="Ongeldige persoonsnaam."))
+
+    exists_npz = os.path.isfile(npz_path)
+    exists_dir = os.path.isdir(person_dir)
+    if not exists_npz and not exists_dir:
+        return redirect(url_for("unknown_page", level="error", msg=f"Persoon {person} bestaat niet (meer)."))
+
+    try:
+        if exists_npz:
+            os.remove(npz_path)
+        if exists_dir:
+            shutil.rmtree(person_dir, ignore_errors=True)
+    except Exception as e:
+        return redirect(url_for("unknown_page", level="error", msg=f"Verwijderen van {person} mislukt: {e}"))
+
+    return redirect(url_for("unknown_page", level="ok", msg=f"Persoon {person} verwijderd."))
+
+
 @app.route("/unknown/enroll", methods=["POST"])
 def unknown_enroll():
     session = (request.form.get("session") or "").strip()

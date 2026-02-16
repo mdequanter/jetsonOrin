@@ -55,6 +55,11 @@
       <div style="margin-top:10px;">
         <a href="{{ url_for('known_person_page', person=p.name) }}">Bekijk alle foto's</a>
       </div>
+
+      <form action="{{ url_for('known_delete') }}" method="post" style="margin-top:8px;" onsubmit="return confirm('Ben je zeker dat je persoon {{ p.name }} wil verwijderen?');">
+        <input type="hidden" name="person" value="{{ p.name }}">
+        <button class="btn btn-danger" type="submit">Verwijder persoon</button>
+      </form>
     </div>
   {% endfor %}
 

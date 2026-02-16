@@ -4,21 +4,6 @@
 {% block content %}
   <h1>Camerastream</h1>
 
-  <div class="card">
-    <h2 style="margin:0 0 10px 0;">Foto nemen en opslaan</h2>
-    <form action="{{ url_for('camera_capture') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <label for="capture_name" class="muted">Naam:</label>
-      <input id="capture_name" name="name" type="text" required
-             value="{{ capture_name or '' }}"
-             placeholder="Bijv. Jan"
-             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
-      <button class="btn btn-primary" type="submit">Foto trekken</button>
-    </form>
-    <p class="muted" style="margin-top:8px;">
-      Slaat een gezichtsfoto op in <span class="mono">known/&lt;naam&gt;/</span> en voegt een feature toe aan <span class="mono">&lt;naam&gt;.npz</span>.
-    </p>
-  </div>
-
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
       <strong>{{ msg }}</strong>
@@ -37,6 +22,15 @@
         <form action="{{ url_for('camera_stop') }}" method="post">
           <button class="btn btn-danger" type="submit">Stop stream</button>
         </form>
+        <form action="{{ url_for('camera_capture') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="capture_name" class="muted">Naam:</label>
+      <input id="capture_name" name="name" type="text" required
+             value="{{ capture_name or '' }}"
+             placeholder="Bijv. Jan"
+             style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:220px;">
+      <button class="btn btn-primary" type="submit">Foto trekken</button>
+    </form>
+
       {% endif %}
     </div>
 

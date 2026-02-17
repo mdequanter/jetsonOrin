@@ -48,4 +48,19 @@
       Opmerking: lopende processen gebruiken nieuwe waarden na herstart van de betreffende stream/proces.
     </p>
   </form>
+
+  <div class="card">
+    <h2>Systeem</h2>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <form method="post" action="{{ url_for('settings_restart') }}" style="margin:0;">
+        <button class="btn btn-primary" type="submit" onclick="return confirm('Ben je zeker dat je wilt herstarten?');">Herstart</button>
+      </form>
+      <form method="post" action="{{ url_for('settings_shutdown') }}" style="margin:0;">
+        <button class="btn btn-danger" type="submit" onclick="return confirm('Ben je zeker dat je wilt afsluiten?');">Shutdown</button>
+      </form>
+    </div>
+    <p class="muted" style="margin-top:10px;">
+      Let op: deze acties vereisen systeemrechten op de host.
+    </p>
+  </div>
 {% endblock %}

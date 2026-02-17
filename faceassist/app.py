@@ -1554,6 +1554,40 @@ def settings_page():
     )
 
 
+def _run_system_action_later(cmds):
+    def _worker():
+        time.sleep(1.0)
+        for cmd in cmds:
+            try:
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                if res.returncode == 0:
+                    break
+            except Exception:
+                continue
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
+@app.route("/settings/restart", methods=["POST"])
+def settings_restart():
+    # Probeer systemd eerst; fallback naar klassieke tools.
+    _run_system_action_later([
+        ["systemctl", "reboot"],
+        ["reboot"],
+    ])
+    return redirect(url_for("settings_page", level="ok", msg="Herstart aangevraagd."))
+
+
+@app.route("/settings/shutdown", methods=["POST"])
+def settings_shutdown():
+    _run_system_action_later([
+        ["systemctl", "poweroff"],
+        ["shutdown", "-h", "now"],
+        ["poweroff"],
+    ])
+    return redirect(url_for("settings_page", level="ok", msg="Shutdown aangevraagd."))
+
+
 @app.route("/camera")
 def camera_page():
     source = (request.args.get("source") or get_stream_source()).strip().lower()

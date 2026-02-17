@@ -3,7 +3,7 @@
 
 {% block content %}
   <h1>Mobiele gezichtsdetectie</h1>
-  <p class="muted">Open deze pagina op je smartphone. De telefooncamera wordt gebruikt en gezichten krijgen live een kader.</p>
+  <p class="muted">Open deze pagina op je smartphone. Live camera wordt gebruikt indien beschikbaar, anders kan je foto-per-foto detecteren.</p>
 
   <div class="card">
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
@@ -13,10 +13,22 @@
     <div id="status" class="muted">Klaar om te starten.</div>
   </div>
 
-  <div class="card" style="max-width:900px;">
+  <div id="liveCard" class="card" style="max-width:900px;">
     <div style="position:relative; width:100%; aspect-ratio:3/4; background:#000; border-radius:12px; overflow:hidden;">
       <video id="video" autoplay playsinline muted style="width:100%; height:100%; object-fit:cover;"></video>
       <canvas id="overlay" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
+    </div>
+  </div>
+
+  <div id="photoCard" class="card" style="max-width:900px; display:none;">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+      <label for="photoInput" class="btn btn-primary" style="cursor:pointer; margin:0;">Neem foto</label>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none;">
+      <span class="muted">Fallback zonder live camera: neem een foto en detecteer gezichten.</span>
+    </div>
+    <div style="position:relative; width:100%; aspect-ratio:3/4; background:#000; border-radius:12px; overflow:hidden;">
+      <img id="photoPreview" alt="Opgenomen foto" style="width:100%; height:100%; object-fit:contain; display:block;">
+      <canvas id="photoOverlay" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
     </div>
   </div>
 
@@ -24,6 +36,12 @@
     const video = document.getElementById("video");
     const overlay = document.getElementById("overlay");
     const ctx = overlay.getContext("2d");
+    const liveCard = document.getElementById("liveCard");
+    const photoCard = document.getElementById("photoCard");
+    const photoInput = document.getElementById("photoInput");
+    const photoPreview = document.getElementById("photoPreview");
+    const photoOverlay = document.getElementById("photoOverlay");
+    const photoCtx = photoOverlay.getContext("2d");
     const statusEl = document.getElementById("status");
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
@@ -33,6 +51,30 @@
     let busy = false;
 
     function setStatus(t) { statusEl.textContent = t; }
+
+    function hasLiveCameraSupport() {
+      return !!(
+        (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") ||
+        navigator.getUserMedia ||
+        navigator.webkitGetUserMedia ||
+        navigator.mozGetUserMedia ||
+        navigator.msGetUserMedia
+      );
+    }
+
+    function setModeLive() {
+      liveCard.style.display = "";
+      photoCard.style.display = "none";
+      startBtn.disabled = false;
+    }
+
+    function setModePhoto() {
+      stopCamera();
+      liveCard.style.display = "none";
+      photoCard.style.display = "";
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+    }
 
     function getUserMediaCompat(constraints) {
       if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
@@ -58,6 +100,12 @@
       const rect = video.getBoundingClientRect();
       overlay.width = Math.max(1, Math.floor(rect.width));
       overlay.height = Math.max(1, Math.floor(rect.height));
+    }
+
+    function resizePhotoOverlay() {
+      const rect = photoPreview.getBoundingClientRect();
+      photoOverlay.width = Math.max(1, Math.floor(rect.width));
+      photoOverlay.height = Math.max(1, Math.floor(rect.height));
     }
 
     function drawBoxes(boxes, srcW, srcH) {
@@ -136,6 +184,8 @@
           ? " Gebruik https op je smartphone."
           : "";
         setStatus(`Camera starten mislukt: ${e}${secureHint}`);
+        setModePhoto();
+        setStatus(`Live camera niet beschikbaar. Fallback foto-modus actief.${secureHint}`);
       }
     }
 
@@ -155,8 +205,83 @@
       setStatus("Camera gestopt.");
     }
 
+    function drawPhotoBoxes(boxes, srcW, srcH) {
+      photoCtx.clearRect(0, 0, photoOverlay.width, photoOverlay.height);
+      if (!boxes || !boxes.length || !srcW || !srcH) return;
+
+      const scale = Math.min(photoOverlay.width / srcW, photoOverlay.height / srcH);
+      const drawW = srcW * scale;
+      const drawH = srcH * scale;
+      const offX = (photoOverlay.width - drawW) / 2;
+      const offY = (photoOverlay.height - drawH) / 2;
+
+      photoCtx.lineWidth = 3;
+      photoCtx.strokeStyle = "#00ff66";
+      photoCtx.font = "18px sans-serif";
+      photoCtx.fillStyle = "#00ff66";
+
+      boxes.forEach((b, i) => {
+        const x = offX + (b.x * scale);
+        const y = offY + (b.y * scale);
+        const w = b.w * scale;
+        const h = b.h * scale;
+        photoCtx.strokeRect(x, y, w, h);
+        photoCtx.fillText(`Face ${i + 1}`, x, Math.max(18, y - 6));
+      });
+    }
+
+    async function detectFromDataUrl(dataUrl) {
+      const res = await fetch("{{ url_for('api_mobile_face_detect') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl })
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        throw new Error(data.error || "onbekende fout");
+      }
+      return data;
+    }
+
+    async function onPhotoSelected(ev) {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = String(reader.result || "");
+        photoPreview.onload = () => {
+          resizePhotoOverlay();
+        };
+        photoPreview.src = dataUrl;
+        setStatus("Foto geladen. Detectie bezig...");
+
+        try {
+          const data = await detectFromDataUrl(dataUrl);
+          drawPhotoBoxes(data.boxes || [], data.width, data.height);
+          setStatus(`Gezichten: ${(data.boxes || []).length}`);
+        } catch (err) {
+          setStatus(`Detectie fout: ${err}`);
+          photoCtx.clearRect(0, 0, photoOverlay.width, photoOverlay.height);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
     startBtn.addEventListener("click", startCamera);
     stopBtn.addEventListener("click", stopCamera);
-    window.addEventListener("resize", resizeOverlay);
+    photoInput.addEventListener("change", onPhotoSelected);
+    window.addEventListener("resize", () => {
+      resizeOverlay();
+      resizePhotoOverlay();
+    });
+
+    if (hasLiveCameraSupport()) {
+      setModeLive();
+      setStatus("Klaar om live camera te starten.");
+    } else {
+      setModePhoto();
+      setStatus("Live camera niet ondersteund in deze browser/context. Gebruik foto-modus.");
+    }
   </script>
 {% endblock %}

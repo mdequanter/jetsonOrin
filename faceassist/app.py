@@ -538,7 +538,9 @@ def process_segment_frame(frame):
     model = get_segmentation_model()
     h, w = frame.shape[:2]
     overlay = frame.copy()
+    infer_t0 = time.perf_counter()
     results = model(frame, conf=SEG_DETECTION_CONFIDENCE, verbose=False)
+    infer_ms = (time.perf_counter() - infer_t0) * 1000.0
 
     midpoints = []
     for r in results:
@@ -583,6 +585,15 @@ def process_segment_frame(frame):
         (20, 36),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        overlay,
+        f"Inference: {infer_ms:.1f} ms",
+        (20, 72),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
         (255, 255, 255),
         2,
     )

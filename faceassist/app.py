@@ -1570,20 +1570,20 @@ def _run_system_action_later(cmds):
 
 @app.route("/settings/restart", methods=["POST"])
 def settings_restart():
-    # Probeer systemd eerst; fallback naar klassieke tools.
+    # Strak: enkel reboot via systemd.
     _run_system_action_later([
+        ["sudo", "-n", "systemctl", "reboot"],
         ["systemctl", "reboot"],
-        ["reboot"],
     ])
     return redirect(url_for("settings_page", level="ok", msg="Herstart aangevraagd."))
 
 
 @app.route("/settings/shutdown", methods=["POST"])
 def settings_shutdown():
+    # Strak: enkel poweroff via systemd.
     _run_system_action_later([
+        ["sudo", "-n", "systemctl", "poweroff"],
         ["systemctl", "poweroff"],
-        ["shutdown", "-h", "now"],
-        ["poweroff"],
     ])
     return redirect(url_for("settings_page", level="ok", msg="Shutdown aangevraagd."))
 

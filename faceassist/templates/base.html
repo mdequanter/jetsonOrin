@@ -86,14 +86,9 @@
       links.forEach(link => {
         link.addEventListener("click", () => {
           try {
-            const group = link.closest(".nav-group");
-            if (!group) return;
-            const title = (group.querySelector(".nav-title")?.textContent || "").trim();
-            const names = Array.from(group.querySelectorAll(".nav-links a"))
-              .map(a => (a.textContent || "").trim())
-              .filter(Boolean);
-            if (!title || !names.length) return;
-            const text = `${title} menu: ${names.join(", ")}.`;
+            const selected = (link.textContent || "").trim();
+            if (!selected) return;
+            const text = selected;
             sessionStorage.setItem(STORAGE_KEY, text);
           } catch (e) { /* ignore */ }
         });

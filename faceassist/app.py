@@ -370,6 +370,7 @@ _mobile_cam = None
 _mobile_cam_lock = threading.Lock()
 _stream_enabled = False
 _stream_lock = threading.Lock()
+_stream_source = "local"
 _face_lock = threading.Lock()
 _face_detector = None
 _face_recognizer = None
@@ -448,6 +449,20 @@ def set_stream_enabled(val: bool):
     global _stream_enabled
     with _stream_lock:
         _stream_enabled = val
+
+
+def get_stream_source():
+    with _stream_lock:
+        return _stream_source
+
+
+def set_stream_source(source: str):
+    global _stream_source
+    s = (source or "").strip().lower()
+    if s not in ("local", "droidcam"):
+        s = "local"
+    with _stream_lock:
+        _stream_source = s
 
 
 def decode_signal_message_to_frame(msg):
@@ -775,10 +790,36 @@ def gen_segmentation_frames():
             b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         )
 
-def gen_frames():
+def gen_frames(source="local"):
     # Wacht tot stream aan staat (of stop meteen)
     while not is_stream_enabled():
         time.sleep(0.1)
+
+    src = (source or "local").strip().lower()
+    if src == "droidcam":
+        stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+        while True:
+            if not is_stream_enabled():
+                return
+            try:
+                for jpeg in _iter_http_mjpeg_frames(stream_url):
+                    if not is_stream_enabled():
+                        return
+                    arr = np.frombuffer(jpeg, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                    out = _annotate_mobile_face_frame(frame)
+                    ok, buffer = cv2.imencode(".jpg", out)
+                    if not ok:
+                        continue
+                    frame_bytes = buffer.tobytes()
+                    yield (b"--frame\r\n"
+                           b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+            except Exception:
+                time.sleep(0.5)
+        return
 
     cam = get_camera(0)
 
@@ -946,15 +987,13 @@ def gen_mobile_face_frames():
             time.sleep(1.0)
 
 
-def capture_known_person_from_camera(person: str, cam_index: int = 0):
+def capture_known_person_from_frame(person: str, frame: np.ndarray, filename_suffix: str = "camera"):
     person = sanitize_person_name(person)
     if not person:
         raise RuntimeError("Naam is ongeldig of leeg.")
 
-    cam = get_camera(cam_index)
-    ok, frame = cam.read()
-    if not ok or frame is None:
-        raise RuntimeError("Kan geen frame lezen van camera.")
+    if frame is None:
+        raise RuntimeError("Geen frame beschikbaar.")
 
     with _face_lock:
         detector, recognizer = _get_face_models()
@@ -987,7 +1026,7 @@ def capture_known_person_from_camera(person: str, cam_index: int = 0):
     person_dir = os.path.join(KNOWN_DIR, person)
     os.makedirs(person_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = unique_path(os.path.join(person_dir, f"{ts}_camera.jpg"))
+    out_path = unique_path(os.path.join(person_dir, f"{ts}_{filename_suffix}.jpg"))
     cv2.imwrite(out_path, crop)
 
     added = 0
@@ -995,6 +1034,14 @@ def capture_known_person_from_camera(person: str, cam_index: int = 0):
         added = append_features_for_person(person, [feat])
 
     return out_path, added
+
+
+def capture_known_person_from_camera(person: str, cam_index: int = 0):
+    cam = get_camera(cam_index)
+    ok, frame = cam.read()
+    if not ok or frame is None:
+        raise RuntimeError("Kan geen frame lezen van camera.")
+    return capture_known_person_from_frame(person, frame, filename_suffix="camera")
 
 
 def _largest_face(faces: np.ndarray):
@@ -1235,9 +1282,13 @@ def api_personen_log():
 
 @app.route("/camera")
 def camera_page():
+    source = (request.args.get("source") or get_stream_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = get_stream_source()
     return render_template(
         "camera.html",
         stream_on=is_stream_enabled(),
+        stream_source=source,
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
         capture_name=request.args.get("name", ""),
@@ -2002,39 +2053,65 @@ def unknown_upload_enroll():
 
 @app.route("/camera/start", methods=["POST"])
 def camera_start():
+    source = (request.form.get("source") or "local").strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+    if source == "droidcam":
+        release_camera()
+    else:
+        release_mobile_cam()
+    set_stream_source(source)
     set_stream_enabled(True)
-    return redirect(url_for("camera_page"))
+    return redirect(url_for("camera_page", source=source))
 
 @app.route("/camera/stop", methods=["POST"])
 def camera_stop():
     set_stream_enabled(False)
     release_camera()
+    release_mobile_cam()
     return redirect(url_for("camera_page"))
 
 
 @app.route("/camera/capture", methods=["POST"])
 def camera_capture():
     raw_name = (request.form.get("name") or "").strip()
+    source = (request.form.get("source") or get_stream_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
     person = sanitize_person_name(raw_name)
     if not person:
-        return redirect(url_for("camera_page", level="error", msg="Naam is ongeldig of leeg.", name=raw_name))
+        return redirect(url_for("camera_page", level="error", msg="Naam is ongeldig of leeg.", name=raw_name, source=source))
 
     try:
-        out_path, added = capture_known_person_from_camera(person, cam_index=0)
+        if source == "droidcam":
+            stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+            frame = None
+            for jpeg in _iter_http_mjpeg_frames(stream_url):
+                arr = np.frombuffer(jpeg, dtype=np.uint8)
+                f = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if f is None:
+                    continue
+                frame = cv2.resize(f, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                break
+            if frame is None:
+                raise RuntimeError("Geen frame ontvangen van DroidCam.")
+            out_path, added = capture_known_person_from_frame(person, frame, filename_suffix="droidcam")
+        else:
+            out_path, added = capture_known_person_from_camera(person, cam_index=0)
     except Exception as e:
-        return redirect(url_for("camera_page", level="error", msg=f"Capture mislukt: {e}", name=person))
+        return redirect(url_for("camera_page", level="error", msg=f"Capture mislukt: {e}", name=person, source=source))
 
     msg = f"Foto opgeslagen voor {person}: {out_path}"
     if added > 0:
         msg += f" | {added} feature toegevoegd aan {person}.npz"
-    return redirect(url_for("camera_page", level="ok", msg=msg, name=person))
+    return redirect(url_for("camera_page", level="ok", msg=msg, name=person, source=source))
 
 @app.route("/video_feed")
 def video_feed():
     # Als stream niet aan staat: geen feed (voorkomt eindeloos reconnecten)
     if not is_stream_enabled():
         return ("", 204)  # No Content
-    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(gen_frames(source=get_stream_source()), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 if __name__ == "__main__":

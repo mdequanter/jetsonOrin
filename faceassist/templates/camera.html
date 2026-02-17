@@ -13,7 +13,12 @@
   <div class="card">
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not stream_on %}
-        <form action="{{ url_for('camera_start') }}" method="post">
+        <form action="{{ url_for('camera_start') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <label for="source" class="muted">Bron:</label>
+          <select id="source" name="source" style="font-size:16px; padding:8px 10px; border-radius:8px; border:1px solid #bbb;">
+            <option value="local" {% if stream_source == 'local' %}selected{% endif %}>Lokale camera</option>
+            <option value="droidcam" {% if stream_source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+          </select>
           <button class="btn btn-primary" type="submit">Start stream</button>
         </form>
       {% else %}
@@ -21,6 +26,7 @@
           <button class="btn btn-danger" type="submit">Stop stream</button>
         </form>
         <form action="{{ url_for('camera_capture') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <input type="hidden" name="source" value="{{ stream_source }}">
       <label for="capture_name" class="muted">Naam:</label>
       <input id="capture_name" name="name" type="text" required
              value="{{ capture_name or '' }}"
@@ -34,6 +40,7 @@
 
     <div style="margin-top:14px;">
       {% if stream_on %}
+        <p class="muted" style="margin-top:0;">Actieve bron: <strong>{{ "DroidCam" if stream_source == "droidcam" else "Lokale camera" }}</strong></p>
         <img src="{{ url_for('video_feed') }}" alt="Live camerastream"
              style="width:100%; max-width:900px; border-radius:12px;">
       {% else %}

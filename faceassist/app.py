@@ -32,6 +32,8 @@ SEG_MODEL_PATH = os.path.join(BASE_DIR, "models", "unrealsim.pt")
 SEG_DETECTION_CONFIDENCE = 0.3
 SEG_SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MOBILE_VIEW_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://192.168.0.55:4747/video")
+MOBILE_VIEW_WIDTH = int(os.environ.get("MOBILE_VIEW_WIDTH", "640"))
+MOBILE_VIEW_HEIGHT = int(os.environ.get("MOBILE_VIEW_HEIGHT", "480"))
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -929,6 +931,7 @@ def gen_mobile_face_frames():
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if frame is None:
                     continue
+                frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
                 out = _annotate_mobile_face_frame(frame)
                 ok, buffer = cv2.imencode(".jpg", out)
                 if not ok:

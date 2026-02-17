@@ -219,7 +219,7 @@ def read_piper_sample_rate(model_path: str, default_rate: int = 22050) -> int:
 
 def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float = 1.0, volume: int = 100):
     p1 = subprocess.Popen(
-        ["piper", "--model", model_path, "--output_raw", "--length_scale", str(length_scale)],
+        ["/home/jetson/piper/piper", "--model", model_path, "--output_raw", "--length_scale", str(length_scale)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

@@ -11,7 +11,7 @@
   {% endif %}
 
   <div class="card">
-    <p>Signaling: <span class="mono">{{ signaling_server }}</span></p>
+    {% if source == 'websocket'  %}<p>Signaling: <span class="mono">{{ signaling_server }}</span></p> {% endif %}
     <p>Model: <span class="mono">{{ model_path }}</span></p>
     <p>Actieve bron: <strong id="seg_source">{{ active_source|default("websocket") }}</strong></p>
     <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>

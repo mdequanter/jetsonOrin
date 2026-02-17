@@ -58,5 +58,37 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+
+  <script>
+    (function () {
+      const groups = Array.from(document.querySelectorAll("nav .nav-group"));
+      if (!groups.length) return;
+
+      const pageTitleEl = document.querySelector("main h1");
+      const pageTitle = pageTitleEl ? pageTitleEl.textContent.trim() : (document.title || "").trim();
+
+      const parts = [];
+      if (pageTitle) parts.push(`Pagina ${pageTitle}.`);
+      parts.push("Menu.");
+
+      groups.forEach(g => {
+        const t = (g.querySelector(".nav-title")?.textContent || "").trim();
+        const links = Array.from(g.querySelectorAll(".nav-links a"))
+          .map(a => (a.textContent || "").trim())
+          .filter(Boolean);
+        if (!t || !links.length) return;
+        parts.push(`${t}: ${links.join(", ")}.`);
+      });
+
+      const text = parts.join(" ").trim();
+      if (!text) return;
+
+      fetch("{{ url_for('api_tts_menu') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      }).catch(() => {});
+    })();
+  </script>
 </body>
 </html>

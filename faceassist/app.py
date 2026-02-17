@@ -35,6 +35,9 @@ MOBILE_VIEW_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://19
 MOBILE_VIEW_WIDTH = int(os.environ.get("MOBILE_VIEW_WIDTH", "640"))
 MOBILE_VIEW_HEIGHT = int(os.environ.get("MOBILE_VIEW_HEIGHT", "480"))
 VOICE_VOLUME = int(os.environ.get("VOICE_VOLUME", "100"))
+PIPER_MODEL_PATH = os.environ.get("PIPER_MODEL_PATH", "/home/jetson/jetsonOrin/voices/nl_BE-nathalie-medium.onnx")
+PIPER_RATE = int(os.environ.get("PIPER_RATE", "22050"))
+PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "1.0"))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 
 
@@ -108,6 +111,66 @@ def current_app_settings():
 
 
 apply_runtime_settings(load_app_settings())
+
+
+_menu_tts_lock = threading.Lock()
+_menu_tts_last_at = 0.0
+
+
+def _piper_say_text(text: str):
+    msg = (text or "").strip()
+    if not msg:
+        return
+    if not os.path.isfile(os.path.expanduser(PIPER_MODEL_PATH)):
+        return
+
+    try:
+        p1 = subprocess.Popen(
+            ["piper", "--model", os.path.expanduser(PIPER_MODEL_PATH), "--output_raw", "--length_scale", str(PIPER_LENGTH_SCALE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return
+
+    try:
+        raw_audio, _ = p1.communicate(input=(msg + "\n").encode("utf-8"), timeout=40)
+    except Exception:
+        try:
+            p1.kill()
+        except Exception:
+            pass
+        return
+
+    if not raw_audio:
+        return
+
+    vol = _coerce_voice_volume(VOICE_VOLUME, 100)
+    if vol < 100:
+        try:
+            pcm = np.frombuffer(raw_audio, dtype=np.int16).astype(np.float32)
+            pcm *= (vol / 100.0)
+            np.clip(pcm, -32768, 32767, out=pcm)
+            raw_audio = pcm.astype(np.int16).tobytes()
+        except Exception:
+            pass
+
+    try:
+        p2 = subprocess.Popen(
+            ["aplay", "-r", str(PIPER_RATE), "-f", "S16_LE", "-t", "raw", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        p2.communicate(input=raw_audio, timeout=40)
+    except Exception:
+        pass
+
+
+def _speak_menu_async(text: str):
+    t = threading.Thread(target=_piper_say_text, args=(text,), daemon=True)
+    t.start()
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -1521,6 +1584,26 @@ def api_personen_status():
 def api_personen_log():
     with _log_lock:
         return jsonify({"lines": list(_log_lines)})
+
+
+@app.route("/api/tts/menu", methods=["POST"])
+def api_tts_menu():
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"ok": False, "error": "Geen tekst opgegeven."}), 400
+
+    # Vermijd spam bij snelle refreshes.
+    global _menu_tts_last_at
+    now = time.time()
+    with _menu_tts_lock:
+        if (now - _menu_tts_last_at) < 1.5:
+            return jsonify({"ok": True, "queued": False})
+        _menu_tts_last_at = now
+
+    text = text[:280]
+    _speak_menu_async(text)
+    return jsonify({"ok": True, "queued": True})
 
 
 @app.route("/settings", methods=["GET", "POST"])

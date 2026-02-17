@@ -219,7 +219,7 @@ def read_piper_sample_rate(model_path: str, default_rate: int = 22050) -> int:
 
 def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float = 1.0, volume: int = 100):
     p1 = subprocess.Popen(
-        ["piper", "--model", model_path, "--output_raw", "--length_scale", str(length_scale)],
+        ["/home/jetson/piper/piper", "--model", model_path, "--output_raw", "--length_scale", str(length_scale)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -377,9 +377,11 @@ def main():
     ap.add_argument("--piper_rate", type=int, default=22050)
     ap.add_argument("--piper_rate_auto", action="store_true")
     ap.add_argument("--piper_length_scale", type=float, default=1.0)
+    ap.add_argument("--voice_volume", type=int, default=100)
     ap.add_argument("--tts_queue_size", type=int, default=20)
 
     args = ap.parse_args()
+    args.voice_volume = max(0, min(100, int(args.voice_volume)))
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")

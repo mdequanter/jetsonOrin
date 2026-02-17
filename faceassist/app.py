@@ -1191,6 +1191,57 @@ def annotate_photo_page():
     )
 
 
+@app.route("/mobile-face")
+def mobile_face_page():
+    return render_template("mobile_face.html")
+
+
+@app.route("/api/mobile-face-detect", methods=["POST"])
+def api_mobile_face_detect():
+    payload = request.get_json(silent=True) or {}
+    b64 = (payload.get("image") or "").strip()
+    if not b64:
+        return jsonify({"ok": False, "error": "Geen image payload."}), 400
+
+    # data URL toegestaan: data:image/jpeg;base64,...
+    if b64.startswith("data:image"):
+        parts = b64.split(",", 1)
+        if len(parts) != 2:
+            return jsonify({"ok": False, "error": "Ongeldige data URL."}), 400
+        b64 = parts[1]
+
+    try:
+        jpeg = base64.b64decode(b64)
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        frame = None
+
+    if frame is None:
+        return jsonify({"ok": False, "error": "Kon frame niet decoderen."}), 400
+
+    boxes = []
+    try:
+        with _face_lock:
+            detector, _ = _get_face_models()
+            h, w = frame.shape[:2]
+            detector.setInputSize((w, h))
+            _, faces = detector.detect(frame)
+            if faces is not None and len(faces) > 0:
+                for f in faces:
+                    x, y, fw, fh = f[:4].astype(int)
+                    boxes.append({"x": int(x), "y": int(y), "w": int(fw), "h": int(fh)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    return jsonify({
+        "ok": True,
+        "width": int(frame.shape[1]),
+        "height": int(frame.shape[0]),
+        "boxes": boxes,
+    })
+
+
 @app.route("/faces-extract", methods=["GET", "POST"])
 def faces_extract_page():
     msg = request.args.get("msg", "")

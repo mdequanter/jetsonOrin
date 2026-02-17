@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% set title = "Mobiele gezichtsdetectie" %}
+
+{% block content %}
+  <h1>Mobiele gezichtsdetectie</h1>
+  <p class="muted">Open deze pagina op je smartphone. De telefooncamera wordt gebruikt en gezichten krijgen live een kader.</p>
+
+  <div class="card">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+      <button id="startBtn" class="btn btn-primary" type="button">Start camera</button>
+      <button id="stopBtn" class="btn btn-danger" type="button" disabled>Stop camera</button>
+    </div>
+    <div id="status" class="muted">Klaar om te starten.</div>
+  </div>
+
+  <div class="card" style="max-width:900px;">
+    <div style="position:relative; width:100%; aspect-ratio:3/4; background:#000; border-radius:12px; overflow:hidden;">
+      <video id="video" autoplay playsinline muted style="width:100%; height:100%; object-fit:cover;"></video>
+      <canvas id="overlay" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById("video");
+    const overlay = document.getElementById("overlay");
+    const ctx = overlay.getContext("2d");
+    const statusEl = document.getElementById("status");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+
+    let stream = null;
+    let detectTimer = null;
+    let busy = false;
+
+    function setStatus(t) { statusEl.textContent = t; }
+
+    function resizeOverlay() {
+      const rect = video.getBoundingClientRect();
+      overlay.width = Math.max(1, Math.floor(rect.width));
+      overlay.height = Math.max(1, Math.floor(rect.height));
+    }
+
+    function drawBoxes(boxes, srcW, srcH) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (!boxes || !boxes.length) return;
+
+      const scaleX = overlay.width / srcW;
+      const scaleY = overlay.height / srcH;
+
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#00ff66";
+      ctx.font = "18px sans-serif";
+      ctx.fillStyle = "#00ff66";
+
+      boxes.forEach((b, i) => {
+        const x = b.x * scaleX;
+        const y = b.y * scaleY;
+        const w = b.w * scaleX;
+        const h = b.h * scaleY;
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillText(`Face ${i + 1}`, x, Math.max(18, y - 6));
+      });
+    }
+
+    async function detectOnce() {
+      if (busy) return;
+      if (!video.videoWidth || !video.videoHeight) return;
+      busy = true;
+
+      try {
+        const tmp = document.createElement("canvas");
+        tmp.width = video.videoWidth;
+        tmp.height = video.videoHeight;
+        const tctx = tmp.getContext("2d");
+        tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
+
+        const dataUrl = tmp.toDataURL("image/jpeg", 0.7);
+        const res = await fetch("{{ url_for('api_mobile_face_detect') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: dataUrl })
+        });
+
+        const data = await res.json();
+        if (!data.ok) {
+          setStatus(`Detectie fout: ${data.error || 'onbekend'}`);
+          return;
+        }
+
+        drawBoxes(data.boxes || [], data.width || video.videoWidth, data.height || video.videoHeight);
+        setStatus(`Gezichten: ${(data.boxes || []).length}`);
+      } catch (e) {
+        setStatus(`Detectie fout: ${e}`);
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function startCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        resizeOverlay();
+
+        detectTimer = setInterval(detectOnce, 450);
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        setStatus("Camera actief. Detectie gestart.");
+      } catch (e) {
+        setStatus(`Camera starten mislukt: ${e}`);
+      }
+    }
+
+    function stopCamera() {
+      if (detectTimer) {
+        clearInterval(detectTimer);
+        detectTimer = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      setStatus("Camera gestopt.");
+    }
+
+    startBtn.addEventListener("click", startCamera);
+    stopBtn.addEventListener("click", stopCamera);
+    window.addEventListener("resize", resizeOverlay);
+  </script>
+{% endblock %}

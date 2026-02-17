@@ -11,6 +11,12 @@
     </div>
   {% endif %}
 
+  <div class="card">
+    <form action="{{ url_for('unknown_process_delete_all') }}" method="post" onsubmit="return confirm('Ben je zeker dat je alle onverwerkte personen wil verwijderen?');">
+      <button class="btn btn-danger" type="submit">Verwijder alle onverwerkte personen</button>
+    </form>
+  </div>
+
   {% if not items %}
     <div class="card">
       <p>Geen ongekende foto's gevonden in <span class="mono">unknown/</span>.</p>

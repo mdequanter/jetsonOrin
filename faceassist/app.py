@@ -1487,6 +1487,36 @@ def unknown_process_delete_one():
     return redirect(url_for("unknown_process_page", level="ok", msg=f"{filename} verwijderd."))
 
 
+@app.route("/unknown-process/delete-all", methods=["POST"])
+def unknown_process_delete_all():
+    os.makedirs(UNKNOWN_DIR, exist_ok=True)
+    removed = 0
+    failed = 0
+
+    for fn in os.listdir(UNKNOWN_DIR):
+        p = os.path.join(UNKNOWN_DIR, fn)
+        if os.path.isfile(p) and is_allowed_image_filename(fn):
+            try:
+                os.remove(p)
+                removed += 1
+            except Exception:
+                failed += 1
+
+    if removed == 0 and failed == 0:
+        return redirect(url_for("unknown_process_page", level="info", msg="Geen onverwerkte personen gevonden."))
+
+    if failed > 0:
+        return redirect(
+            url_for(
+                "unknown_process_page",
+                level="error",
+                msg=f"{removed} foto('s) verwijderd, {failed} niet kunnen verwijderen.",
+            )
+        )
+
+    return redirect(url_for("unknown_process_page", level="ok", msg=f"Alle onverwerkte personen verwijderd ({removed} foto('s))."))
+
+
 @app.route("/faces")
 def unknown_page():
     return render_template(

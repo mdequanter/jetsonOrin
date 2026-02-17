@@ -13,13 +13,20 @@
   <div class="card">
     <p>Signaling: <span class="mono">{{ signaling_server }}</span></p>
     <p>Model: <span class="mono">{{ model_path }}</span></p>
+    <p>Actieve bron: <strong id="seg_source">{{ active_source|default("websocket") }}</strong></p>
     <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>
     <p>Heading: <strong id="seg_heading">{{ '%.2f'|format(heading) }}</strong></p>
     <p>Laatste fout: <span id="seg_error" class="mono muted"></span></p>
 
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not running %}
-        <form action="{{ url_for('segmentation_start') }}" method="post">
+        <form action="{{ url_for('segmentation_start') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <label for="source" class="muted">Bron:</label>
+          <select id="source" name="source" style="font-size:16px; padding:8px 10px; border-radius:8px; border:1px solid #bbb;">
+            <option value="websocket" {% if source == 'websocket' %}selected{% endif %}>WebSocket</option>
+            <option value="local" {% if source == 'local' %}selected{% endif %}>Lokale camera</option>
+            <option value="droidcam" {% if source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+          </select>
           <button class="btn btn-primary" type="submit">Start segmentatie</button>
         </form>
       {% else %}
@@ -45,6 +52,7 @@
         const data = await res.json();
         document.getElementById("seg_connected").textContent = data.connected ? "JA" : "NEE";
         document.getElementById("seg_heading").textContent = Number(data.heading || 0).toFixed(2);
+        document.getElementById("seg_source").textContent = (data.source || "websocket");
         document.getElementById("seg_error").textContent = data.last_error || "";
       } catch (e) { }
     }

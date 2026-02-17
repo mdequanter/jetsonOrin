@@ -397,6 +397,7 @@ _seg_stop_event = threading.Event()
 _seg_lock = threading.Lock()
 _seg_running = False
 _seg_connected = False
+_seg_source = "websocket"
 _seg_last_error = ""
 _seg_last_heading = 90.0
 _seg_last_frame_id = None
@@ -690,12 +691,15 @@ def process_segment_frame(frame):
 
 
 def set_seg_state(**kwargs):
-    global _seg_running, _seg_connected, _seg_last_error, _seg_last_heading, _seg_last_frame_id, _seg_last_jpeg, _seg_last_update
+    global _seg_running, _seg_connected, _seg_source, _seg_last_error, _seg_last_heading, _seg_last_frame_id, _seg_last_jpeg, _seg_last_update
     with _seg_lock:
         if "running" in kwargs:
             _seg_running = kwargs["running"]
         if "connected" in kwargs:
             _seg_connected = kwargs["connected"]
+        if "source" in kwargs:
+            s = (kwargs["source"] or "").strip().lower()
+            _seg_source = s if s in ("websocket", "local", "droidcam") else "websocket"
         if "last_error" in kwargs:
             _seg_last_error = kwargs["last_error"]
         if "last_heading" in kwargs:
@@ -713,6 +717,7 @@ def get_seg_state():
         return {
             "running": _seg_running,
             "connected": _seg_connected,
+            "source": _seg_source,
             "last_error": _seg_last_error,
             "heading": _seg_last_heading,
             "frame_id": _seg_last_frame_id,
@@ -722,7 +727,7 @@ def get_seg_state():
 
 
 async def segmentation_ws_loop(stop_event: threading.Event):
-    set_seg_state(running=True, connected=False, last_error="")
+    set_seg_state(running=True, connected=False, source="websocket", last_error="")
     pending_frame_id = None
 
     while not stop_event.is_set():
@@ -785,17 +790,96 @@ async def segmentation_ws_loop(stop_event: threading.Event):
     set_seg_state(running=False, connected=False)
 
 
-def segmentation_thread_target(stop_event: threading.Event):
-    asyncio.run(segmentation_ws_loop(stop_event))
+def segmentation_local_loop(stop_event: threading.Event):
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)
+    set_seg_state(running=True, connected=cap.isOpened(), source="local", last_error="")
+    try:
+        if not cap.isOpened():
+            set_seg_state(last_error="Lokale camera niet beschikbaar.")
+            return
+        frame_id = 0
+        while not stop_event.is_set():
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                set_seg_state(connected=False, last_error="Kon geen frame lezen van lokale camera.")
+                time.sleep(0.1)
+                continue
+            frame_id += 1
+            set_seg_state(connected=True, last_error="")
+            overlay, heading = process_segment_frame(frame)
+            ok, enc = cv2.imencode(".jpg", overlay)
+            if not ok:
+                continue
+            set_seg_state(
+                last_jpeg=enc.tobytes(),
+                last_heading=float(heading),
+                last_frame_id=frame_id,
+                last_update=time.time(),
+            )
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+        set_seg_state(running=False, connected=False)
 
 
-def start_segmentation_stream():
+def segmentation_droidcam_loop(stop_event: threading.Event):
+    stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+    set_seg_state(running=True, connected=False, source="droidcam", last_error="")
+    frame_id = 0
+    while not stop_event.is_set():
+        try:
+            for jpeg in _iter_http_mjpeg_frames(stream_url):
+                if stop_event.is_set():
+                    break
+                arr = np.frombuffer(jpeg, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+                frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                frame_id += 1
+                set_seg_state(connected=True, last_error="")
+                overlay, heading = process_segment_frame(frame)
+                ok, enc = cv2.imencode(".jpg", overlay)
+                if not ok:
+                    continue
+                set_seg_state(
+                    last_jpeg=enc.tobytes(),
+                    last_heading=float(heading),
+                    last_frame_id=frame_id,
+                    last_update=time.time(),
+                )
+        except Exception as e:
+            set_seg_state(connected=False, last_error=str(e))
+            time.sleep(0.8)
+    set_seg_state(running=False, connected=False)
+
+
+def segmentation_thread_target(stop_event: threading.Event, source: str):
+    src = (source or "").strip().lower()
+    if src == "local":
+        segmentation_local_loop(stop_event)
+    elif src == "droidcam":
+        segmentation_droidcam_loop(stop_event)
+    else:
+        asyncio.run(segmentation_ws_loop(stop_event))
+
+
+def start_segmentation_stream(source: str = "websocket"):
     global _seg_thread
     st = get_seg_state()
     if st["running"]:
         return
+    src = (source or "").strip().lower()
+    if src not in ("websocket", "local", "droidcam"):
+        src = "websocket"
     _seg_stop_event.clear()
-    _seg_thread = threading.Thread(target=segmentation_thread_target, args=(_seg_stop_event,), daemon=True)
+    set_seg_state(source=src, last_error="")
+    _seg_thread = threading.Thread(target=segmentation_thread_target, args=(_seg_stop_event, src), daemon=True)
     _seg_thread.start()
 
 
@@ -1380,11 +1464,16 @@ def camera_page():
 @app.route("/segmentation")
 def segmentation_page():
     st = get_seg_state()
+    source = (request.args.get("source") or st.get("source") or "websocket").strip().lower()
+    if source not in ("websocket", "local", "droidcam"):
+        source = st.get("source") or "websocket"
     return render_template(
         "segmentation.html",
         running=st["running"],
         connected=st["connected"],
         heading=st["heading"],
+        source=source,
+        active_source=st.get("source", "websocket"),
         msg=request.args.get("msg", ""),
         level=request.args.get("level", "info"),
         signaling_server=SIGNALING_SERVER_URL,
@@ -1394,8 +1483,11 @@ def segmentation_page():
 @app.route("/segmentation/start", methods=["POST"])
 def segmentation_start():
     try:
-        start_segmentation_stream()
-        return redirect(url_for("segmentation_page", level="ok", msg="Segmentatie gestart."))
+        source = (request.form.get("source") or "websocket").strip().lower()
+        if source not in ("websocket", "local", "droidcam"):
+            source = "websocket"
+        start_segmentation_stream(source=source)
+        return redirect(url_for("segmentation_page", source=source, level="ok", msg="Segmentatie gestart."))
     except Exception as e:
         return redirect(url_for("segmentation_page", level="error", msg=f"Start mislukt: {e}"))
 

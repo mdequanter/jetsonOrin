@@ -61,33 +61,43 @@
 
   <script>
     (function () {
-      const groups = Array.from(document.querySelectorAll("nav .nav-group"));
-      if (!groups.length) return;
+      const STORAGE_KEY = "pending_menu_tts";
 
-      const pageTitleEl = document.querySelector("main h1");
-      const pageTitle = pageTitleEl ? pageTitleEl.textContent.trim() : (document.title || "").trim();
+      function speak(text) {
+        if (!text) return;
+        fetch("{{ url_for('api_tts_menu') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        }).catch(() => {});
+      }
 
-      const parts = [];
-      if (pageTitle) parts.push(`Pagina ${pageTitle}.`);
-      parts.push("Menu.");
+      // 1) Spreek enkel het menu dat net werd aangeklikt (na navigatie).
+      try {
+        const pending = sessionStorage.getItem(STORAGE_KEY) || "";
+        if (pending) {
+          sessionStorage.removeItem(STORAGE_KEY);
+          speak(pending);
+        }
+      } catch (e) { /* ignore */ }
 
-      groups.forEach(g => {
-        const t = (g.querySelector(".nav-title")?.textContent || "").trim();
-        const links = Array.from(g.querySelectorAll(".nav-links a"))
-          .map(a => (a.textContent || "").trim())
-          .filter(Boolean);
-        if (!t || !links.length) return;
-        parts.push(`${t}: ${links.join(", ")}.`);
+      // 2) Bij klik op een menulink, bewaar enkel dat menublok.
+      const links = Array.from(document.querySelectorAll("nav .nav-links a"));
+      links.forEach(link => {
+        link.addEventListener("click", () => {
+          try {
+            const group = link.closest(".nav-group");
+            if (!group) return;
+            const title = (group.querySelector(".nav-title")?.textContent || "").trim();
+            const names = Array.from(group.querySelectorAll(".nav-links a"))
+              .map(a => (a.textContent || "").trim())
+              .filter(Boolean);
+            if (!title || !names.length) return;
+            const text = `${title} menu: ${names.join(", ")}.`;
+            sessionStorage.setItem(STORAGE_KEY, text);
+          } catch (e) { /* ignore */ }
+        });
       });
-
-      const text = parts.join(" ").trim();
-      if (!text) return;
-
-      fetch("{{ url_for('api_tts_menu') }}", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      }).catch(() => {});
     })();
   </script>
 </body>

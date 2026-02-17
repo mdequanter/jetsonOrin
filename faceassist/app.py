@@ -30,6 +30,7 @@ SIGNALING_SERVER_URL = os.environ.get("SIGNALING_SERVER_URL", "ws://192.168.0.64
 SEG_MODEL_PATH = os.path.join(BASE_DIR, "models", "unrealsim.pt")
 SEG_DETECTION_CONFIDENCE = 0.3
 SEG_SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+MOBILE_VIEW_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://192.168.0.55:4747/video")
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -362,6 +363,8 @@ def list_known_photo_dirs():
 
 _camera = None
 _camera_lock = threading.Lock()
+_mobile_cam = None
+_mobile_cam_lock = threading.Lock()
 _stream_enabled = False
 _stream_lock = threading.Lock()
 _face_lock = threading.Lock()
@@ -399,6 +402,40 @@ def release_camera():
             except Exception:
                 pass
         _camera = None
+
+
+def _normalize_droidcam_url(url: str):
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.endswith("/video") or u.endswith("/mjpegfeed"):
+        return u
+    if u.endswith("/"):
+        return u + "video"
+    return u + "/video"
+
+
+def get_mobile_cam():
+    global _mobile_cam
+    stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+    with _mobile_cam_lock:
+        if _mobile_cam is None or not _mobile_cam.isOpened():
+            _mobile_cam = cv2.VideoCapture(stream_url)
+            _mobile_cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            _mobile_cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            _mobile_cam.set(cv2.CAP_PROP_FPS, 15)
+        return _mobile_cam
+
+
+def release_mobile_cam():
+    global _mobile_cam
+    with _mobile_cam_lock:
+        if _mobile_cam is not None:
+            try:
+                _mobile_cam.release()
+            except Exception:
+                pass
+        _mobile_cam = None
 
 def is_stream_enabled():
     with _stream_lock:
@@ -808,6 +845,76 @@ def gen_frames():
                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
 
+def gen_mobile_face_frames():
+    while True:
+        cam = get_mobile_cam()
+        if cam is None:
+            time.sleep(0.2)
+            continue
+
+        ok, frame = cam.read()
+        if not ok or frame is None:
+            # DroidCam kan soms haperen; forceer reconnect.
+            release_mobile_cam()
+            time.sleep(0.25)
+            continue
+
+        out = frame.copy()
+        try:
+            known = get_known_embeddings_cached(refresh_sec=5.0)
+            with _face_lock:
+                detector, recognizer = _get_face_models()
+                h, w = out.shape[:2]
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(out)
+                if faces is not None and len(faces) > 0:
+                    for face in faces:
+                        x, y, fw, fh = face[:4].astype(int)
+                        label = "Onbekend"
+                        color = (0, 0, 255)
+                        score_txt = ""
+
+                        try:
+                            aligned = recognizer.alignCrop(out, face)
+                            feat = recognizer.feature(aligned).astype(np.float32)
+                            best_name, best_score, second_score = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                            confident = (
+                                best_name is not None
+                                and (best_score >= 0.70)
+                                and ((best_score - second_score) >= 0.06)
+                            )
+                            if confident:
+                                label = best_name
+                                color = (0, 255, 0)
+                            if best_score >= 0:
+                                score_txt = f" {best_score:.2f}"
+                        except Exception:
+                            pass
+
+                        cv2.rectangle(out, (x, y), (x + fw, y + fh), color, 2)
+                        cv2.putText(
+                            out,
+                            f"{label}{score_txt}",
+                            (max(0, x), max(20, y - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            color,
+                            2,
+                        )
+        except Exception:
+            pass
+
+        ok, buffer = cv2.imencode(".jpg", out)
+        if not ok:
+            continue
+
+        frame_bytes = buffer.tobytes()
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
+
+
 def capture_known_person_from_camera(person: str, cam_index: int = 0):
     person = sanitize_person_name(person)
     if not person:
@@ -1193,7 +1300,24 @@ def annotate_photo_page():
 
 @app.route("/mobile-face")
 def mobile_face_page():
-    return render_template("mobile_face.html")
+    stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+    return render_template("mobile_face.html", stream_url=stream_url)
+
+
+@app.route("/mobile_view")
+def mobile_face_page_alias():
+    return redirect(url_for("mobile_face_page"))
+
+
+@app.route("/mobile-face/feed")
+def mobile_face_feed():
+    return Response(gen_mobile_face_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/mobile-face/reconnect", methods=["POST"])
+def mobile_face_reconnect():
+    release_mobile_cam()
+    return redirect(url_for("mobile_face_page"))
 
 
 @app.route("/api/mobile-face-detect", methods=["POST"])

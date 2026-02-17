@@ -34,6 +34,26 @@
 
     function setStatus(t) { statusEl.textContent = t; }
 
+    function getUserMediaCompat(constraints) {
+      if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
+        return navigator.mediaDevices.getUserMedia(constraints);
+      }
+
+      const legacy =
+        navigator.getUserMedia ||
+        navigator.webkitGetUserMedia ||
+        navigator.mozGetUserMedia ||
+        navigator.msGetUserMedia;
+
+      if (!legacy) {
+        return Promise.reject(new Error(
+          "Deze browser ondersteunt geen cameratoegang. Gebruik Chrome/Safari op smartphone en open via https of localhost."
+        ));
+      }
+
+      return new Promise((resolve, reject) => legacy.call(navigator, constraints, resolve, reject));
+    }
+
     function resizeOverlay() {
       const rect = video.getBoundingClientRect();
       overlay.width = Math.max(1, Math.floor(rect.width));
@@ -98,7 +118,7 @@
 
     async function startCamera() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await getUserMediaCompat({
           video: { facingMode: { ideal: "environment" } },
           audio: false
         });
@@ -111,7 +131,11 @@
         stopBtn.disabled = false;
         setStatus("Camera actief. Detectie gestart.");
       } catch (e) {
-        setStatus(`Camera starten mislukt: ${e}`);
+        const proto = location.protocol || "";
+        const secureHint = (proto !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1")
+          ? " Gebruik https op je smartphone."
+          : "";
+        setStatus(`Camera starten mislukt: ${e}${secureHint}`);
       }
     }
 

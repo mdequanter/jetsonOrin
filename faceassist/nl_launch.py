@@ -533,8 +533,8 @@ def main():
                     os.makedirs(unknown_dir, exist_ok=True)
 
                     print(f"[INFO] Onbekende persoon gedetecteerd -> map: {unknown_dir}", flush=True)
-                    if speak_enabled:
-                        tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
+                    #if speak_enabled:
+                    #    tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
 
                 if unknown_dir is not None:
                     if (now - unknown_last_photo_at) >= unknown_photo_interval:

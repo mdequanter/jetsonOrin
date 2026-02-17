@@ -3,7 +3,6 @@
 
 {% block content %}
   <h1>Segmentatie</h1>
-  <p class="muted">Live segmentatie + heading berekening (zoals in <span class="mono">segmentVideo.py</span>).</p>
 
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
@@ -12,7 +11,6 @@
   {% endif %}
 
   <div class="card">
-    <p>Status: <strong>{{ "ACTIEF" if running else "UIT" }}</strong></p>
     <p>Signaling: <span class="mono">{{ signaling_server }}</span></p>
     <p>Model: <span class="mono">{{ model_path }}</span></p>
     <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>
@@ -35,9 +33,8 @@
       {% if running %}
         <img src="{{ url_for('segmentation_feed') }}" alt="Live segmentatie"
              style="width:100%; max-width:1000px; border-radius:12px;">
-      {% else %}
-        <p class="muted">Segmentatie staat uit. Klik op "Start segmentatie".</p>
       {% endif %}
+
     </div>
   </div>
 

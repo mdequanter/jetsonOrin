@@ -637,7 +637,7 @@ async def segmentation_ws_loop(stop_event: threading.Event):
     pending_frame_id = None
 
     while not stop_event.is_set():
-        print ("Starting segmentation WebSocket loop")
+        #print ("Starting segmentation WebSocket loop")
         try:
             async with websockets.connect(SIGNALING_SERVER_URL, max_size=None) as ws:
                 set_seg_state(connected=True, last_error="")
@@ -658,7 +658,7 @@ async def segmentation_ws_loop(stop_event: threading.Event):
                             pass
 
                     frame = decode_signal_message_to_frame(msg)
-                    print (f"Received frame {msg}")
+                    #print (f"Received frame {msg}")
                     if frame is None:
                         continue
 

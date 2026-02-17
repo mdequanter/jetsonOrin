@@ -251,7 +251,9 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
         print("[WAARSCHUWING] 'piper' niet gevonden in PATH.", flush=True)
         return
 
-    model_path = os.path.expanduser(args.piper_model)
+    #model_path = os.path.expanduser(args.piper_model)
+    model_path = args.piper_model
+    model_path = "D:\\github\\jetsonOrin\\voices"
     if not os.path.exists(model_path):
         print(f"[WAARSCHUWING] Piper model niet gevonden: {model_path}", flush=True)
         return
@@ -355,7 +357,8 @@ def main():
     # Piper TTS (NL voice)
     ap.add_argument("--no_tts", action="store_true")
     ap.add_argument("--speak", type=str, default="True")
-    ap.add_argument("--piper_model", type=str, default="~/jetsonOrin/voices/nl_BE-nathalie-medium.onnx")
+    #ap.add_argument("--piper_model", type=str, default="~/jetsonOrin/voices/nl_BE-nathalie-medium.onnx")
+    ap.add_argument("--piper_model", type=str, default="D:\\github\\jetsonOrin\\voices\\nl_BE-nathalie-medium.onnx")    
     ap.add_argument("--piper_rate", type=int, default=22050)
     ap.add_argument("--piper_rate_auto", action="store_true")
     ap.add_argument("--piper_length_scale", type=float, default=1.0)

@@ -128,6 +128,17 @@ def open_camera_linux(cam_index: int, width: int, height: int, fps: int):
     return cap
 
 
+def open_camera_from_url(cam_url: str, width: int, height: int, fps: int):
+    url = (cam_url or "").strip()
+    cap = cv2.VideoCapture(url)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        print(f"[INFO] Camera geopend via URL: {url}", flush=True)
+    return cap
+
+
 def str2bool(s: str) -> bool:
     return str(s).strip().lower() in ("1", "true", "yes", "y", "on", "ja", "j")
 
@@ -309,6 +320,7 @@ def main():
 
     # Camera + detectie
     ap.add_argument("--cam", type=int, default=0)
+    ap.add_argument("--cam_url", type=str, default="")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=15)
@@ -382,7 +394,10 @@ def main():
         tts_enqueue(tts_queue, "Gezichtsherkenning is gestart.")
 
     # Camera
-    cap = open_camera_linux(args.cam, args.width, args.height, args.fps)
+    if (args.cam_url or "").strip():
+        cap = open_camera_from_url(args.cam_url, args.width, args.height, args.fps)
+    else:
+        cap = open_camera_linux(args.cam, args.width, args.height, args.fps)
     if not cap.isOpened():
         print("[FOUT] Kan camera niet openen.", flush=True)
         stop_event.set()

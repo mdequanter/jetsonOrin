@@ -16,13 +16,19 @@
 
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not running %}
-        <form action="{{ url_for('personen_start') }}" method="post">
+        <form action="{{ url_for('personen_start') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <label for="source" class="muted">Bron:</label>
+          <select id="source" name="source" style="font-size:16px; padding:8px 10px; border-radius:8px; border:1px solid #bbb;">
+            <option value="local" {% if source == 'local' %}selected{% endif %}>Lokale camera</option>
+            <option value="droidcam" {% if source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+          </select>
           <button class="btn btn-primary" type="submit">Start herkenning</button>
         </form>
       {% else %}
         <form action="{{ url_for('personen_stop') }}" method="post">
           <button class="btn btn-danger" type="submit">Stop herkenning</button>
         </form>
+        <p class="muted" style="margin:0; align-self:center;">Actieve bron: <strong>{{ "DroidCam" if source == "droidcam" else "Lokale camera" }}</strong></p>
       {% endif %}
     </div>
 

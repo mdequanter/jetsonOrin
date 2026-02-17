@@ -248,6 +248,7 @@ def move_unknown_session_images_to_known(session_dir: str, person: str, session:
 # ---- Herkenning procesbeheer ----
 RECOGNITION_SCRIPT = os.path.join(BASE_DIR, "nl_launch.py")  # hetzelfde pad als jouw upload/bronbestand :contentReference[oaicite:1]{index=1}
 _recognition_proc = None
+_recognition_source = "local"
 _log_lines = deque(maxlen=400)
 _log_lock = threading.Lock()
 
@@ -270,10 +271,19 @@ def recognition_running() -> bool:
     global _recognition_proc
     return _recognition_proc is not None and _recognition_proc.poll() is None
 
-def start_recognition():
-    global _recognition_proc
+def get_recognition_source() -> str:
+    return _recognition_source
+
+
+def start_recognition(source: str = "local"):
+    global _recognition_proc, _recognition_source
     if recognition_running():
         return
+
+    source = (source or "").strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+    _recognition_source = source
 
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
     os.makedirs(KNOWN_DIR, exist_ok=True)
@@ -292,6 +302,9 @@ def start_recognition():
     ]
 
     _append_log("[INFO] Start herkenning…")
+    if source == "droidcam":
+        cmd.extend(["--cam_url", _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)])
+    _append_log(f"[INFO] Bron: {'DroidCam' if source == 'droidcam' else 'Lokale camera'}")
     _append_log("[INFO] CMD: " + " ".join(cmd))
 
     _recognition_proc = subprocess.Popen(
@@ -1314,16 +1327,23 @@ def root_redirect():
 
 @app.route("/personen")
 def personen():
+    source = (request.args.get("source") or get_recognition_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = get_recognition_source()
     return render_template(
         "personen.html",
         running=recognition_running(),
-        known_people=list_known_people()
+        known_people=list_known_people(),
+        source=source,
     )
 
 @app.route("/personen/start", methods=["POST"])
 def personen_start():
-    start_recognition()
-    return redirect(url_for("personen"))
+    source = (request.form.get("source") or "local").strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+    start_recognition(source=source)
+    return redirect(url_for("personen", source=source))
 
 @app.route("/personen/stop", methods=["POST"])
 def personen_stop():
@@ -1334,7 +1354,8 @@ def personen_stop():
 def api_personen_status():
     return jsonify({
         "running": recognition_running(),
-        "known_count": len(list_known_people())
+        "known_count": len(list_known_people()),
+        "source": get_recognition_source(),
     })
 
 @app.route("/api/personen/log")

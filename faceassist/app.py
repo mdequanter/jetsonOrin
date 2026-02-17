@@ -371,6 +371,9 @@ _mobile_cam_lock = threading.Lock()
 _stream_enabled = False
 _stream_lock = threading.Lock()
 _stream_source = "local"
+_droidcam_last_frame = None
+_droidcam_last_frame_at = 0.0
+_droidcam_frame_lock = threading.Lock()
 _face_lock = threading.Lock()
 _face_detector = None
 _face_recognizer = None
@@ -463,6 +466,24 @@ def set_stream_source(source: str):
         s = "local"
     with _stream_lock:
         _stream_source = s
+
+
+def update_droidcam_last_frame(frame: np.ndarray):
+    global _droidcam_last_frame, _droidcam_last_frame_at
+    if frame is None:
+        return
+    with _droidcam_frame_lock:
+        _droidcam_last_frame = frame.copy()
+        _droidcam_last_frame_at = time.time()
+
+
+def get_droidcam_last_frame(max_age_sec: float = 2.0):
+    with _droidcam_frame_lock:
+        if _droidcam_last_frame is None:
+            return None
+        if (time.time() - _droidcam_last_frame_at) > max_age_sec:
+            return None
+        return _droidcam_last_frame.copy()
 
 
 def decode_signal_message_to_frame(msg):
@@ -810,6 +831,7 @@ def gen_frames(source="local"):
                     if frame is None:
                         continue
                     frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                    update_droidcam_last_frame(frame)
                     out = _annotate_mobile_face_frame(frame)
                     ok, buffer = cv2.imencode(".jpg", out)
                     if not ok:
@@ -915,6 +937,45 @@ def _iter_http_mjpeg_frames(url: str):
                 yield jpeg
 
 
+def _decode_jpeg_bytes(jpeg: bytes):
+    if not jpeg:
+        return None
+    arr = np.frombuffer(jpeg, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+def _fetch_one_droidcam_frame():
+    stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+    base = stream_url
+    if base.endswith("/video"):
+        base = base[:-6]
+    elif base.endswith("/mjpegfeed"):
+        base = base[:-10]
+
+    # DroidCam ondersteunt meestal /shot.jpg voor een single-frame snapshot.
+    for snap in ("shot.jpg", "photo.jpg", "image.jpg"):
+        try:
+            req = urllib.request.Request(f"{base}/{snap}", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                jpg = resp.read()
+            frame = _decode_jpeg_bytes(jpg)
+            if frame is not None:
+                return frame
+        except Exception:
+            pass
+
+    # Fallback: probeer 1 frame uit de MJPEG-stream.
+    try:
+        for jpg in _iter_http_mjpeg_frames(stream_url):
+            frame = _decode_jpeg_bytes(jpg)
+            if frame is not None:
+                return frame
+            break
+    except Exception:
+        pass
+    return None
+
+
 def _annotate_mobile_face_frame(frame):
     out = frame.copy()
     try:
@@ -973,6 +1034,7 @@ def gen_mobile_face_frames():
                 if frame is None:
                     continue
                 frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                update_droidcam_last_frame(frame)
                 out = _annotate_mobile_face_frame(frame)
                 ok, buffer = cv2.imencode(".jpg", out)
                 if not ok:
@@ -2084,15 +2146,11 @@ def camera_capture():
 
     try:
         if source == "droidcam":
-            stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
-            frame = None
-            for jpeg in _iter_http_mjpeg_frames(stream_url):
-                arr = np.frombuffer(jpeg, dtype=np.uint8)
-                f = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if f is None:
-                    continue
-                frame = cv2.resize(f, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
-                break
+            frame = get_droidcam_last_frame(max_age_sec=3.0)
+            if frame is None:
+                f = _fetch_one_droidcam_frame()
+                if f is not None:
+                    frame = cv2.resize(f, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
             if frame is None:
                 raise RuntimeError("Geen frame ontvangen van DroidCam.")
             out_path, added = capture_known_person_from_frame(person, frame, filename_suffix="droidcam")

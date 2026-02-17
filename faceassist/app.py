@@ -34,6 +34,80 @@ SEG_SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MOBILE_VIEW_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://192.168.0.55:4747/video")
 MOBILE_VIEW_WIDTH = int(os.environ.get("MOBILE_VIEW_WIDTH", "640"))
 MOBILE_VIEW_HEIGHT = int(os.environ.get("MOBILE_VIEW_HEIGHT", "480"))
+VOICE_VOLUME = int(os.environ.get("VOICE_VOLUME", "100"))
+SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
+
+
+def _default_app_settings():
+    return {
+        "segmentation_server": SIGNALING_SERVER_URL,
+        "droidcam_url": MOBILE_VIEW_DROIDCAM_URL,
+        "segmentation_model": SEG_MODEL_PATH,
+        "voice_volume": VOICE_VOLUME,
+    }
+
+
+def _coerce_voice_volume(value, default_value=100):
+    try:
+        v = int(value)
+    except Exception:
+        v = int(default_value)
+    return max(0, min(100, v))
+
+
+def load_app_settings():
+    defaults = _default_app_settings()
+    if not os.path.isfile(SETTINGS_PATH):
+        return defaults
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return defaults
+        merged = dict(defaults)
+        merged.update({
+            "segmentation_server": str(data.get("segmentation_server", defaults["segmentation_server"])).strip() or defaults["segmentation_server"],
+            "droidcam_url": str(data.get("droidcam_url", defaults["droidcam_url"])).strip() or defaults["droidcam_url"],
+            "segmentation_model": str(data.get("segmentation_model", defaults["segmentation_model"])).strip() or defaults["segmentation_model"],
+            "voice_volume": _coerce_voice_volume(data.get("voice_volume", defaults["voice_volume"]), defaults["voice_volume"]),
+        })
+        return merged
+    except Exception:
+        return defaults
+
+
+def save_app_settings(settings: dict):
+    payload = {
+        "segmentation_server": str(settings.get("segmentation_server", "")).strip(),
+        "droidcam_url": str(settings.get("droidcam_url", "")).strip(),
+        "segmentation_model": str(settings.get("segmentation_model", "")).strip(),
+        "voice_volume": _coerce_voice_volume(settings.get("voice_volume", 100), 100),
+    }
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def apply_runtime_settings(settings: dict):
+    global SIGNALING_SERVER_URL, MOBILE_VIEW_DROIDCAM_URL, SEG_MODEL_PATH, VOICE_VOLUME, _seg_model
+    old_model = SEG_MODEL_PATH
+    SIGNALING_SERVER_URL = str(settings.get("segmentation_server", SIGNALING_SERVER_URL)).strip() or SIGNALING_SERVER_URL
+    MOBILE_VIEW_DROIDCAM_URL = str(settings.get("droidcam_url", MOBILE_VIEW_DROIDCAM_URL)).strip() or MOBILE_VIEW_DROIDCAM_URL
+    SEG_MODEL_PATH = str(settings.get("segmentation_model", SEG_MODEL_PATH)).strip() or SEG_MODEL_PATH
+    VOICE_VOLUME = _coerce_voice_volume(settings.get("voice_volume", VOICE_VOLUME), VOICE_VOLUME)
+    if SEG_MODEL_PATH != old_model:
+        _seg_model = None
+
+
+def current_app_settings():
+    return {
+        "segmentation_server": SIGNALING_SERVER_URL,
+        "droidcam_url": MOBILE_VIEW_DROIDCAM_URL,
+        "segmentation_model": SEG_MODEL_PATH,
+        "voice_volume": VOICE_VOLUME,
+    }
+
+
+apply_runtime_settings(load_app_settings())
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -294,6 +368,7 @@ def start_recognition(source: str = "local"):
     cmd = [
         "python3", RECOGNITION_SCRIPT,
         "--known", KNOWN_DIR,
+        "--voice_volume", str(VOICE_VOLUME),
         # optioneel: zet speak uit als je geen audio wil vanuit deze service:
         # "--no_tts",
         # optioneel: camera settings
@@ -1446,6 +1521,38 @@ def api_personen_status():
 def api_personen_log():
     with _log_lock:
         return jsonify({"lines": list(_log_lines)})
+
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings_page():
+    msg = request.args.get("msg", "")
+    level = request.args.get("level", "info")
+
+    if request.method == "POST":
+        settings = current_app_settings()
+        settings["segmentation_server"] = (request.form.get("segmentation_server") or "").strip() or settings["segmentation_server"]
+        settings["droidcam_url"] = (request.form.get("droidcam_url") or "").strip() or settings["droidcam_url"]
+        settings["segmentation_model"] = (request.form.get("segmentation_model") or "").strip() or settings["segmentation_model"]
+        settings["voice_volume"] = _coerce_voice_volume(request.form.get("voice_volume"), settings["voice_volume"])
+
+        try:
+            save_app_settings(settings)
+            apply_runtime_settings(settings)
+            msg = "Instellingen opgeslagen."
+            level = "ok"
+        except Exception as e:
+            msg = f"Instellingen opslaan mislukt: {e}"
+            level = "error"
+
+        return redirect(url_for("settings_page", msg=msg, level=level))
+
+    return render_template(
+        "settings.html",
+        msg=msg,
+        level=level,
+        settings=current_app_settings(),
+    )
+
 
 @app.route("/camera")
 def camera_page():

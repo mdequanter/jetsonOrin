@@ -217,7 +217,7 @@ def read_piper_sample_rate(model_path: str, default_rate: int = 22050) -> int:
     return default_rate
 
 
-def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float = 1.0):
+def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float = 1.0, volume: int = 100):
     p1 = subprocess.Popen(
         ["piper", "--model", model_path, "--output_raw", "--length_scale", str(length_scale)],
         stdin=subprocess.PIPE,
@@ -225,32 +225,32 @@ def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float 
         stderr=subprocess.DEVNULL,
     )
 
+    try:
+        raw_audio, _ = p1.communicate(input=(text + "\n").encode("utf-8"), timeout=60)
+    except subprocess.TimeoutExpired:
+        p1.kill()
+        return
+
+    if not raw_audio:
+        return
+
+    vol = max(0, min(100, int(volume)))
+    if vol < 100:
+        pcm = np.frombuffer(raw_audio, dtype=np.int16).astype(np.float32)
+        pcm *= (vol / 100.0)
+        np.clip(pcm, -32768, 32767, out=pcm)
+        raw_audio = pcm.astype(np.int16).tobytes()
+
     p2 = subprocess.Popen(
         ["aplay", "-r", str(sample_rate), "-f", "S16_LE", "-t", "raw", "-"],
-        stdin=p1.stdout,
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-
     try:
-        if p1.stdin is not None:
-            p1.stdin.write((text + "\n").encode("utf-8"))
-            p1.stdin.close()
-    except Exception:
-        pass
-
-    if p1.stdout is not None:
-        p1.stdout.close()
-
-    try:
-        p2.wait(timeout=60)
+        p2.communicate(input=raw_audio, timeout=60)
     except subprocess.TimeoutExpired:
         p2.kill()
-
-    try:
-        p1.wait(timeout=60)
-    except subprocess.TimeoutExpired:
-        p1.kill()
 
 
 def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
@@ -284,7 +284,13 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
             continue
 
         try:
-            piper_say(text, model_path=model_path, sample_rate=sample_rate, length_scale=args.piper_length_scale)
+            piper_say(
+                text,
+                model_path=model_path,
+                sample_rate=sample_rate,
+                length_scale=args.piper_length_scale,
+                volume=args.voice_volume,
+            )
         except Exception:
             pass
 
@@ -371,9 +377,11 @@ def main():
     ap.add_argument("--piper_rate", type=int, default=22050)
     ap.add_argument("--piper_rate_auto", action="store_true")
     ap.add_argument("--piper_length_scale", type=float, default=1.0)
+    ap.add_argument("--voice_volume", type=int, default=100)
     ap.add_argument("--tts_queue_size", type=int, default=20)
 
     args = ap.parse_args()
+    args.voice_volume = max(0, min(100, int(args.voice_volume)))
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set title = "Instellingen" %}
+
+{% block content %}
+  <h1>Instellingen</h1>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  <form class="card" method="post" action="{{ url_for('settings_page') }}">
+    <div style="display:grid; gap:12px; max-width:900px;">
+      <label>
+        <div class="muted">segmentationServer</div>
+        <input name="segmentation_server" type="text" value="{{ settings.segmentation_server }}"
+               placeholder="ws://192.168.0.64:9000"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:100%;">
+      </label>
+
+      <label>
+        <div class="muted">droidcam url</div>
+        <input name="droidcam_url" type="text" value="{{ settings.droidcam_url }}"
+               placeholder="http://192.168.0.55:4747/video"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:100%;">
+      </label>
+
+      <label>
+        <div class="muted">segmentation model</div>
+        <input name="segmentation_model" type="text" value="{{ settings.segmentation_model }}"
+               placeholder="models/unrealsim.pt"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:100%;">
+      </label>
+
+      <label>
+        <div class="muted">geluidsniveau voice (0-100)</div>
+        <input name="voice_volume" type="number" min="0" max="100" step="1" value="{{ settings.voice_volume }}"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:160px;">
+      </label>
+    </div>
+
+    <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn btn-primary" type="submit">Opslaan</button>
+    </div>
+
+    <p class="muted" style="margin-top:12px;">
+      Opmerking: lopende processen gebruiken nieuwe waarden na herstart van de betreffende stream/proces.
+    </p>
+  </form>
+{% endblock %}

@@ -13,10 +13,8 @@
   <div class="card">
     {% if source == 'websocket'  %}<p>Signaling: <span class="mono">{{ signaling_server }}</span></p> {% endif %}
     <p>Model: <span class="mono">{{ model_path }}</span></p>
-    <p>Actieve bron: <strong id="seg_source">{{ active_source|default("websocket") }}</strong></p>
-    <p>Verbonden: <strong id="seg_connected">{{ "JA" if connected else "NEE" }}</strong></p>
     <p>Heading: <strong id="seg_heading">{{ '%.2f'|format(heading) }}</strong></p>
-    <p>Laatste fout: <span id="seg_error" class="mono muted"></span></p>
+    
 
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       {% if not running %}
@@ -34,7 +32,9 @@
           <button class="btn btn-danger" type="submit">Stop segmentatie</button>
         </form>
       {% endif %}
+    <p>Laatste fout: <span id="seg_error" class="mono muted"></span></p>
     </div>
+    
 
     <div style="margin-top:14px;">
       {% if running %}

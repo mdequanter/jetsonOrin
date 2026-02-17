@@ -431,7 +431,7 @@ def main():
     # Unknown foto reeks (rechtstreeks in unknown/)
     unknown_dir = "unknown"
     unknown_photo_count = 0
-    unknown_photo_interval = 0.2  # 20 foto's in ~4s (pas aan)
+    unknown_photo_interval = 60  # 20 foto's in ~4s (pas aan)
     unknown_last_photo_at = 0.0
 
     # Snapshot-spam preventie voor "snapshots/" (bekend + 1 bij onbekend start)
@@ -536,8 +536,7 @@ def main():
                     if speak_enabled:
                         tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
 
-                # neem foto's tot 20 stuks
-                if unknown_dir is not None and unknown_photo_count < 20:
+                if unknown_dir is not None:
                     if (now - unknown_last_photo_at) >= unknown_photo_interval:
                         unknown_photo_count += 1
                         p = save_unknown_photo(frame, face, unknown_dir, unknown_photo_count)

@@ -14,6 +14,7 @@ import time
 import numpy as np
 import json
 import websockets
+import urllib.request
 
 
 app = Flask(__name__)
@@ -845,74 +846,101 @@ def gen_frames():
                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
 
 
-def gen_mobile_face_frames():
-    while True:
-        cam = get_mobile_cam()
-        if cam is None:
-            time.sleep(0.2)
-            continue
+def _iter_http_mjpeg_frames(url: str):
+    # Browser kan de stream tonen; deze parser leest dezelfde JPEG-bytes rechtstreeks van HTTP.
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        buf = b""
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                soi = buf.find(b"\xff\xd8")
+                if soi < 0:
+                    if len(buf) > 2_000_000:
+                        buf = buf[-64_000:]
+                    break
+                eoi = buf.find(b"\xff\xd9", soi + 2)
+                if eoi < 0:
+                    if soi > 0:
+                        buf = buf[soi:]
+                    break
+                jpeg = buf[soi:eoi + 2]
+                buf = buf[eoi + 2:]
+                yield jpeg
 
-        ok, frame = cam.read()
-        if not ok or frame is None:
-            # DroidCam kan soms haperen; forceer reconnect.
-            release_mobile_cam()
-            time.sleep(0.25)
-            continue
 
-        out = frame.copy()
-        try:
-            known = get_known_embeddings_cached(refresh_sec=5.0)
-            with _face_lock:
-                detector, recognizer = _get_face_models()
-                h, w = out.shape[:2]
-                detector.setInputSize((w, h))
-                _, faces = detector.detect(out)
-                if faces is not None and len(faces) > 0:
-                    for face in faces:
-                        x, y, fw, fh = face[:4].astype(int)
-                        label = "Onbekend"
-                        color = (0, 0, 255)
-                        score_txt = ""
+def _annotate_mobile_face_frame(frame):
+    out = frame.copy()
+    try:
+        known = get_known_embeddings_cached(refresh_sec=5.0)
+        with _face_lock:
+            detector, recognizer = _get_face_models()
+            h, w = out.shape[:2]
+            detector.setInputSize((w, h))
+            _, faces = detector.detect(out)
+            if faces is not None and len(faces) > 0:
+                for face in faces:
+                    x, y, fw, fh = face[:4].astype(int)
+                    label = "Onbekend"
+                    color = (0, 0, 255)
+                    score_txt = ""
 
-                        try:
-                            aligned = recognizer.alignCrop(out, face)
-                            feat = recognizer.feature(aligned).astype(np.float32)
-                            best_name, best_score, second_score = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
-                            confident = (
-                                best_name is not None
-                                and (best_score >= 0.70)
-                                and ((best_score - second_score) >= 0.06)
-                            )
-                            if confident:
-                                label = best_name
-                                color = (0, 255, 0)
-                            if best_score >= 0:
-                                score_txt = f" {best_score:.2f}"
-                        except Exception:
-                            pass
-
-                        cv2.rectangle(out, (x, y), (x + fw, y + fh), color, 2)
-                        cv2.putText(
-                            out,
-                            f"{label}{score_txt}",
-                            (max(0, x), max(20, y - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            color,
-                            2,
+                    try:
+                        aligned = recognizer.alignCrop(out, face)
+                        feat = recognizer.feature(aligned).astype(np.float32)
+                        best_name, best_score, second_score = _best_match(recognizer, feat, known) if known else (None, -1.0, -1.0)
+                        confident = (
+                            best_name is not None
+                            and (best_score >= 0.70)
+                            and ((best_score - second_score) >= 0.06)
                         )
-        except Exception:
-            pass
+                        if confident:
+                            label = best_name
+                            color = (0, 255, 0)
+                        if best_score >= 0:
+                            score_txt = f" {best_score:.2f}"
+                    except Exception:
+                        pass
 
-        ok, buffer = cv2.imencode(".jpg", out)
-        if not ok:
-            continue
+                    cv2.rectangle(out, (x, y), (x + fw, y + fh), color, 2)
+                    cv2.putText(
+                        out,
+                        f"{label}{score_txt}",
+                        (max(0, x), max(20, y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        color,
+                        2,
+                    )
+    except Exception:
+        pass
+    return out
 
-        frame_bytes = buffer.tobytes()
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-        )
+
+def gen_mobile_face_frames():
+    stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+    while True:
+        try:
+            for jpeg in _iter_http_mjpeg_frames(stream_url):
+                arr = np.frombuffer(jpeg, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+                out = _annotate_mobile_face_frame(frame)
+                ok, buffer = cv2.imencode(".jpg", out)
+                if not ok:
+                    continue
+                frame_bytes = buffer.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+                )
+        except Exception as e:
+            print(f"[mobile-face] streamfout: {e}")
+            time.sleep(1.0)
 
 
 def capture_known_person_from_camera(person: str, cam_index: int = 0):

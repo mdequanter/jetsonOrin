@@ -5,7 +5,7 @@ import shutil
 import uuid
 import base64
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import threading
 from collections import deque
@@ -175,6 +175,7 @@ def _speak_menu_async(text: str):
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
 UNKNOWN_TS_RE_6 = re.compile(r"^(?P<d>\d{6})_(?P<t>\d{6})$")
+UNKNOWN_ROOT_IMAGE_TS_RE = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})_[^/\\]+\.(jpg|jpeg|png|bmp|webp)$", re.IGNORECASE)
 
 
 def parse_unknown_session_name(folder_name: str):
@@ -342,6 +343,40 @@ def list_unknown_root_images():
             })
     files.sort(key=lambda x: x["mtime"], reverse=True)
     return [x["filename"] for x in files]
+
+
+def _parse_unknown_root_image_datetime(filename: str):
+    m = UNKNOWN_ROOT_IMAGE_TS_RE.match((filename or "").strip())
+    if not m:
+        return None
+    raw = f"{m.group('d')}_{m.group('t')}"
+    try:
+        return datetime.strptime(raw, "%Y%m%d_%H%M%S")
+    except Exception:
+        return None
+
+
+def cleanup_old_unknown_root_images(max_age_days: int = 7):
+    os.makedirs(UNKNOWN_DIR, exist_ok=True)
+    cutoff = datetime.now() - timedelta(days=max_age_days)
+    removed = 0
+
+    for fn in os.listdir(UNKNOWN_DIR):
+        p = os.path.join(UNKNOWN_DIR, fn)
+        if not os.path.isfile(p) or not is_allowed_image_filename(fn):
+            continue
+
+        shot_dt = _parse_unknown_root_image_datetime(fn)
+        if shot_dt is None or shot_dt >= cutoff:
+            continue
+
+        try:
+            os.remove(p)
+            removed += 1
+        except Exception:
+            pass
+
+    return removed
 
 
 def resolve_unknown_session_dir(session: str):
@@ -2037,6 +2072,7 @@ def faces_extract_save():
 def unknown_process_page():
     msg = request.args.get("msg", "")
     level = request.args.get("level", "info")
+    cleanup_old_unknown_root_images(max_age_days=7)
     files = list_unknown_root_images()
     items = []
 

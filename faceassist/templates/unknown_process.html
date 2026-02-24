@@ -37,7 +37,8 @@
         <form action="{{ url_for('unknown_process_save_one') }}" method="post" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
           <input type="hidden" name="filename" value="{{ it.filename }}">
           <label for="name_{{ loop.index }}" class="muted">Naam:</label>
-          <input id="name_{{ loop.index }}" name="name" type="text" value="{{ it.suggested_name or '' }}" placeholder="Bijv. Jan"
+          <input id="name_{{ loop.index }}" name="name" type="text"
+                 value="{{ it.suggested_name or (it.best_name if (it.best_score|float) > 0.6 else '') }}" placeholder="Bijv. Jan"
                  style="font-size:18px; padding:8px 10px; border-radius:8px; border:1px solid #bbb; min-width:180px;">
           <button class="btn btn-primary" type="submit">Opslaan</button>
         </form>

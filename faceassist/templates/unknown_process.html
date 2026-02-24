@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% set title = "Verwerk ongekende" %}
+{% set title = "Verwerk ongekende (" ~ (items|length) ~ ")" %}
 
 {% block content %}
-  <h1>Verwerk ongekende</h1>
+  <h1>Verwerk ongekende ({{ items|length }})</h1>
   <p class="muted">Onbekende gezichten in <span class="mono">unknown/</span>. Per foto kan je naam invullen, opslaan of verwijderen.</p>
 
   {% if msg %}

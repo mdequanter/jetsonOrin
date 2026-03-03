@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% set title = "Object detectie (YOLO)" %}
+
+{% block content %}
+  <h1>Object detectie (YOLO)</h1>
+  <p class="muted">Upload 1 foto. De pagina detecteert objecten met Ultralytics YOLO en toont de geannoteerde output.</p>
+
+  <div class="card">
+    <form action="{{ url_for('object_detection_page') }}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <input name="photo" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" required style="font-size:16px;">
+      <label for="confidence" class="muted">Confidence:</label>
+      <input id="confidence" name="confidence" type="number" min="0.01" max="0.95" step="0.01" value="{{ '%.2f'|format(confidence) }}" style="font-size:16px; width:90px;">
+      <button class="btn btn-primary" type="submit">Upload en detecteer</button>
+    </form>
+    <p class="muted mono" style="margin:8px 0 0 0;">Model: {{ model_path }}</p>
+  </div>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  {% if image_b64 %}
+    <div class="card">
+      {% if filename %}
+        <div class="muted mono" style="margin-bottom:8px;">{{ filename }}</div>
+      {% endif %}
+      <img alt="YOLO objectdetectie resultaat" src="data:image/jpeg;base64,{{ image_b64 }}">
+    </div>
+  {% endif %}
+
+  {% if detections %}
+    <div class="card">
+      <h2 style="margin-top:0;">Detecties</h2>
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">#</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Label</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Score</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Box (x1,y1,x2,y2)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in detections %}
+            <tr>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ d.idx }}</td>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ d.label }}</td>
+              <td style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ d.score }}</td>
+              <td class="mono" style="padding:6px; border-bottom:1px solid #f0f0f0;">{{ d.x1 }}, {{ d.y1 }}, {{ d.x2 }}, {{ d.y2 }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,6 @@
+{
+  "segmentation_server": "wss://signaling.ehb.be",
+  "droidcam_url": "http://192.168.0.55:4747/video",
+  "segmentation_model": "D:\\github\\jetsonOrin\\faceassist\\models\\unrealsim.pt",
+  "voice_volume": 100
+}

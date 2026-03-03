@@ -30,6 +30,8 @@ FACE_EXTRACT_TMP_DIR = os.path.join(BASE_DIR, "_tmp_face_extract")
 SIGNALING_SERVER_URL = os.environ.get("SIGNALING_SERVER_URL", "ws://192.168.0.64:9000")
 SEG_MODEL_PATH = os.path.join(BASE_DIR, "models", "unrealsim.pt")
 SEG_DETECTION_CONFIDENCE = 0.3
+DET_MODEL_PATH = os.environ.get("DET_MODEL_PATH", "yolo11n.pt")
+DET_CONFIDENCE = float(os.environ.get("DET_CONFIDENCE", "0.25"))
 SEG_SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MOBILE_VIEW_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://192.168.0.55:4747/video")
 MOBILE_VIEW_WIDTH = int(os.environ.get("MOBILE_VIEW_WIDTH", "640"))
@@ -577,6 +579,8 @@ _seg_last_frame_id = None
 _seg_last_jpeg = None
 _seg_last_update = 0.0
 _seg_model = None
+_det_model = None
+_det_model_lock = threading.Lock()
 
 def get_camera(cam_index=0):
     global _camera
@@ -795,6 +799,70 @@ def get_segmentation_model():
         raise RuntimeError(f"Segmentation model niet gevonden: {SEG_MODEL_PATH}")
     _seg_model = YOLO(SEG_MODEL_PATH, verbose=False)
     return _seg_model
+
+
+def _coerce_det_confidence(value, default_value=DET_CONFIDENCE):
+    try:
+        v = float(value)
+    except Exception:
+        v = float(default_value)
+    return max(0.01, min(0.95, v))
+
+
+def get_detection_model():
+    global _det_model
+    if _det_model is not None:
+        return _det_model
+    try:
+        from ultralytics import YOLO
+    except Exception as e:
+        raise RuntimeError(f"Ultralytics import faalde: {e}")
+
+    model_source = (DET_MODEL_PATH or "").strip() or "yolo11n.pt"
+    if os.path.isabs(model_source) and not os.path.isfile(model_source):
+        raise RuntimeError(f"YOLO model niet gevonden: {model_source}")
+
+    with _det_model_lock:
+        if _det_model is None:
+            _det_model = YOLO(model_source, verbose=False)
+    return _det_model
+
+
+def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFIDENCE):
+    model = get_detection_model()
+    conf = _coerce_det_confidence(confidence, DET_CONFIDENCE)
+    results = model(img, conf=conf, verbose=False)
+
+    annotated = img.copy()
+    detections = []
+    idx = 0
+
+    for r in results:
+        if r.boxes is None or len(r.boxes) == 0:
+            continue
+        try:
+            annotated = r.plot()
+        except Exception:
+            pass
+
+        names = r.names if isinstance(r.names, dict) else {}
+        for b in r.boxes:
+            idx += 1
+            cls_idx = int(float(b.cls[0].item())) if b.cls is not None else -1
+            conf_score = float(b.conf[0].item()) if b.conf is not None else 0.0
+            x1, y1, x2, y2 = [int(v) for v in b.xyxy[0].tolist()]
+            label = names.get(cls_idx, str(cls_idx))
+            detections.append({
+                "idx": idx,
+                "label": label,
+                "score": f"{conf_score:.4f}",
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+            })
+
+    return annotated, detections, conf
 
 
 def process_segment_frame(frame):
@@ -1766,6 +1834,55 @@ def segmentation_feed():
 def api_segmentation_status():
     st = get_seg_state()
     return jsonify(st)
+
+@app.route("/object-detection", methods=["GET", "POST"])
+def object_detection_page():
+    msg = ""
+    level = "info"
+    image_b64 = ""
+    detections = []
+    filename = ""
+    confidence = _coerce_det_confidence(request.form.get("confidence", DET_CONFIDENCE), DET_CONFIDENCE)
+
+    if request.method == "POST":
+        up = request.files.get("photo")
+        if up is None or not up.filename:
+            msg = "Selecteer een foto."
+            level = "error"
+        elif not is_allowed_image_filename(up.filename):
+            msg = "Bestandstype niet ondersteund. Gebruik jpg/jpeg/png/bmp/webp."
+            level = "error"
+        else:
+            filename = os.path.basename(up.filename)
+            data = up.read()
+            arr = np.frombuffer(data, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                msg = "Kon de afbeelding niet lezen."
+                level = "error"
+            else:
+                try:
+                    annotated, detections, confidence = detect_objects_uploaded_image(img, confidence=confidence)
+                    ok, enc = cv2.imencode(".jpg", annotated)
+                    if not ok:
+                        raise RuntimeError("Annotatie kon niet als JPG worden opgeslagen.")
+                    image_b64 = base64.b64encode(enc.tobytes()).decode("ascii")
+                    msg = f"Klaar: {len(detections)} object(en) gedetecteerd."
+                    level = "ok"
+                except Exception as e:
+                    msg = f"Objectdetectie mislukt: {e}"
+                    level = "error"
+
+    return render_template(
+        "object_detection.html",
+        msg=msg,
+        level=level,
+        image_b64=image_b64,
+        detections=detections,
+        filename=filename,
+        confidence=confidence,
+        model_path=DET_MODEL_PATH,
+    )
 
 @app.route("/annotate-photo", methods=["GET", "POST"])
 def annotate_photo_page():

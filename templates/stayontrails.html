@@ -194,15 +194,15 @@
   let lastRateT = performance.now();
 
   // AUDIO files served by Flask static
-    const SOUND_MAP = {
-    left:    "audio/left.mp3",
-    right:   "audio/right.mp3",
-    forward: "audio/forward.mp3",
-    started: "audio/application_started.mp3",
-    be_carefull: "audio/be_carefull.mp3",
-    beep: "audio/beep.wav"
+  const SOUND_MAP = {
+    left:    "{{ url_for('static', filename='audio/left.mp3') }}",
+    right:   "{{ url_for('static', filename='audio/right.mp3') }}",
+    forward: "{{ url_for('static', filename='audio/forward.mp3') }}",
+    started: "{{ url_for('static', filename='audio/application_started.mp3') }}",
+    be_carefull: "{{ url_for('static', filename='audio/be_carefull.mp3') }}",
+    beep: "{{ url_for('static', filename='audio/beep.wav') }}"
   };
-  
+
   const player = new Audio();
   player.preload = "auto";
 

@@ -10,8 +10,15 @@ from ultralytics import YOLO
 import ssl
 
 # --- Minimale vaste instellingen ---
-SIGNALING_SERVER = "wss://signaling.ehb.be"
+
+DEFAULT_ROOM = "/ws/pathnavigation"
+DEFAULT_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
+
+
+
+SIGNALING_SERVER = f"ws://localhost:9000{DEFAULT_ROOM}"
 MODEL_PATH = r"faceassist\\models\\unrealsim.pt"
+BEARER_TOKEN = DEFAULT_TOKEN
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
@@ -48,21 +55,24 @@ def decode_message_to_frame(msg):
 
 async def receive_and_infer():
 
-    ssl_context = ssl.create_default_context()
+    # ssl_context = ssl.create_default_context() # Uncomment if using wss:// and ensure the server has a valid TLS certificate
+    ssl_context = None
 
 
-    async with websockets.connect(SIGNALING_SERVER,
-            ssl=ssl_context,
-            origin="https://signaling.ehb.be",
-            compression=None,
-            additional_headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/121.0.0.0 Safari/537.36"
-                )
-            },
-        ) as ws:
+    async with websockets.connect(
+        SIGNALING_SERVER,
+        ssl=ssl_context,
+        origin="http://localhost",
+        compression=None,
+        additional_headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/121.0.0.0 Safari/537.36"
+            ),
+            "Authorization": f"Bearer {BEARER_TOKEN}"
+        },
+    ) as ws:
         print(f" Verbonden met signaling server ({SIGNALING_SERVER})")
 
         pending_frame_id = None  # als er ooit frame_meta komt, houden we het stil bij

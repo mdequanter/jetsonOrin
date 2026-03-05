@@ -195,12 +195,12 @@
 
   // AUDIO files served by Flask static
   const SOUND_MAP = {
-    left:    "{{ url_for('audio', filename='left.mp3') }}",
-    right:   "{{ url_for('audio', filename='right.mp3') }}",
-    forward: "{{ url_for('audio', filename='forward.mp3') }}",
-    started: "{{ url_for('audio', filename='application_started.mp3') }}",
-    be_carefull: "{{ url_for('audio', filename='be_carefull.mp3') }}",
-    beep: "{{ url_for('audio', filename='audio/beep.wav') }}"
+    left:    "{{ url_for('static', filename='audio/left.mp3') }}",
+    right:   "{{ url_for('static', filename='audio/right.mp3') }}",
+    forward: "{{ url_for('static', filename='audio/forward.mp3') }}",
+    started: "{{ url_for('static', filename='audio/application_started.mp3') }}",
+    be_carefull: "{{ url_for('static', filename='audio/be_carefull.mp3') }}",
+    beep: "{{ url_for('static', filename='audio/beep.wav') }}"
   };
 
   const player = new Audio();

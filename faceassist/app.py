@@ -2542,6 +2542,13 @@ def unknown_delete():
 
     return redirect(url_for("unknown_page", level="ok", msg=f"Map {session} verwijderd."))
 
+@app.get("/stayontrails")
+def stayontrails():
+    # Render de pagina (HTML/JS blijft client-side)
+    return render_template("stayontrails.html")
+
+
+
 
 @app.route("/unknown/upload-enroll", methods=["POST"])
 def unknown_upload_enroll():

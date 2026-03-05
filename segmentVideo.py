@@ -1,7 +1,6 @@
 import asyncio
 import json
 import base64
-import time
 
 import websockets
 import cv2
@@ -13,8 +12,6 @@ import ssl
 
 DEFAULT_ROOM = "/ws/pathnavigation"
 DEFAULT_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
-
-
 
 SIGNALING_SERVER = f"ws://localhost:9000{DEFAULT_ROOM}"
 MODEL_PATH = r"faceassist/models/unrealsim.pt"
@@ -54,10 +51,8 @@ def decode_message_to_frame(msg):
         return None
 
 async def receive_and_infer():
-
-    # ssl_context = ssl.create_default_context() # Uncomment if using wss:// and ensure the server has a valid TLS certificate
+    # ssl_context = ssl.create_default_context()  # Uncomment for wss:// with valid certs
     ssl_context = None
-
 
     async with websockets.connect(
         SIGNALING_SERVER,
@@ -73,18 +68,17 @@ async def receive_and_infer():
             "Authorization": f"Bearer {BEARER_TOKEN}"
         },
     ) as ws:
-        
-        print(f" Verbonden met signaling server ({SIGNALING_SERVER})")
 
-        pending_frame_id = None  # als er ooit frame_meta komt, houden we het stil bij
+        print(f"Verbonden met signaling server ({SIGNALING_SERVER})")
+
+        pending_frame_id = None
 
         while True:
             msg = await ws.recv()
 
             frame_id = None
-            frame = None
 
-            # Stilletjes frame_meta negeren (maar frame_id wel meenemen indien aanwezig)
+            # frame_meta stil negeren (frame_id bijhouden)
             if isinstance(msg, str):
                 try:
                     payload = json.loads(msg)
@@ -100,7 +94,6 @@ async def receive_and_infer():
                 frame_id = pending_frame_id
                 pending_frame_id = None
             elif isinstance(msg, str):
-                # als het een JSON frame was met frame_id
                 try:
                     payload = json.loads(msg)
                     frame_id = payload.get("frame_id", pending_frame_id)
@@ -113,7 +106,6 @@ async def receive_and_infer():
                 continue
 
             h, w = frame.shape[:2]
-            overlay = frame.copy()
 
             # --- Inference ---
             results = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)
@@ -124,17 +116,11 @@ async def receive_and_infer():
                 if r.masks is None or len(r.masks.data) == 0:
                     continue
 
-                # neem eerste mask
                 mask = r.masks.data[0].cpu().numpy()
                 mask = (mask * 255).astype(np.uint8)
                 mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-                # groen overlay op mask
-                green = np.full_like(frame, (0, 255, 0))
-                blended = cv2.addWeighted(frame, 0.3, green, 0.7, 0)
-                overlay[mask > 0] = blended[mask > 0]
-
-                # scanlijnen + midpoints
+                # scanlijnen + midpoints (zonder tekenen)
                 for rr in SCAN_HEIGHTS:
                     y = int(h * rr)
                     if y >= h:
@@ -145,34 +131,20 @@ async def receive_and_infer():
                     if len(idx) > 0:
                         mx = int(np.mean(idx))
                         midpoints.append((mx, y))
-                        cv2.circle(overlay, (mx, y), 5, (255, 0, 0), -1)
 
-                    cv2.line(overlay, (0, y), (w, y), (150, 150, 150), 1)
-
-            # --- Heading + pijl ---
-            direction_angle = 90.0
-            start_point = (w // 2, h)
+            # --- Heading berekenen ---
+            direction_angle = 90.0  # default
+            start_x = w // 2
+            start_y = h
 
             if midpoints:
                 avg_x = int(np.mean([p[0] for p in midpoints]))
-                target_point = (avg_x, min([p[1] for p in midpoints]))
+                target_y = min([p[1] for p in midpoints])
 
-                dx = avg_x - start_point[0]
-                dy = start_point[1] - target_point[1]
+                dx = avg_x - start_x
+                dy = start_y - target_y
                 direction_angle = float(np.degrees(np.arctan2(dy, dx)))
 
-                cv2.arrowedLine(overlay, start_point, target_point, (0, 0, 255), 5, tipLength=0.2)
-            else:
-                # optioneel: pijl rechtdoor als fallback
-                cv2.arrowedLine(overlay, start_point, (w // 2, int(h * 0.6)), (0, 0, 255), 5, tipLength=0.2)
-
-            # Toon resultaat
-            cv2.imshow("Segmentation + Heading", overlay)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
             await ws.send(json.dumps({"heading": round(direction_angle, 2), "frame_id": frame_id}))
-
-    cv2.destroyAllWindows()
 
 asyncio.run(receive_and_infer())

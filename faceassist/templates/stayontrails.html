@@ -140,7 +140,13 @@
 
 <script>
 (() => {
-  const SIGNALING_SERVER = "wss://localhost:9000/stayontrails/ws";
+
+  const token = "…";
+  const SIGNALING_SERVER = `wss://localhost:9000/stayontrails/ws:9000?token=${encodeURIComponent(token)}`;
+  ws = new WebSocket(SIGNALING_SERVER);
+
+
+  //const SIGNALING_SERVER = "wss://localhost:9000/stayontrails/ws";
 
   const TARGET_W = 640, TARGET_H = 480;
   const JPEG_QUALITY = 0.70; // 0..1 (browser)

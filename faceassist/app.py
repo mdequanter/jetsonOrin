@@ -2663,4 +2663,10 @@ def video_feed():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # If you use SSL like before, keep it. Otherwise remove ssl_context for local testing.
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        ssl_context=("jetson-desktop+5.pem", "jetson-desktop+5-key.pem"),
+        debug=False
+    )

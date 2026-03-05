@@ -16,5 +16,10 @@ def stayontrails():
 
 
 if __name__ == "__main__":
-    # Voor lokaal testen
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # If you use SSL like before, keep it. Otherwise remove ssl_context for local testing.
+    app.run(
+        host="0.0.0.0",
+        port=5001,
+        ssl_context=("localhost+2.pem", "localhost+2-key.pem"),
+        debug=False
+    )

@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stay On Trails - Try it</title>
+  <style>
+    :root{--focus:#22d3ee;--menu-bg:rgba(15,23,42,.9);--menu-border:rgba(255,255,255,.2);--accent:#facc15;--accent-ink:#111827}
+    html,body{margin:0;height:100%;background:#000;color:#fff;font-family:Arial,Helvetica,sans-serif}
+    .skip-link{position:absolute;left:8px;top:-48px;z-index:5;background:var(--accent);color:var(--accent-ink);padding:8px 10px;border-radius:8px;font-weight:700;text-decoration:none}
+    .skip-link:focus{top:8px}
+    a:focus-visible,button:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+    .topbar{position:relative;z-index:3;background:var(--menu-bg);border-bottom:1px solid var(--menu-border)}
+    .topbar-inner{max-width:1000px;margin:0 auto;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .brand{margin:0;font-size:18px;font-weight:700}
+    .menu{list-style:none;margin:0;padding:0;display:flex;gap:10px;flex-wrap:wrap}
+    .menu a{display:inline-block;color:#fff;text-decoration:none;font-weight:700;padding:7px 10px;border-radius:8px}
+    .menu a:hover{background:rgba(255,255,255,.12)}
+    .menu .cta{background:var(--accent);color:var(--accent-ink)}
+    .menu .cta:hover{background:#fde047}
+    .wrap{position:relative;z-index:2;min-height:calc(100% - 56px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px;box-sizing:border-box}
+    .big{font-size:28px;font-weight:700}
+    .row{opacity:.9}
+    .compassWrap{display:flex;flex-direction:column;align-items:center;gap:6px}
+    #compass{width:140px;height:140px;display:block}
+    .panel{background:rgba(0,0,0,.45);backdrop-filter:blur(3px);padding:14px 16px;border-radius:12px;border:1px solid rgba(255,255,255,.15);display:flex;flex-direction:column;align-items:center;gap:10px}
+    .help{max-width:42ch;text-align:center;font-size:14px;line-height:1.45;color:#e2e8f0}
+    .help a{color:#93c5fd}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    button,select{padding:10px 14px;border-radius:10px;border:0;background:#222;color:#fff;font-size:14px}
+    .fpsControl{display:flex;align-items:center;gap:8px}
+    .modelControl{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+    .modelOptions{display:flex;gap:12px;flex-wrap:wrap}
+    .modelOptions label{display:flex;align-items:center;gap:6px;font-size:14px}
+    .modelOptions input{margin:0}
+    #video{position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;z-index:0;background:#000}
+    #cap{display:none;}
+  </style>
+</head>
+<body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <p class="brand">Stay On Trails</p>
+    <nav aria-label="Main menu">
+      <ul class="menu">
+        <li><a href="/">Home</a></li>
+        <li><a class="cta" href="/stayontrails" aria-current="page">Try it</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main-content">
+  <div class="wrap">
+    <div class="panel">
+      <p class="help">
+        Mobile test: open
+        <a href="https://youtu.be/gdL35MJxmQA?si=4eEKiPXg0HmggHmf">this YouTube video</a>,
+        press Start, and point your phone camera at the video for audio path guidance.
+      </p>
+
+      <div class="big" id="status">Idle</div>
+      <div class="row">Sent: <span id="sent">0</span> frames <span id="kbps">0</span> kbps</div>
+      <div class="row">Errors: <span id="errs">0</span></div>
+      <div class="row">Latency: <span id="latency">--</span> ms</div>
+
+      <fieldset class="modelControl">
+        <legend>Model</legend>
+        <div class="modelOptions">
+          <label>
+            <input type="radio" name="modelSelect" value="1" checked />
+            1: Simulation
+          </label>
+          <label>
+            <input type="radio" name="modelSelect" value="2" />
+            2: Laerbeekbos (Brussels)
+          </label>
+          <label>
+            <input type="radio" name="modelSelect" value="3" />
+            3: Kaai (Ehb)
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="compassWrap">
+        <canvas id="compass" width="140" height="140"></canvas>
+        <div class="row">Heading: <span id="heading">--</span>&deg;</div>
+      </div>
+
+      <div class="controls">
+        <button id="btn">Start</button>
+        <button id="switchCam" disabled>Switch Camera</button>
+
+        <label class="fpsControl" for="fpsSelect">
+          FPS
+          <select id="fpsSelect">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+
+        <label class="fpsControl" for="forwardDegSelect">
+          Forward (deg)
+          <select id="forwardDegSelect">
+            <option value="8" selected>8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+          </select>
+        </label>
+
+        <label class="fpsControl" for="detectionConfidenceSelect">
+          Detection confidence
+          <select id="detectionConfidenceSelect">
+            <option value="0.1">0.1</option>
+            <option value="0.2">0.2</option>
+            <option value="0.3">0.3</option>
+            <option value="0.4">0.4</option>
+            <option value="0.5" selected>0.5</option>
+            <option value="0.6">0.6</option>
+            <option value="0.7">0.7</option>
+            <option value="0.8">0.8</option>
+            <option value="0.9">0.9</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </div>
+</main>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="cap"></canvas>
+
+<script>
+(() => {
+  const SIGNALING_SERVER = "wss://signaling.ehb.be";
+
+  const TARGET_W = 640, TARGET_H = 480;
+  const JPEG_QUALITY = 0.70; // 0..1 (browser)
+
+  const statusEl = document.getElementById("status");
+  const sentEl = document.getElementById("sent");
+  const kbpsEl = document.getElementById("kbps");
+  const errsEl = document.getElementById("errs");
+  const latencyEl = document.getElementById("latency");
+  const headingEl = document.getElementById("heading");
+  const btn = document.getElementById("btn");
+  const switchCamBtn = document.getElementById("switchCam");
+  const fpsSelect = document.getElementById("fpsSelect");
+  const forwardDegSelect = document.getElementById("forwardDegSelect");
+  const detectionConfidenceSelect = document.getElementById("detectionConfidenceSelect");
+  const modelInputs = document.querySelectorAll('input[name="modelSelect"]');
+
+  const video = document.getElementById("video");
+  const cap = document.getElementById("cap");
+  const ctx = cap.getContext("2d", { alpha: false });
+  const compass = document.getElementById("compass");
+  const compCtx = compass.getContext("2d");
+
+  let ws = null;
+  let stream = null;
+  let activeVideoDeviceId = null;
+  let availableVideoInputs = [];
+  let timer = null;
+  let sentFrames = 0;
+  let errors = 0;
+  let latestHeading = null;
+  let nextFrameId = 1;
+  const sentAtByFrameId = new Map();
+  let geoWatchId = null;
+  let latestLatitude = null;
+  let latestLongitude = null;
+  let fps = Number(fpsSelect?.value) || 2;
+  let forwardDeg = Number(forwardDegSelect?.value) || 8;
+  let detectionConfidence = Number(detectionConfidenceSelect?.value) || 0.5;
+  let currentSessionId = null;
+
+  // bitrate calc
+  let bytesSince = 0;
+  let lastRateT = performance.now();
+
+  // AUDIO files served by Flask static
+  const SOUND_MAP = {
+    left:    "{{ url_for('static', filename='audio/left.mp3') }}",
+    right:   "{{ url_for('static', filename='audio/right.mp3') }}",
+    forward: "{{ url_for('static', filename='audio/forward.mp3') }}",
+    started: "{{ url_for('static', filename='audio/application_started.mp3') }}",
+    be_carefull: "{{ url_for('static', filename='audio/be_carefull.mp3') }}",
+    beep: "{{ url_for('static', filename='audio/beep.wav') }}"
+  };
+
+  const player = new Audio();
+  player.preload = "auto";
+
+  const preloaded = {};
+  for (const [k, url] of Object.entries(SOUND_MAP)) {
+    const a = new Audio(url);
+    a.preload = "auto";
+    preloaded[k] = a;
+  }
+
+  let audioEnabled = false;
+  let lastCmd = null;
+  let lastCmdAt = 0;
+  let noDetectionSince = null;
+  let noDetectionWarned = false;
+  let targetHeading = null;
+  const COOLDOWN_MS = 5000;
+
+  function angleDiffDeg(current, target) {
+    return (current - target + 540) % 360 - 180;
+  }
+
+  function headingToCmd(heading) {
+    if (targetHeading === null) return null;
+    const d = angleDiffDeg(heading, targetHeading);
+    if (Math.abs(d) <= forwardDeg) return "forward";
+    return d > 0 ? "left" : "right";
+  }
+
+  async function playCmd(cmd) {
+    if (!audioEnabled) return;
+    if (!cmd || !SOUND_MAP[cmd]) return;
+
+    const now = performance.now();
+    if (cmd === lastCmd && (now - lastCmdAt) < COOLDOWN_MS) return;
+
+    lastCmd = cmd;
+    lastCmdAt = now;
+
+    try {
+      player.pause();
+      player.currentTime = 0;
+      player.src = SOUND_MAP[cmd];
+      await player.play();
+    } catch (e) {
+      console.log("Audio play blocked/failed:", e);
+    }
+  }
+
+  function drawArrow(headingDeg) {
+    const w = compass.width;
+    const h = compass.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    compCtx.clearRect(0, 0, w, h);
+
+    compCtx.beginPath();
+    compCtx.arc(cx, cy, 62, 0, Math.PI * 2);
+    compCtx.strokeStyle = "rgba(255,255,255,0.35)";
+    compCtx.lineWidth = 2;
+    compCtx.stroke();
+
+    compCtx.fillStyle = "rgba(255,255,255,0.7)";
+    compCtx.font = "12px system-ui";
+    compCtx.textAlign = "center";
+    compCtx.fillText("Forward", cx, 14);
+
+    if (typeof headingDeg !== "number" || Number.isNaN(headingDeg)) return;
+
+    const angleRad = (-headingDeg * Math.PI) / 180;
+    compCtx.save();
+    compCtx.translate(cx, cy);
+    compCtx.rotate(angleRad);
+
+    compCtx.beginPath();
+    compCtx.moveTo(-8, -3);
+    compCtx.lineTo(40, -3);
+    compCtx.lineTo(40, -10);
+    compCtx.lineTo(56, 0);
+    compCtx.lineTo(40, 10);
+    compCtx.lineTo(40, 3);
+    compCtx.lineTo(-8, 3);
+    compCtx.closePath();
+    compCtx.fillStyle = "#ff3b30";
+    compCtx.fill();
+    compCtx.restore();
+  }
+
+  function normalizeHeading(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return ((n % 360) + 360) % 360;
+  }
+
+  function createSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function setStatus(s){ statusEl.textContent = s; }
+  function getSelectedModel() {
+    const selected = Array.from(modelInputs).find((input) => input.checked);
+    return selected?.value || "2";
+  }
+
+  function getIntervalMs() {
+    return Math.round(1000 / fps);
+  }
+
+  function restartCaptureTimer() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      timer = setInterval(captureAndSend, getIntervalMs());
+    }
+  }
+
+  function incErr(){
+    errors++;
+    errsEl.textContent = String(errors);
+  }
+
+  function startLocationTracking() {
+    if (!("geolocation" in navigator) || geoWatchId !== null) return;
+    try {
+      geoWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = Number(pos?.coords?.latitude);
+          const lon = Number(pos?.coords?.longitude);
+          latestLatitude = Number.isFinite(lat) ? lat : null;
+          latestLongitude = Number.isFinite(lon) ? lon : null;
+        },
+        (err) => {
+          console.warn("Geolocation unavailable:", err);
+        },
+        { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+      );
+    } catch (err) {
+      console.warn("Failed to start geolocation:", err);
+    }
+  }
+
+  function stopLocationTracking() {
+    if (!("geolocation" in navigator)) return;
+    if (geoWatchId !== null) {
+      try { navigator.geolocation.clearWatch(geoWatchId); } catch {}
+      geoWatchId = null;
+    }
+    latestLatitude = null;
+    latestLongitude = null;
+  }
+
+  async function refreshVideoInputs() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    availableVideoInputs = devices.filter(d => d.kind === "videoinput");
+    switchCamBtn.disabled = availableVideoInputs.length < 2 || !stream;
+  }
+
+  async function startCamera(preferredDeviceId = null) {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+
+    const videoConstraints = preferredDeviceId
+      ? {
+          deviceId: { exact: preferredDeviceId },
+          width: { ideal: TARGET_W },
+          height: { ideal: TARGET_H }
+        }
+      : {
+          width: { ideal: TARGET_W },
+          height: { ideal: TARGET_H },
+          facingMode: "environment"
+        };
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: videoConstraints,
+      audio: false
+    });
+
+    video.srcObject = stream;
+    await video.play();
+
+    const track = stream.getVideoTracks()[0];
+    activeVideoDeviceId = track?.getSettings?.().deviceId ?? null;
+    await refreshVideoInputs();
+  }
+
+  async function start() {
+    btn.disabled = true;
+    setStatus("Requesting camera");
+
+    try {
+      await startCamera(activeVideoDeviceId);
+    } catch (e) {
+      incErr();
+      setStatus("Camera error");
+      console.error(e);
+      btn.disabled = false;
+      return;
+    }
+
+    cap.width = TARGET_W;
+    cap.height = TARGET_H;
+    startLocationTracking();
+    currentSessionId = createSessionId();
+
+    setStatus("Connecting WS");
+
+    try {
+      ws = new WebSocket(SIGNALING_SERVER);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = async () => {
+        setStatus("Streaming");
+        btn.disabled = false;
+
+        audioEnabled = true;
+        targetHeading = null;
+        lastCmd = null;
+        lastCmdAt = 0;
+        noDetectionSince = null;
+        noDetectionWarned = false;
+        playCmd("started");
+
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        if (!ws || ws.readyState !== WebSocket.OPEN || timer) return;
+
+        timer = setInterval(captureAndSend, getIntervalMs());
+      };
+
+      ws.onerror = (e) => {
+        incErr();
+        console.error("WS error", e);
+      };
+
+      ws.onclose = () => {
+        setStatus("WS closed");
+        stop(false);
+      };
+
+      ws.onmessage = (msg) => {
+        let heading = null;
+        let frameId = null;
+        let incomingSessionId = null;
+
+        if (typeof msg.data === "string") {
+          try {
+            const payload = JSON.parse(msg.data);
+            heading = payload?.heading;
+            frameId = payload?.frame_id;
+            incomingSessionId = payload?.sessionId ?? payload?.session_id ?? null;
+          } catch {
+            heading = msg.data;
+          }
+        }
+
+        if (!currentSessionId || !incomingSessionId || incomingSessionId !== currentSessionId) return;
+
+        const normalized = normalizeHeading(heading);
+        if (normalized !== null) {
+          latestHeading = normalized;
+          headingEl.textContent = normalized.toFixed(1);
+          drawArrow(latestHeading);
+
+          const isNoDetection = normalized === 90;
+          if (isNoDetection) {
+            if (noDetectionSince === null) {
+              noDetectionSince = performance.now();
+              noDetectionWarned = false;
+              lastCmd = null;
+              lastCmdAt = 0;
+            } else if (!noDetectionWarned && (performance.now() - noDetectionSince) >= 2000) {
+              noDetectionWarned = true;
+              playCmd("beep");
+            }
+          } else {
+            noDetectionSince = null;
+            noDetectionWarned = false;
+            if (targetHeading === null) {
+              targetHeading = latestHeading;
+            } else {
+              const cmd = headingToCmd(latestHeading);
+              playCmd(cmd);
+            }
+          }
+        }
+
+        if (frameId !== null && frameId !== undefined) {
+          const id = String(frameId);
+          const sentAt = sentAtByFrameId.get(id);
+          if (typeof sentAt === "number") {
+            const latencyMs = performance.now() - sentAt;
+            latencyEl.textContent = latencyMs.toFixed(1);
+            sentAtByFrameId.delete(id);
+          }
+        }
+      };
+
+    } catch (e) {
+      incErr();
+      setStatus("WS connect failed");
+      console.error(e);
+      stop(true);
+      return;
+    }
+  }
+
+  function stop(allowButton=true) {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    switchCamBtn.disabled = true;
+    sentAtByFrameId.clear();
+    nextFrameId = 1;
+    currentSessionId = null;
+    stopLocationTracking();
+
+    audioEnabled = false;
+    targetHeading = null;
+    noDetectionSince = null;
+    noDetectionWarned = false;
+    lastCmd = null;
+    try { player.pause(); player.currentTime = 0; } catch {}
+
+    if (allowButton) {
+      btn.disabled = false;
+      btn.textContent = "Start";
+    }
+  }
+
+  function updateRate(bytesJustSent) {
+    bytesSince += bytesJustSent;
+    const now = performance.now();
+    const dt = now - lastRateT;
+    if (dt >= 1000) {
+      const kbitsPerSec = (bytesSince * 8) / dt;
+      kbpsEl.textContent = kbitsPerSec.toFixed(1);
+      bytesSince = 0;
+      lastRateT = now;
+    }
+  }
+
+  function captureAndSend() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!video.videoWidth || !video.videoHeight) return;
+
+    ctx.drawImage(video, 0, 0, TARGET_W, TARGET_H);
+
+    cap.toBlob(async (blob) => {
+      if (!blob) return;
+      try {
+        const frameId = String(nextFrameId++);
+        const buf = await blob.arrayBuffer();
+        ws.send(JSON.stringify({
+          type: "frame_meta",
+          frame_id: frameId,
+          sessionId: currentSessionId,
+          latitude: latestLatitude,
+          longitude: latestLongitude,
+          lastlatency: latencyEl.textContent === "--" ? null : Number(latencyEl.textContent),
+          model: getSelectedModel(),
+          detection_confidence: detectionConfidence
+        }));
+        sentAtByFrameId.set(frameId, performance.now());
+        ws.send(buf);
+
+        sentEl.textContent = String(++sentFrames);
+        updateRate(buf.byteLength);
+
+        if (sentAtByFrameId.size > 200) {
+          const cutoff = performance.now() - 5000;
+          for (const [id, t] of sentAtByFrameId) {
+            if (t < cutoff) sentAtByFrameId.delete(id);
+          }
+        }
+      } catch (e) {
+        incErr();
+        console.error(e);
+      }
+    }, "image/jpeg", JPEG_QUALITY);
+  }
+
+  btn.addEventListener("click", () => {
+    if (timer || (ws && ws.readyState === WebSocket.OPEN)) {
+      setStatus("Stopping");
+      stop(true);
+    } else {
+      btn.textContent = "Stop";
+      start();
+    }
+  });
+
+  switchCamBtn.addEventListener("click", async () => {
+    if (!stream) {
+      setStatus("Start eerst");
+      return;
+    }
+
+    try {
+      await refreshVideoInputs();
+      if (availableVideoInputs.length < 2) {
+        setStatus("Geen extra camera gevonden");
+        return;
+      }
+
+      let idx = availableVideoInputs.findIndex(d => d.deviceId === activeVideoDeviceId);
+      if (idx < 0) idx = 0;
+      const next = availableVideoInputs[(idx + 1) % availableVideoInputs.length];
+      await startCamera(next.deviceId);
+
+      if (ws && ws.readyState === WebSocket.OPEN) setStatus("Streaming");
+    } catch (e) {
+      incErr();
+      console.error("Camera switch error", e);
+      setStatus("Camera switch error");
+    }
+  });
+
+  fpsSelect.addEventListener("change", () => {
+    const nextFps = Number(fpsSelect.value);
+    fps = (Number.isInteger(nextFps) && nextFps >= 1 && nextFps <= 10) ? nextFps : 2;
+    fpsSelect.value = String(fps);
+    restartCaptureTimer();
+  });
+
+  forwardDegSelect.addEventListener("change", () => {
+    const nextForwardDeg = Number(forwardDegSelect.value);
+    forwardDeg = (Number.isInteger(nextForwardDeg) && nextForwardDeg >= 8 && nextForwardDeg <= 16) ? nextForwardDeg : 8;
+    forwardDegSelect.value = String(forwardDeg);
+  });
+
+  detectionConfidenceSelect.addEventListener("change", () => {
+    const nextDetectionConfidence = Number(detectionConfidenceSelect.value);
+    detectionConfidence = (Number.isFinite(nextDetectionConfidence) && nextDetectionConfidence >= 0.1 && nextDetectionConfidence <= 0.9)
+      ? Number(nextDetectionConfidence.toFixed(1))
+      : 0.5;
+    detectionConfidenceSelect.value = String(detectionConfidence.toFixed(1));
+  });
+
+  drawArrow(null);
+})();
+</script>
+</body>
+</html>

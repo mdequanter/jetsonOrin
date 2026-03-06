@@ -4,13 +4,10 @@ import json
 import ssl
 import argparse
 
-
 DEFAULT_SERVER = "ws://10.2.172.120:9000"
 DEFAULT_ROOM = "/ws/pathnavigation"
-DEFAULT_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
 
-
-async def receive_messages(server, room, token, use_tls):
+async def receive_messages(server, room, use_tls):
 
     uri = server.rstrip("/") + room
 
@@ -32,8 +29,7 @@ async def receive_messages(server, room, token, use_tls):
                 "Mozilla/5.0 (X11; Linux x86_64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/121.0.0.0 Safari/537.36"
-            ),
-            "Authorization": f"Bearer {token}"
+            )
         },
     ) as websocket:
 
@@ -75,11 +71,6 @@ def main():
         help=f"Room path (default: {DEFAULT_ROOM})"
     )
 
-    parser.add_argument(
-        "--token",
-        default=DEFAULT_TOKEN,
-        help="Bearer token"
-    )
 
     parser.add_argument(
         "--tls",
@@ -89,7 +80,7 @@ def main():
 
     args = parser.parse_args()
 
-    asyncio.run(receive_messages(args.server, args.room, args.token, args.tls))
+    asyncio.run(receive_messages(args.server, args.room, args.tls))
 
 
 if __name__ == "__main__":

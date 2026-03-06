@@ -26,6 +26,7 @@ def room_from_path(path: str) -> str:
 async def signaling(websocket):
     # websockets >= 12: path zit in websocket.request.path
     path = websocket.request.path if hasattr(websocket, "request") else "/"
+    print (f"New connection from {websocket.remote_address} with path: {path}")
     room_id = room_from_path(path)
 
     async with rooms_lock:

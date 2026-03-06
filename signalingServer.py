@@ -1,38 +1,11 @@
 ﻿import asyncio
-import csv
-import os
 import websockets
 from collections import defaultdict
-
-TOKENS_CSV = "authtokens.csv"
-_valid_tokens = set()
-_tokens_mtime = None
-_tokens_lock = asyncio.Lock()
 
 # room_id -> set(websocket)
 rooms = defaultdict(set)
 rooms_lock = asyncio.Lock()
 
-def _read_tokens(csv_path: str) -> set[str]:
-    tokens = set()
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, skipinitialspace=True)
-        for row in reader:
-            token = (row.get("token") or "").strip().strip('"')
-            if token:
-                tokens.add(token)
-    return tokens
-
-async def get_valid_tokens() -> set[str]:
-    global _valid_tokens, _tokens_mtime
-    mtime = os.path.getmtime(TOKENS_CSV)
-
-    async with _tokens_lock:
-        if _tokens_mtime != mtime:
-            _valid_tokens = _read_tokens(TOKENS_CSV)
-            _tokens_mtime = mtime
-            print(f"🔄 Reloaded {len(_valid_tokens)} tokens from {TOKENS_CSV}")
-        return _valid_tokens
 
 def room_from_path(path: str) -> str:
     """
@@ -47,19 +20,6 @@ def room_from_path(path: str) -> str:
     # fallback: alles in default room
     return "default"
 
-async def process_request(path, request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return (401, [], b"Missing/invalid Authorization header")
-
-    token = auth.split(" ", 1)[1].strip()
-
-    valid = await get_valid_tokens()
-    if token not in valid:
-        return (403, [], b"Invalid token")
-
-    # (optioneel) je kan hier ook room naming rules afdwingen
-    return None
 
 async def signaling(websocket):
     # websockets >= 12: path zit in websocket.request.path
@@ -97,16 +57,17 @@ async def signaling(websocket):
 
         print(f"❌ Client left room '{room_id}' ({websocket.remote_address}); remaining={remaining}")
 
+
 async def start_server():
     print("🚀 Room signaling server on ws://0.0.0.0:9000  (paths: /ws/<room>)")
     async with websockets.serve(
         signaling,
         "0.0.0.0",
         9000,
-        process_request=process_request,
         max_size=2**23,
     ):
         await asyncio.Future()
+
 
 if __name__ == "__main__":
     asyncio.run(start_server())

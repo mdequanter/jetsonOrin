@@ -100,7 +100,7 @@ async def signaling(websocket):
         print(f"❌ Client left room '{room_id}' ({websocket.remote_address}); remaining={remaining}")
 
 async def start_server():
-    print("🚀 Room signaling server on ws://0.0.0.0:9000  (paths: /ws/<room>)")
+    print("🚀 Room signaling server(Jetson) on ws://0.0.0.0:9000  (paths: /ws/<room>)")
     async with websockets.serve(
         signaling,
         "0.0.0.0",

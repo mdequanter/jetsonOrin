@@ -13,6 +13,8 @@ def room_from_path(path: str) -> str:
       /ws/demo-session-001
       /room/demo
     """
+
+    print (f"Received connection with path: {path}")
     path = (path or "/").split("?", 1)[0]
     parts = [p for p in path.split("/") if p]
     if len(parts) >= 2 and parts[0] in ("ws", "room"):

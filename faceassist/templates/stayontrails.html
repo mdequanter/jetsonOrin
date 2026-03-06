@@ -142,7 +142,7 @@
 (() => {
 
   const token = "…";
-  const SIGNALING_SERVER = `wss://localhost:9000/stayontrails/ws:9000?token=${encodeURIComponent(token)}`;
+  const SIGNALING_SERVER = `wss://localhost:9000/ws/pathnavigation`;
   ws = new WebSocket(SIGNALING_SERVER);
 
 

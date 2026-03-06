@@ -14,8 +14,6 @@ async def receive_messages(server, room, token, use_tls):
 
     uri = server.rstrip("/") + room
 
-    print (f"uri: {uri}")
-
     print("🔌 Connecting to signaling server...")
     print("Server :", server)
     print("Room   :", room)

@@ -44,8 +44,6 @@ def room_from_path(path: str) -> str:
 async def process_request(path, request_headers):
     auth = request_headers.get("Authorization")
 
-    print(f"Incoming connection with Authorization: {auth}")
-
     if not auth or not auth.startswith("Bearer "):
         return (401, [], b"Missing/invalid Authorization header")
 

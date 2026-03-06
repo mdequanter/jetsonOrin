@@ -4,7 +4,8 @@ import os
 import websockets
 from collections import defaultdict
 
-TOKENS_CSV = "authtokens.csv"
+
+TOKENS_CSV = "/home/jetson/jetsonOrin/authtokens.csv"
 _valid_tokens = set()
 _tokens_mtime = None
 _tokens_lock = asyncio.Lock()

@@ -32,13 +32,13 @@ async def send_message():
         ssl=ssl_context,   # Uncomment if using wss://
         origin="http://localhost",
         compression=None,
-        additional_headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/121.0.0.0 Safari/537.36"
-            )
-        },
+        #additional_headers={
+        #    "User-Agent": (
+        #        "Mozilla/5.0 (X11; Linux x86_64) "
+        #        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        #        "Chrome/121.0.0.0 Safari/537.36"
+        #    )
+        #},
     ) as websocket:
 
         print("Connected")

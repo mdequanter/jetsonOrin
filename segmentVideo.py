@@ -14,7 +14,7 @@ DEFAULT_ROOM = "/ws/pathnavigation"
 DEFAULT_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
 
 #SIGNALING_SERVER = f"ws://localhost:9000{DEFAULT_ROOM}"
-SIGNALING_SERVER = f"wss://signaling.ehb.be"
+SIGNALING_SERVER = f"wss://signaling.ehb.be{DEFAULT_ROOM}"
 
 MODEL_PATH = r"faceassist/models/unrealsim.pt"
 BEARER_TOKEN = DEFAULT_TOKEN
@@ -61,8 +61,15 @@ async def receive_and_infer():
         ssl=ssl_context,
         origin="http://localhost",
         compression=None,
+        extra_headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/121.0.0.0 Safari/537.36"
+            )
+        },
     ) as ws:
-
+        
         print(f"Verbonden met signaling server ({SIGNALING_SERVER})")
 
         pending_frame_id = None

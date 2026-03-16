@@ -59,14 +59,6 @@ async def receive_and_infer():
         ssl=ssl_context,
         origin="http://localhost",
         compression=None,
-        additional_headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/121.0.0.0 Safari/537.36"
-            ),
-            "Authorization": f"Bearer {BEARER_TOKEN}"
-        },
     ) as ws:
 
         print(f"Verbonden met signaling server ({SIGNALING_SERVER})")

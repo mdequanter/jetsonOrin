@@ -79,7 +79,7 @@ async def receive_and_infer():
 
             frame_id = None
 
-            #print(f"Ontvangen bericht van server (type: {type(msg)})")
+            print(f"Ontvangen bericht van server (type: {type(msg)})")
 
             # frame_meta stil negeren (frame_id bijhouden)
             if isinstance(msg, str):

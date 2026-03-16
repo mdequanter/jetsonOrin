@@ -36,7 +36,7 @@ async def send_message():
         ssl=ssl_context,   # Uncomment if using wss://
         origin="http://localhost",
         compression=None,
-        extra_headers={
+        extra_headers={      #additional_headers= .... for other versions of websockets library
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "

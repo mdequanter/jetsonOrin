@@ -7,8 +7,12 @@ import time
 
 ROOM = "/ws/pathnavigation"
 #SIGNALING_SERVER = f"ws://192.168.0.81:9000{ROOM}"
-SIGNALING_SERVER = f"wss://signaling.ehb.be"
+SIGNALING_SERVER = f"wss://signaling.ehb.be{ROOM}"
 SESSION_ID = "demo-session-001"
+
+#BEARER_TOKEN = secrets.token_urlsafe(32) ; print(BEARER_TOKEN) # Generate a new bearer token
+
+BEARER_TOKEN = "LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw"
 
 async def send_message():
 
@@ -23,7 +27,7 @@ async def send_message():
         }
     }
 
-    #ssl_context = None
+    ssl_context = None
     ssl_context = ssl.create_default_context() # Uncomment if using wss://
 
 
@@ -32,13 +36,14 @@ async def send_message():
         ssl=ssl_context,   # Uncomment if using wss://
         origin="http://localhost",
         compression=None,
-        #additional_headers={
-        #    "User-Agent": (
-        #        "Mozilla/5.0 (X11; Linux x86_64) "
-        #        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        #        "Chrome/121.0.0.0 Safari/537.36"
-        #    )
-        #},
+        additional_headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/121.0.0.0 Safari/537.36"
+            ),
+            "Authorization": f"Bearer {BEARER_TOKEN}"
+        },
     ) as websocket:
 
         print("Connected")

@@ -6,7 +6,7 @@ import secrets
 import time
 
 ROOM = "/ws/pathnavigation"
-SIGNALING_SERVER = f"ws://10.2.172.120:9000{ROOM}"
+SIGNALING_SERVER = f"ws://192.168.0.81:9000{ROOM}"
 #SIGNALING_SERVER = f"wss://signaling.ehb.be{ROOM}"
 SESSION_ID = "demo-session-001"
 

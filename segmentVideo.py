@@ -53,8 +53,8 @@ def decode_message_to_frame(msg):
         return None
 
 async def receive_and_infer():
-    # ssl_context = ssl.create_default_context()  # Uncomment for wss:// with valid certs
-    ssl_context = None
+    ssl_context = ssl.create_default_context()  # Uncomment for wss:// with valid certs
+    #ssl_context = None
 
     async with websockets.connect(
         SIGNALING_SERVER,

@@ -6,8 +6,8 @@ import secrets
 import time
 
 ROOM = "/ws/pathnavigation"
-SIGNALING_SERVER = f"ws://192.168.0.81:9000{ROOM}"
-#SIGNALING_SERVER = f"wss://signaling.ehb.be{ROOM}"
+#SIGNALING_SERVER = f"ws://192.168.0.81:9000{ROOM}"
+SIGNALING_SERVER = f"wss://signaling.ehb.be"
 SESSION_ID = "demo-session-001"
 
 async def send_message():
@@ -23,8 +23,8 @@ async def send_message():
         }
     }
 
-    ssl_context = None
-    #ssl_context = ssl.create_default_context() # Uncomment if using wss://
+    #ssl_context = None
+    ssl_context = ssl.create_default_context() # Uncomment if using wss://
 
 
     uri = SIGNALING_SERVER  # Zelfde server als sender

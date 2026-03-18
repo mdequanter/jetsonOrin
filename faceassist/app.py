@@ -2669,11 +2669,16 @@ def video_feed():
     return Response(gen_frames(source=get_stream_source()), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+
 if __name__ == "__main__":
-    # If you use SSL like before, keep it. Otherwise remove ssl_context for local testing.
-    app.run(
-        host="0.0.0.0",
-        port=5000,
-        ssl_context=("../jetson-desktop+5.pem", "../jetson-desktop+5-key.pem"),
-        debug=False
-    )
+
+    app.run(host="0.0.0.0", port=5000, debug=False)
+
+    # HTTPS
+    #app.run(
+    #    host="0.0.0.0",
+    #    port=5443,
+    #    ssl_context=("../jetson-desktop+5.pem", "../jetson-desktop+5-key.pem"),
+    #    debug=False
+    #)
+

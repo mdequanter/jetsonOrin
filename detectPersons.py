@@ -12,7 +12,7 @@ import numpy as np
 # -----------------------------
 # WebSocket instellingen
 # -----------------------------
-DEFAULT_ROOM = "/ws/jetsonStayOnTrails"
+DEFAULT_ROOM = "/ws/jetsonDetectPersons"
 BEARER_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
 SIGNALING_SERVER = f"wss://signaling.ehb.be{DEFAULT_ROOM}"
 

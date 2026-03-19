@@ -5,15 +5,19 @@ session_start();
   Simple demo login.
   Change these before deploying.
 */
-const APP_USERNAME = 'MAARTEN';
-const APP_PASSWORD = 'geheim123$';
 
 /*
   Default values shown after login.
 */
-$defaultBearerToken = 'LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw';
-$defaultRoom = 'jetsonStayOnTrails';
 $wsBase = 'wss://signaling.ehb.be/ws/';
+
+
+const APP_USERNAME = 'jetsonStayOnTrails';
+const APP_PASSWORD = 'LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw';
+
+$defaultBearerToken = APP_PASSWORD;
+$defaultRoom =  APP_USERNAME;
+
 
 if (isset($_GET['logout'])) {
     $_SESSION = [];

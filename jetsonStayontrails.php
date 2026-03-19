@@ -74,7 +74,7 @@ $wsUrl = $wsBase . $room;
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Stay On Trails - Try it</title>
+  <title>Stay On Trails - Jetson</title>
   <style>
     :root{
       --focus:#22d3ee;
@@ -187,7 +187,6 @@ $wsUrl = $wsBase . $room;
       <ul class="menu">
         <li><a href="index.php">Home</a></li>
         <?php if ($isLoggedIn): ?>
-          <li><a class="cta" href="stayontrails.php" aria-current="page">Try it</a></li>
           <li>
             <form class="inline" method="get">
               <button type="submit" name="logout" value="1">Logout</button>
@@ -261,12 +260,6 @@ $wsUrl = $wsBase . $room;
     <div class="metaRow">
       Active WS URL: <strong><?php echo htmlspecialchars($wsUrl, ENT_QUOTES, 'UTF-8'); ?></strong>
     </div>
-
-    <p class="help">
-      Mobile test: open
-      <a href="https://youtu.be/gdL35MJxmQA?si=4eEKiPXg0HmggHmf">this YouTube video</a>,
-      press Start, and point your phone camera at the video for audio path guidance.
-    </p>
 
     <div class="big" id="status">Idle</div>
     <div class="row">Sent: <span id="sent">0</span> frames <span id="kbps">0</span> kbps</div>

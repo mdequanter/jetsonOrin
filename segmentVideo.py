@@ -56,7 +56,7 @@ async def receive_and_infer():
     #ssl_context = None
 
     async with websockets.connect(
-        uri,
+        SIGNALING_SERVER,
         ssl=ssl_context,
         origin="http://localhost",
         compression=None,

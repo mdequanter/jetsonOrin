@@ -11,13 +11,12 @@ import ssl
 # --- Minimale vaste instellingen ---
 
 DEFAULT_ROOM = "/ws/jetsonStayOnTrails"
-DEFAULT_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
+BEARER_TOKEN = "B6zifTK3JWeH6E2tThPKLMwxt0QdqXVJ76GHfq7kTvs"
 
 #SIGNALING_SERVER = f"ws://localhost:9000{DEFAULT_ROOM}"
 SIGNALING_SERVER = f"wss://signaling.ehb.be{DEFAULT_ROOM}"
 
 MODEL_PATH = r"faceassist/models/unrealsim.pt"
-BEARER_TOKEN = DEFAULT_TOKEN
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
@@ -66,7 +65,8 @@ async def receive_and_infer():
                 "Mozilla/5.0 (X11; Linux x86_64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/121.0.0.0 Safari/537.36"
-            )
+            ),
+            "Authorization": f"Bearer {BEARER_TOKEN}",
         },
     ) as ws:
         

@@ -147,7 +147,7 @@ async def receive_and_infer():
                 dy = start_y - target_y
                 direction_angle = float(np.degrees(np.arctan2(dy, dx)))
 
-            #print(f"Frame ID: {frame_id}, Direction Angle: {direction_angle:.2f}°")
+            print(f"Frame ID: {frame_id}, Direction Angle: {direction_angle:.2f}°")
             await ws.send(json.dumps({"heading": round(direction_angle, 2), "frame_id": frame_id}))
 
 asyncio.run(receive_and_infer())

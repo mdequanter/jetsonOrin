@@ -182,7 +182,7 @@ $wsUrl = $wsBase . $room;
 
 <header class="topbar">
   <div class="topbar-inner">
-    <p class="brand">Stay On Trails</p>
+    <p class="brand">AAL COMPANION - Stay on trails</p>
     <nav aria-label="Main menu">
       <ul class="menu">
         <li><a href="index.php">Home</a></li>
@@ -203,7 +203,7 @@ $wsUrl = $wsBase . $room;
   <div class="wrap">
     <div class="panel loginPanel">
       <div class="big">Login</div>
-      <p class="help">Sign in before starting the camera stream.</p>
+      <p class="help">If you have an AAL Companion box and you have a valid username and password, please log in below.</p>
 
       <?php if ($loginError): ?>
         <div class="error"><?php echo htmlspecialchars($loginError, ENT_QUOTES, 'UTF-8'); ?></div>

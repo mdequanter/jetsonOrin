@@ -1,6 +1,70 @@
 <?php
-$bearerToken = 'LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw';
-$wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
+session_start();
+
+/*
+  Simple demo login.
+  Change these before deploying.
+*/
+const APP_USERNAME = 'MAARTEN';
+const APP_PASSWORD = 'geheim123$';
+
+/*
+  Default values shown after login.
+*/
+$defaultBearerToken = 'LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw';
+$defaultRoom = 'jetsonStayOnTrails';
+$wsBase = 'wss://signaling.ehb.be/ws/';
+
+if (isset($_GET['logout'])) {
+    $_SESSION = [];
+    session_destroy();
+    header('Location: ' . strtok($_SERVER["REQUEST_URI"], '?'));
+    exit;
+}
+
+$loginError = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'login') {
+    $username = trim($_POST['username'] ?? '');
+    $password = $_POST['password'] ?? '';
+
+    if ($username === APP_USERNAME && $password === APP_PASSWORD) {
+        $_SESSION['logged_in'] = true;
+    } else {
+        $loginError = 'Invalid username or password.';
+    }
+}
+
+$isLoggedIn = !empty($_SESSION['logged_in']);
+
+$bearerToken = $defaultBearerToken;
+$room = $defaultRoom;
+
+if ($isLoggedIn) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'settings') {
+        $bearerToken = trim($_POST['bearer_token'] ?? $defaultBearerToken);
+        $room = trim($_POST['ws_room'] ?? $defaultRoom);
+
+        if ($room === '') {
+            $room = $defaultRoom;
+        }
+
+        $room = preg_replace('~^/ws/~', '', $room);
+        $room = trim($room, '/');
+
+        $_SESSION['bearer_token'] = $bearerToken;
+        $_SESSION['ws_room'] = $room;
+    } else {
+        if (isset($_SESSION['bearer_token'])) {
+            $bearerToken = $_SESSION['bearer_token'];
+        }
+        if (isset($_SESSION['ws_room'])) {
+            $room = $_SESSION['ws_room'];
+        }
+    }
+}
+
+$wsUrl = $wsBase . $room;
 ?><!doctype html>
 <html lang="en">
 <head>
@@ -8,17 +72,26 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Stay On Trails - Try it</title>
   <style>
-    :root{--focus:#22d3ee;--menu-bg:rgba(15,23,42,.9);--menu-border:rgba(255,255,255,.2);--accent:#facc15;--accent-ink:#111827}
+    :root{
+      --focus:#22d3ee;
+      --menu-bg:rgba(15,23,42,.9);
+      --menu-border:rgba(255,255,255,.2);
+      --accent:#facc15;
+      --accent-ink:#111827;
+      --card-bg:rgba(0,0,0,.45);
+      --input-bg:#111827;
+      --input-border:rgba(255,255,255,.18);
+    }
     html,body{margin:0;height:100%;background:#000;color:#fff;font-family:Arial,Helvetica,sans-serif}
     .skip-link{position:absolute;left:8px;top:-48px;z-index:5;background:var(--accent);color:var(--accent-ink);padding:8px 10px;border-radius:8px;font-weight:700;text-decoration:none}
     .skip-link:focus{top:8px}
-    a:focus-visible,button:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+    a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
     .topbar{position:relative;z-index:3;background:var(--menu-bg);border-bottom:1px solid var(--menu-border)}
-    .topbar-inner{max-width:1000px;margin:0 auto;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .topbar-inner{max-width:1100px;margin:0 auto;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px}
     .brand{margin:0;font-size:18px;font-weight:700}
-    .menu{list-style:none;margin:0;padding:0;display:flex;gap:10px;flex-wrap:wrap}
-    .menu a{display:inline-block;color:#fff;text-decoration:none;font-weight:700;padding:7px 10px;border-radius:8px}
-    .menu a:hover{background:rgba(255,255,255,.12)}
+    .menu{list-style:none;margin:0;padding:0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .menu a,.menu button{display:inline-block;color:#fff;text-decoration:none;font-weight:700;padding:7px 10px;border-radius:8px;background:transparent;border:0;cursor:pointer}
+    .menu a:hover,.menu button:hover{background:rgba(255,255,255,.12)}
     .menu .cta{background:var(--accent);color:var(--accent-ink)}
     .menu .cta:hover{background:#fde047}
     .wrap{position:relative;z-index:2;min-height:calc(100% - 56px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px;box-sizing:border-box}
@@ -26,11 +99,53 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
     .row{opacity:.9}
     .compassWrap{display:flex;flex-direction:column;align-items:center;gap:6px}
     #compass{width:140px;height:140px;display:block}
-    .panel{background:rgba(0,0,0,.45);backdrop-filter:blur(3px);padding:14px 16px;border-radius:12px;border:1px solid rgba(255,255,255,.15);display:flex;flex-direction:column;align-items:center;gap:10px}
+    .panel{
+      background:var(--card-bg);
+      backdrop-filter:blur(3px);
+      padding:14px 16px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.15);
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:10px;
+      width:min(100%, 880px);
+      box-sizing:border-box;
+    }
+    .loginPanel{
+      width:min(100%, 460px);
+      align-items:stretch;
+    }
+    .settingsGrid{
+      display:grid;
+      grid-template-columns:1fr 1fr auto;
+      gap:10px;
+      width:100%;
+      align-items:end;
+    }
+    .field{display:flex;flex-direction:column;gap:6px}
+    .field label{font-size:14px;color:#e5e7eb}
+    .field input{
+      padding:10px 12px;
+      border-radius:10px;
+      border:1px solid var(--input-border);
+      background:var(--input-bg);
+      color:#fff;
+      font-size:14px;
+      min-width:0;
+    }
     .help{max-width:42ch;text-align:center;font-size:14px;line-height:1.45;color:#e2e8f0}
     .help a{color:#93c5fd}
     .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    button,select{padding:10px 14px;border-radius:10px;border:0;background:#222;color:#fff;font-size:14px}
+    button,select{
+      padding:10px 14px;
+      border-radius:10px;
+      border:0;
+      background:#222;
+      color:#fff;
+      font-size:14px;
+    }
+    button.primary{background:var(--accent);color:var(--accent-ink);font-weight:700}
     .fpsControl{display:flex;align-items:center;gap:8px}
     .modelControl{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
     .modelOptions{display:flex;gap:12px;flex-wrap:wrap}
@@ -38,33 +153,122 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
     .modelOptions input{margin:0}
     #video{position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;z-index:0;background:#000}
     #cap{display:none;}
+    .error{
+      background:rgba(239,68,68,.15);
+      border:1px solid rgba(239,68,68,.35);
+      color:#fecaca;
+      padding:10px 12px;
+      border-radius:10px;
+      font-size:14px;
+    }
+    .metaRow{
+      font-size:13px;
+      color:#cbd5e1;
+      text-align:center;
+      word-break:break-all;
+    }
+    form.inline{display:inline}
+    @media (max-width: 760px){
+      .settingsGrid{grid-template-columns:1fr}
+    }
   </style>
 </head>
 <body>
 <a href="#main-content" class="skip-link">Skip to main content</a>
+
 <header class="topbar">
   <div class="topbar-inner">
     <p class="brand">Stay On Trails</p>
     <nav aria-label="Main menu">
       <ul class="menu">
         <li><a href="index.php">Home</a></li>
-        <li><a class="cta" href="stayontrails.php" aria-current="page">Try it</a></li>
+        <?php if ($isLoggedIn): ?>
+          <li><a class="cta" href="stayontrails.php" aria-current="page">Try it</a></li>
+          <li>
+            <form class="inline" method="get">
+              <button type="submit" name="logout" value="1">Logout</button>
+            </form>
+          </li>
+        <?php endif; ?>
       </ul>
     </nav>
   </div>
 </header>
+
 <main id="main-content">
+<?php if (!$isLoggedIn): ?>
+  <div class="wrap">
+    <div class="panel loginPanel">
+      <div class="big">Login</div>
+      <p class="help">Sign in before starting the camera stream.</p>
+
+      <?php if ($loginError): ?>
+        <div class="error"><?php echo htmlspecialchars($loginError, ENT_QUOTES, 'UTF-8'); ?></div>
+      <?php endif; ?>
+
+      <form method="post" style="display:flex;flex-direction:column;gap:12px;">
+        <input type="hidden" name="action" value="login" />
+
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" autocomplete="username" required />
+        </div>
+
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </div>
+
+        <button class="primary" type="submit">Login</button>
+      </form>
+    </div>
+  </div>
+<?php else: ?>
 <div class="wrap">
   <div class="panel">
+    <form method="post" class="settingsGrid">
+      <input type="hidden" name="action" value="settings" />
+
+      <div class="field">
+        <label for="bearer_token">Bearer token</label>
+        <input
+          id="bearer_token"
+          name="bearer_token"
+          type="text"
+          value="<?php echo htmlspecialchars($bearerToken, ENT_QUOTES, 'UTF-8'); ?>"
+          placeholder="Enter bearer token"
+        />
+      </div>
+
+      <div class="field">
+        <label for="ws_room">WebSocket room</label>
+        <input
+          id="ws_room"
+          name="ws_room"
+          type="text"
+          value="<?php echo htmlspecialchars($room, ENT_QUOTES, 'UTF-8'); ?>"
+          placeholder="Example: jetsonStayOnTrails"
+        />
+      </div>
+
+      <button class="primary" type="submit">Save</button>
+    </form>
+
+    <div class="metaRow">
+      Active WS URL: <strong><?php echo htmlspecialchars($wsUrl, ENT_QUOTES, 'UTF-8'); ?></strong>
+    </div>
+
     <p class="help">
       Mobile test: open
       <a href="https://youtu.be/gdL35MJxmQA?si=4eEKiPXg0HmggHmf">this YouTube video</a>,
       press Start, and point your phone camera at the video for audio path guidance.
     </p>
+
     <div class="big" id="status">Idle</div>
     <div class="row">Sent: <span id="sent">0</span> frames <span id="kbps">0</span> kbps</div>
     <div class="row">Errors: <span id="errs">0</span></div>
     <div class="row">Latency: <span id="latency">--</span> ms</div>
+
     <fieldset class="modelControl">
       <legend>Model</legend>
       <div class="modelOptions">
@@ -82,13 +286,16 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
         </label>
       </div>
     </fieldset>
+
     <div class="compassWrap">
       <canvas id="compass" width="140" height="140"></canvas>
       <div class="row">Heading: <span id="heading">--</span>&deg;</div>
     </div>
+
     <div class="controls">
       <button id="btn">Start</button>
       <button id="switchCam" disabled>Switch Camera</button>
+
       <label class="fpsControl" for="fpsSelect">
         FPS
         <select id="fpsSelect">
@@ -104,6 +311,7 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
           <option value="10">10</option>
         </select>
       </label>
+
       <label class="fpsControl" for="forwardDegSelect">
         Forward (deg)
         <select id="forwardDegSelect">
@@ -118,6 +326,7 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
           <option value="16">16</option>
         </select>
       </label>
+
       <label class="fpsControl" for="detectionConfidenceSelect">
         Detection confidence
         <select id="detectionConfidenceSelect">
@@ -135,7 +344,6 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
     </div>
   </div>
 </div>
-</main>
 
 <video id="video" autoplay playsinline></video>
 <canvas id="cap"></canvas>
@@ -469,109 +677,107 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
         stop(false);
       };
 
-  ws.onmessage = (msg) => {
-    let heading = null;
-    let frameId = null;
-    let incomingSessionId = null;
+      ws.onmessage = (msg) => {
+        let heading = null;
+        let frameId = null;
+        let incomingSessionId = null;
 
-    if (typeof msg.data === "string") {
-      try {
-        const payload = JSON.parse(msg.data);
+        if (typeof msg.data === "string") {
+          try {
+            const payload = JSON.parse(msg.data);
 
-        if (payload?.type === "auth_required") {
-          sendAuthMessage();
-          return;
-        }
+            if (payload?.type === "auth_required") {
+              sendAuthMessage();
+              return;
+            }
 
-        if (
-          payload?.type === "auth_ok" ||
-          payload?.type === "authenticated" ||
-          payload?.auth === "ok" ||
-          payload?.authenticated === true
-        ) {
-          beginAuthenticatedStreaming();
-          return;
-        }
+            if (
+              payload?.type === "auth_ok" ||
+              payload?.type === "authenticated" ||
+              payload?.auth === "ok" ||
+              payload?.authenticated === true
+            ) {
+              beginAuthenticatedStreaming();
+              return;
+            }
 
-        if (
-          payload?.type === "auth_error" ||
-          payload?.type === "unauthorized" ||
-          payload?.authenticated === false
-        ) {
-          incErr();
-          setStatus("Authentication failed");
-          console.error("Authentication failed:", payload);
-          stop(true);
-          return;
-        }
+            if (
+              payload?.type === "auth_error" ||
+              payload?.type === "unauthorized" ||
+              payload?.authenticated === false
+            ) {
+              incErr();
+              setStatus("Authentication failed");
+              console.error("Authentication failed:", payload);
+              stop(true);
+              return;
+            }
 
-        if (payload?.type === "room_joined") {
-          if (!isAuthenticated) {
-            beginAuthenticatedStreaming();
+            if (payload?.type === "room_joined") {
+              if (!isAuthenticated) {
+                beginAuthenticatedStreaming();
+              }
+              return;
+            }
+
+            incomingSessionId = payload?.sessionId ?? payload?.session_id ?? null;
+
+            if (currentSessionId && incomingSessionId && incomingSessionId !== currentSessionId) {
+              return;
+            }
+
+            if (currentSessionId && !incomingSessionId) {
+              return;
+            }
+
+            heading = payload?.heading;
+            frameId = payload?.frame_id;
+          } catch {
+            return;
           }
-          return;
-        }
-
-        incomingSessionId = payload?.sessionId ?? payload?.session_id ?? null;
-
-        // Alleen berichten van deze browser-sessie verwerken
-        if (currentSessionId && incomingSessionId && incomingSessionId !== currentSessionId) {
-          return;
-        }
-
-        // Als een bericht een sessionId zou moeten hebben maar die ontbreekt, negeren
-        if (currentSessionId && !incomingSessionId) {
-          return;
-        }
-
-        heading = payload?.heading;
-        frameId = payload?.frame_id;
-      } catch {
-        return;
-      }
-    } else {
-      return;
-    }
-
-    const normalized = normalizeHeading(heading);
-    if (normalized !== null) {
-      latestHeading = normalized;
-      headingEl.textContent = normalized.toFixed(1);
-      drawArrow(latestHeading);
-
-      const isNoDetection = normalized === 90;
-      if (isNoDetection) {
-        if (noDetectionSince === null) {
-          noDetectionSince = performance.now();
-          noDetectionWarned = false;
-          lastCmd = null;
-          lastCmdAt = 0;
-        } else if (!noDetectionWarned && (performance.now() - noDetectionSince) >= 2000) {
-          noDetectionWarned = true;
-          playCmd("beep");
-        }
-      } else {
-        noDetectionSince = null;
-        noDetectionWarned = false;
-        if (targetHeading === null) {
-          targetHeading = latestHeading;
         } else {
-          const cmd = headingToCmd(latestHeading);
-          playCmd(cmd);
+          return;
         }
-      }
-    }
 
-    if (frameId !== null && frameId !== undefined) {
-      const id = String(frameId);
-      const sentAt = sentAtByFrameId.get(id);
-      if (typeof sentAt === "number") {
-        const latencyMs = performance.now() - sentAt;
-        latencyEl.textContent = latencyMs.toFixed(1);
-        sentAtByFrameId.delete(id);
-      }
-    }
-  };
+        const normalized = normalizeHeading(heading);
+        if (normalized !== null) {
+          latestHeading = normalized;
+          headingEl.textContent = normalized.toFixed(1);
+          drawArrow(latestHeading);
+
+          const isNoDetection = normalized === 90;
+          if (isNoDetection) {
+            if (noDetectionSince === null) {
+              noDetectionSince = performance.now();
+              noDetectionWarned = false;
+              lastCmd = null;
+              lastCmdAt = 0;
+            } else if (!noDetectionWarned && (performance.now() - noDetectionSince) >= 2000) {
+              noDetectionWarned = true;
+              playCmd("beep");
+            }
+          } else {
+            noDetectionSince = null;
+            noDetectionWarned = false;
+            if (targetHeading === null) {
+              targetHeading = latestHeading;
+            } else {
+              const cmd = headingToCmd(latestHeading);
+              playCmd(cmd);
+            }
+          }
+        }
+
+        if (frameId !== null && frameId !== undefined) {
+          const id = String(frameId);
+          const sentAt = sentAtByFrameId.get(id);
+          if (typeof sentAt === "number") {
+            const latencyMs = performance.now() - sentAt;
+            latencyEl.textContent = latencyMs.toFixed(1);
+            sentAtByFrameId.delete(id);
+          }
+        }
+      };
     } catch (e) {
       incErr();
       setStatus("WS connect failed");
@@ -689,14 +895,14 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
 
   switchCamBtn.addEventListener("click", async () => {
     if (!stream) {
-      setStatus("Start eerst");
+      setStatus("Start first");
       return;
     }
 
     try {
       await refreshVideoInputs();
       if (availableVideoInputs.length < 2) {
-        setStatus("Geen extra camera gevonden");
+        setStatus("No extra camera found");
         return;
       }
 
@@ -749,5 +955,7 @@ $wsUrl = 'wss://signaling.ehb.be/ws/jetsonStayOnTrails';
   drawArrow(null);
 })();
 </script>
+<?php endif; ?>
+</main>
 </body>
 </html>

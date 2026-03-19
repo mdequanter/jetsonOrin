@@ -170,7 +170,11 @@ async def receive_and_recognize():
 
             detected_names = []
 
+            persons = []
+
             if faces is not None:
+                frame_width = frame.shape[1]
+
                 for face in faces:
                     x, y, fw, fh = face[:4].astype(int)
 
@@ -188,15 +192,28 @@ async def receive_and_recognize():
                         and (best_score - second_score) >= MARGIN
                     )
 
-                    if confident:
-                        detected_names.append(best_name)
+                    name = best_name if confident else "Onbekend"
+
+                    face_center_x = x + (fw / 2.0)
+
+                    if face_center_x < frame_width / 3:
+                        face_position = "LEFT"
+                    elif face_center_x > (2 * frame_width / 3):
+                        face_position = "RIGHT"
                     else:
-                        detected_names.append("Onbekend")
+                        face_position = "FRONT"
 
-            detected_names = unique_preserve_order(detected_names)
+                    persons.append({
+                        "name": name,
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(fw),
+                        "h": int(fh),
+                        "face_position": face_position
+                    })
 
-            await ws.send(json.dumps({"names": detected_names}))
-            print(f"[SEND] {detected_names}")
+            await ws.send(json.dumps({"persons": persons}))
+            print(f"[SEND] {persons}")
 
 
 if __name__ == "__main__":

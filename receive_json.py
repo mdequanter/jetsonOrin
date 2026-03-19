@@ -5,7 +5,7 @@ import ssl
 import argparse
 
 DEFAULT_SERVER = "wss://signaling.ehb.be"
-DEFAULT_ROOM = "/ws/pathnavigation"
+DEFAULT_ROOM = "/ws/testroom"
 
 async def receive_messages(server, room, use_tls):
 

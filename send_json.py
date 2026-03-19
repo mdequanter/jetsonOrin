@@ -5,7 +5,7 @@ import websockets
 import secrets
 import time
 
-ROOM = "/ws/pathnavigation"
+ROOM = "/ws/testroom"
 #SIGNALING_SERVER = f"ws://192.168.0.81:9000{ROOM}"
 SIGNALING_SERVER = f"wss://signaling.ehb.be{ROOM}"
 SESSION_ID = "demo-session-001"

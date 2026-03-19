@@ -9,7 +9,7 @@ DEFAULT_HOST = "ftp.botopiabe.webhosting.be"
 DEFAULT_USERNAME = "botopiabe@botopiabe"
 DEFAULT_REMOTE_DIR = "/subsites/stayontrails.botopia.be/audio"
 
-LOCAL_DIR = "/faceassist/speech_mp3"
+LOCAL_DIR = "faceassist/speech_mp3"
 
 
 def ask_with_default(prompt: str, default: str) -> str:

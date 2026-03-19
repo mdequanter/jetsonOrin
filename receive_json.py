@@ -6,6 +6,7 @@ import argparse
 
 DEFAULT_SERVER = "wss://signaling.ehb.be"
 DEFAULT_ROOM = "/ws/testroom"
+BEARER_TOKEN = "LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw"
 
 async def receive_messages(server, room, use_tls):
 
@@ -28,7 +29,8 @@ async def receive_messages(server, room, use_tls):
                 "Mozilla/5.0 (X11; Linux x86_64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/121.0.0.0 Safari/537.36"
-            )
+            ),
+            "Authorization": f"Bearer {BEARER_TOKEN}",
         },
     ) as websocket:
 

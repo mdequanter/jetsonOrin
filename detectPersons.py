@@ -24,7 +24,7 @@ SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recogniti
 
 YUNET_PATH = os.path.join("models", "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join("models", "face_recognition_sface_2021dec.onnx")
-KNOWN_DIR = "known"
+KNOWN_DIR = "faceassist/known"
 
 MIN_FACE = 50
 SCORE_TH = 0.9

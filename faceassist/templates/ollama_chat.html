@@ -33,6 +33,23 @@
       const clearBtn = document.getElementById("clear-chat");
       const template = document.getElementById("message-template");
 
+      function normalizeReply(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return "";
+
+        const compact = raw.replace(/\r\n/g, "\n").trim();
+        const duplicateMatch = compact.match(/^([\s\S]*?)\s*\(\s*([\s\S]*?)\s*\)$/);
+        if (duplicateMatch) {
+          const plain = duplicateMatch[1].trim();
+          const betweenParens = duplicateMatch[2].trim();
+          if (plain && betweenParens && plain === betweenParens) {
+            return plain;
+          }
+        }
+
+        return compact;
+      }
+
       function renderMessage(role, content) {
         const node = template.content.firstElementChild.cloneNode(true);
         const title = node.querySelector("strong");
@@ -74,7 +91,7 @@
           if (!res.ok || !data.ok) {
             throw new Error(data.error || "Ollama request mislukt.");
           }
-          const reply = (data.message || "").trim();
+          const reply = normalizeReply(data.message);
           messages.push({ role: "assistant", content: reply });
           renderMessage("assistant", reply || "(leeg antwoord)");
         } catch (err) {

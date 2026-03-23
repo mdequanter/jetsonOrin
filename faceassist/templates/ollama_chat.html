@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% set title = "Ollama Chat" %}
+
+{% block content %}
+  <h1>Ollama Chat</h1>
+  <p class="muted">Chat met model <span class="mono">{{ model }}</span> via <span class="mono">{{ url }}</span>.</p>
+
+  <div class="card" style="padding:0; overflow:hidden;">
+    <div id="chat-log" style="display:flex; flex-direction:column; gap:12px; padding:14px; min-height:360px; max-height:60vh; overflow:auto; background:#fafafa;"></div>
+    <form id="chat-form" style="display:flex; gap:10px; padding:14px; border-top:2px solid #ddd; flex-wrap:wrap;">
+      <textarea id="message-input" placeholder="Typ je bericht..." rows="3"
+                style="flex:1 1 560px; font-size:17px; padding:12px; border-radius:10px; border:1px solid #bbb; resize:vertical;"></textarea>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <button class="btn btn-primary" type="submit">Verstuur</button>
+        <button class="btn" id="clear-chat" type="button" style="background:#eee;">Wis chat</button>
+      </div>
+    </form>
+  </div>
+
+  <template id="message-template">
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      <strong></strong>
+      <div style="white-space:pre-wrap; padding:12px; border-radius:12px; border:1px solid #ddd; background:#fff;"></div>
+    </div>
+  </template>
+
+  <script>
+    (function () {
+      const messages = [];
+      const log = document.getElementById("chat-log");
+      const form = document.getElementById("chat-form");
+      const input = document.getElementById("message-input");
+      const clearBtn = document.getElementById("clear-chat");
+      const template = document.getElementById("message-template");
+
+      function renderMessage(role, content) {
+        const node = template.content.firstElementChild.cloneNode(true);
+        const title = node.querySelector("strong");
+        const body = node.querySelector("div:last-child");
+        const isUser = role === "user";
+        title.textContent = isUser ? "Jij" : "AI";
+        body.textContent = content;
+        body.style.background = isUser ? "#eaf6ff" : "#fff";
+        body.style.borderColor = isUser ? "#9cccf4" : "#ddd";
+        log.appendChild(node);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function setBusy(isBusy) {
+        const submit = form.querySelector("button[type='submit']");
+        submit.disabled = isBusy;
+        input.disabled = isBusy;
+        clearBtn.disabled = isBusy;
+        submit.textContent = isBusy ? "Bezig..." : "Verstuur";
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+
+        messages.push({ role: "user", content: text });
+        renderMessage("user", text);
+        input.value = "";
+        setBusy(true);
+
+        try {
+          const res = await fetch("{{ url_for('api_ollama_chat') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || "Ollama request mislukt.");
+          }
+          const reply = (data.message || "").trim();
+          messages.push({ role: "assistant", content: reply });
+          renderMessage("assistant", reply || "(leeg antwoord)");
+        } catch (err) {
+          renderMessage("assistant", "Fout: " + (err.message || "onbekende fout"));
+          messages.pop();
+        } finally {
+          setBusy(false);
+          input.focus();
+        }
+      });
+
+      clearBtn.addEventListener("click", () => {
+        messages.length = 0;
+        log.innerHTML = "";
+        input.focus();
+      });
+
+      input.focus();
+    })();
+  </script>
+{% endblock %}

@@ -15,6 +15,7 @@ import numpy as np
 import json
 import websockets
 import urllib.request
+import urllib.error
 
 
 app = Flask(__name__)
@@ -41,6 +42,8 @@ PIPER_MODEL_PATH = os.environ.get("PIPER_MODEL_PATH", "/home/jetson/jetsonOrin/v
 PIPER_RATE = int(os.environ.get("PIPER_RATE", "22050"))
 PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "1.0"))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
+OLLAMA_CHAT_URL = os.environ.get("OLLAMA_CHAT_URL", "http://10.2.160.41:11434/api/chat")
+OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma3")
 
 
 def _default_app_settings():
@@ -49,6 +52,8 @@ def _default_app_settings():
         "droidcam_url": MOBILE_VIEW_DROIDCAM_URL,
         "segmentation_model": SEG_MODEL_PATH,
         "voice_volume": VOICE_VOLUME,
+        "ollama_chat_url": OLLAMA_CHAT_URL,
+        "ollama_chat_model": OLLAMA_CHAT_MODEL,
     }
 
 
@@ -75,6 +80,8 @@ def load_app_settings():
             "droidcam_url": str(data.get("droidcam_url", defaults["droidcam_url"])).strip() or defaults["droidcam_url"],
             "segmentation_model": str(data.get("segmentation_model", defaults["segmentation_model"])).strip() or defaults["segmentation_model"],
             "voice_volume": _coerce_voice_volume(data.get("voice_volume", defaults["voice_volume"]), defaults["voice_volume"]),
+            "ollama_chat_url": str(data.get("ollama_chat_url", defaults["ollama_chat_url"])).strip() or defaults["ollama_chat_url"],
+            "ollama_chat_model": str(data.get("ollama_chat_model", defaults["ollama_chat_model"])).strip() or defaults["ollama_chat_model"],
         })
         return merged
     except Exception:
@@ -87,18 +94,22 @@ def save_app_settings(settings: dict):
         "droidcam_url": str(settings.get("droidcam_url", "")).strip(),
         "segmentation_model": str(settings.get("segmentation_model", "")).strip(),
         "voice_volume": _coerce_voice_volume(settings.get("voice_volume", 100), 100),
+        "ollama_chat_url": str(settings.get("ollama_chat_url", "")).strip(),
+        "ollama_chat_model": str(settings.get("ollama_chat_model", "")).strip(),
     }
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def apply_runtime_settings(settings: dict):
-    global SIGNALING_SERVER_URL, MOBILE_VIEW_DROIDCAM_URL, SEG_MODEL_PATH, VOICE_VOLUME, _seg_model
+    global SIGNALING_SERVER_URL, MOBILE_VIEW_DROIDCAM_URL, SEG_MODEL_PATH, VOICE_VOLUME, OLLAMA_CHAT_URL, OLLAMA_CHAT_MODEL, _seg_model
     old_model = SEG_MODEL_PATH
     SIGNALING_SERVER_URL = str(settings.get("segmentation_server", SIGNALING_SERVER_URL)).strip() or SIGNALING_SERVER_URL
     MOBILE_VIEW_DROIDCAM_URL = str(settings.get("droidcam_url", MOBILE_VIEW_DROIDCAM_URL)).strip() or MOBILE_VIEW_DROIDCAM_URL
     SEG_MODEL_PATH = str(settings.get("segmentation_model", SEG_MODEL_PATH)).strip() or SEG_MODEL_PATH
     VOICE_VOLUME = _coerce_voice_volume(settings.get("voice_volume", VOICE_VOLUME), VOICE_VOLUME)
+    OLLAMA_CHAT_URL = str(settings.get("ollama_chat_url", OLLAMA_CHAT_URL)).strip() or OLLAMA_CHAT_URL
+    OLLAMA_CHAT_MODEL = str(settings.get("ollama_chat_model", OLLAMA_CHAT_MODEL)).strip() or OLLAMA_CHAT_MODEL
     if SEG_MODEL_PATH != old_model:
         _seg_model = None
 
@@ -109,6 +120,8 @@ def current_app_settings():
         "droidcam_url": MOBILE_VIEW_DROIDCAM_URL,
         "segmentation_model": SEG_MODEL_PATH,
         "voice_volume": VOICE_VOLUME,
+        "ollama_chat_url": OLLAMA_CHAT_URL,
+        "ollama_chat_model": OLLAMA_CHAT_MODEL,
     }
 
 
@@ -173,6 +186,42 @@ def _piper_say_text(text: str):
 def _speak_menu_async(text: str):
     t = threading.Thread(target=_piper_say_text, args=(text,), daemon=True)
     t.start()
+
+
+def _normalize_chat_messages(raw_messages):
+    normalized = []
+    for item in raw_messages or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role not in ("user", "assistant", "system") or not content:
+            continue
+        normalized.append({
+            "role": role,
+            "content": content[:4000],
+        })
+    return normalized[-40:]
+
+
+def _ollama_chat(messages):
+    payload = {
+        "model": OLLAMA_CHAT_MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        OLLAMA_CHAT_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = resp.read()
+    parsed = json.loads(body.decode("utf-8"))
+    message = parsed.get("message") or {}
+    return str(message.get("content", "")).strip()
 
 
 UNKNOWN_TS_RE_8 = re.compile(r"^(?P<d>\d{8})_(?P<t>\d{6})$")
@@ -1709,6 +1758,38 @@ def api_tts_menu():
     return jsonify({"ok": True, "queued": True})
 
 
+@app.route("/ollama-chat")
+def ollama_chat_page():
+    return render_template(
+        "ollama_chat.html",
+        url=OLLAMA_CHAT_URL,
+        model=OLLAMA_CHAT_MODEL,
+    )
+
+
+@app.route("/api/ollama-chat", methods=["POST"])
+def api_ollama_chat():
+    payload = request.get_json(silent=True) or {}
+    messages = _normalize_chat_messages(payload.get("messages"))
+    if not messages:
+        return jsonify({"ok": False, "error": "Geen geldige berichten ontvangen."}), 400
+
+    try:
+        reply = _ollama_chat(messages)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = str(e)
+        return jsonify({"ok": False, "error": f"Ollama HTTP-fout: {detail or e.reason}"}), 502
+    except urllib.error.URLError as e:
+        return jsonify({"ok": False, "error": f"Ollama niet bereikbaar: {e.reason}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Ollama request mislukt: {e}"}), 500
+
+    return jsonify({"ok": True, "message": reply})
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     msg = request.args.get("msg", "")
@@ -1720,6 +1801,8 @@ def settings_page():
         settings["droidcam_url"] = (request.form.get("droidcam_url") or "").strip() or settings["droidcam_url"]
         settings["segmentation_model"] = (request.form.get("segmentation_model") or "").strip() or settings["segmentation_model"]
         settings["voice_volume"] = _coerce_voice_volume(request.form.get("voice_volume"), settings["voice_volume"])
+        settings["ollama_chat_url"] = (request.form.get("ollama_chat_url") or "").strip() or settings["ollama_chat_url"]
+        settings["ollama_chat_model"] = (request.form.get("ollama_chat_model") or "").strip() or settings["ollama_chat_model"]
 
         try:
             save_app_settings(settings)
@@ -2681,4 +2764,3 @@ if __name__ == "__main__":
     #    ssl_context=("../jetson-desktop+5.pem", "../jetson-desktop+5-key.pem"),
     #    debug=False
     #)
-

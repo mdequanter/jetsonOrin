@@ -38,6 +38,15 @@
         if (!raw) return "";
 
         const compact = raw.replace(/\r\n/g, "\n").trim();
+        const trailingParenBlock = compact.match(/^([\s\S]*?)\n\s*\(\s*([\s\S]*?)\s*\)\s*$/);
+        if (trailingParenBlock) {
+          const plain = trailingParenBlock[1].trim();
+          const betweenParens = trailingParenBlock[2].trim();
+          if (plain && betweenParens) {
+            return plain;
+          }
+        }
+
         const duplicateMatch = compact.match(/^([\s\S]*?)\s*\(\s*([\s\S]*?)\s*\)$/);
         if (duplicateMatch) {
           const plain = duplicateMatch[1].trim();

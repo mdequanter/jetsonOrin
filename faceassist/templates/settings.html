@@ -38,6 +38,20 @@
         <input name="voice_volume" type="number" min="0" max="100" step="1" value="{{ settings.voice_volume }}"
                style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:160px;">
       </label>
+
+      <label>
+        <div class="muted">ollama chat url</div>
+        <input name="ollama_chat_url" type="text" value="{{ settings.ollama_chat_url }}"
+               placeholder="http://10.2.160.41:11434/api/chat"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:100%;">
+      </label>
+
+      <label>
+        <div class="muted">ollama model</div>
+        <input name="ollama_chat_model" type="text" value="{{ settings.ollama_chat_model }}"
+               placeholder="gemma3"
+               style="font-size:17px; padding:10px 12px; border-radius:8px; border:1px solid #bbb; width:100%;">
+      </label>
     </div>
 
     <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">

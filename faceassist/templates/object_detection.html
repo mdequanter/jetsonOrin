@@ -19,6 +19,9 @@
       <button class="btn btn-primary" type="submit">Upload en detecteer</button>
     </form>
     <p class="muted mono" style="margin:8px 0 0 0;">Model: {{ model_path }}</p>
+    {% if inference_ms is not none %}
+      <p class="muted mono" style="margin:4px 0 0 0;">Inference time: {{ '%.1f'|format(inference_ms) }} ms</p>
+    {% endif %}
   </div>
 
   {% if msg %}

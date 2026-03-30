@@ -846,7 +846,17 @@ def get_segmentation_model():
         raise RuntimeError(f"Ultralytics import faalde: {e}")
     if not os.path.isfile(SEG_MODEL_PATH):
         raise RuntimeError(f"Segmentation model niet gevonden: {SEG_MODEL_PATH}")
-    _seg_model = YOLO(SEG_MODEL_PATH, verbose=False)
+    try:
+        _seg_model = YOLO(SEG_MODEL_PATH, verbose=False)
+    except Exception as e:
+        msg = str(e)
+        if "Can't get attribute" in msg and "Segment26" in msg:
+            raise RuntimeError(
+                "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
+                "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
+                "of exporteer het model opnieuw naar een compatibel formaat."
+            ) from e
+        raise RuntimeError(f"Segmentation model laden mislukt: {e}") from e
     return _seg_model
 
 
@@ -925,7 +935,17 @@ def get_detection_model(model_source=None):
         print(f"Requesting detection model '{model_source}'. Cache hit: {'Yes' if model is not None else 'No'}")
 
         if model is None:
-            model = YOLO(model_source, verbose=False)
+            try:
+                model = YOLO(model_source, verbose=False)
+            except Exception as e:
+                msg = str(e)
+                if "Can't get attribute" in msg and "Segment26" in msg:
+                    raise RuntimeError(
+                        "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
+                        "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
+                        "of exporteer het model opnieuw naar een compatibel formaat."
+                    ) from e
+                raise RuntimeError(f"YOLO model laden mislukt: {e}") from e
             _det_models[model_source] = model
     return model
 

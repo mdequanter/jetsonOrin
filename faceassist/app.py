@@ -917,13 +917,6 @@ def get_segmentation_model(model_source=None):
             try:
                 model = YOLO(model_source, verbose=False)
             except Exception as e:
-                msg = str(e)
-                if "Can't get attribute" in msg and "Segment26" in msg:
-                    raise RuntimeError(
-                        "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
-                        "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
-                        "of exporteer het model opnieuw naar een compatibel formaat."
-                    ) from e
                 raise RuntimeError(f"Segmentation model laden mislukt: {e}") from e
             _seg_models[model_source] = model
 
@@ -1010,13 +1003,6 @@ def get_detection_model(model_source=None):
             try:
                 model = YOLO(model_source, verbose=False)
             except Exception as e:
-                msg = str(e)
-                if "Can't get attribute" in msg and "Segment26" in msg:
-                    raise RuntimeError(
-                        "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
-                        "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
-                        "of exporteer het model opnieuw naar een compatibel formaat."
-                    ) from e
                 raise RuntimeError(f"YOLO model laden mislukt: {e}") from e
             _det_models[model_source] = model
     return model

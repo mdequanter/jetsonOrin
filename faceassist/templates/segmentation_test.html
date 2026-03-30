@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% set title = "Segmentatie testen" %}
+
+{% block content %}
+  <h1>Segmentatie testen</h1>
+  <p class="muted">Kies een segmentatiemodel uit <span class="mono">faceassist/models</span> en bekijk direct het live resultaat.</p>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <form action="{{ url_for('segmentation_test_page') }}" method="get" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="source" class="muted">Bron:</label>
+      <select id="source" name="source" style="font-size:16px; min-width:160px;">
+        <option value="local" {% if source == 'local' %}selected{% endif %}>Lokale camera</option>
+        <option value="droidcam" {% if source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+      </select>
+
+      <label for="model_path" class="muted">Model:</label>
+      <select id="model_path" name="model_path" style="font-size:16px; min-width:220px;">
+        {% for model in model_options %}
+          <option value="{{ model.value }}" {% if model.value == model_path %}selected{% endif %}>{{ model.label }}</option>
+        {% endfor %}
+      </select>
+
+      <input type="hidden" name="run" value="1">
+      <button class="btn btn-primary" type="submit">Toon resultaat</button>
+    </form>
+
+    <p class="muted mono" style="margin:10px 0 0 0;">Model: {{ model_full_path }}</p>
+    {% if source == 'droidcam' %}
+      <p class="muted mono" style="margin:4px 0 0 0;">DroidCam: {{ droidcam_url }}</p>
+    {% endif %}
+  </div>
+
+  {% if active %}
+    <div class="card">
+      <img
+        src="{{ url_for('segmentation_test_feed', source=source, model_path=model_path) }}"
+        alt="Live segmentatie test"
+        style="width:100%; max-width:1000px; border-radius:12px;"
+      >
+    </div>
+  {% endif %}
+{% endblock %}

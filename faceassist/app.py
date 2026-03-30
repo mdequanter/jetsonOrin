@@ -112,6 +112,7 @@ def apply_runtime_settings(settings: dict):
     OLLAMA_CHAT_MODEL = str(settings.get("ollama_chat_model", OLLAMA_CHAT_MODEL)).strip() or OLLAMA_CHAT_MODEL
     if SEG_MODEL_PATH != old_model:
         _seg_model = None
+        _seg_models.pop(old_model, None)
 
 
 def current_app_settings():
@@ -628,8 +629,10 @@ _seg_last_frame_id = None
 _seg_last_jpeg = None
 _seg_last_update = 0.0
 _seg_model = None
+_seg_models = {}
 _det_models = {}
 _det_model_lock = threading.Lock()
+_seg_model_lock = threading.Lock()
 
 def get_camera(cam_index=0):
     global _camera
@@ -836,28 +839,97 @@ def decode_signal_message_to_frame(msg):
         return None
 
 
-def get_segmentation_model():
+def list_segmentation_model_options():
+    options = []
+    seen = set()
+
+    default_model = (SEG_MODEL_PATH or "").strip()
+    if default_model:
+        default_value = default_model if os.path.isabs(default_model) else os.path.basename(default_model)
+        options.append({
+            "value": default_value,
+            "label": os.path.basename(default_model),
+        })
+        seen.add(default_value)
+
+    if os.path.isdir(MODELS_DIR):
+        for fn in sorted(os.listdir(MODELS_DIR), key=str.lower):
+            if not fn.lower().endswith(".pt"):
+                continue
+            if fn in seen:
+                continue
+            options.append({
+                "value": fn,
+                "label": fn,
+            })
+            seen.add(fn)
+
+    return options
+
+
+def _coerce_segmentation_model(value, default_value=SEG_MODEL_PATH):
+    options = {item["value"] for item in list_segmentation_model_options()}
+    selected = (value or "").strip()
+    fallback = (default_value or "").strip()
+    if selected in options:
+        return selected
+    if fallback in options:
+        return fallback
+    fallback_name = os.path.basename(fallback)
+    if fallback_name in options:
+        return fallback_name
+    return fallback_name or "unrealsim.pt"
+
+
+def _resolve_segmentation_model_source(model_source):
+    selected = _coerce_segmentation_model(model_source, SEG_MODEL_PATH)
+    if os.path.isabs(selected):
+        return selected
+
+    models_candidate = os.path.join(MODELS_DIR, selected)
+    if os.path.isfile(models_candidate):
+        return models_candidate
+
+    base_candidate = os.path.join(BASE_DIR, selected)
+    if os.path.isfile(base_candidate):
+        return base_candidate
+
+    return selected
+
+
+def get_segmentation_model(model_source=None):
     global _seg_model
-    if _seg_model is not None:
-        return _seg_model
     try:
         from ultralytics import YOLO
     except Exception as e:
         raise RuntimeError(f"Ultralytics import faalde: {e}")
-    if not os.path.isfile(SEG_MODEL_PATH):
-        raise RuntimeError(f"Segmentation model niet gevonden: {SEG_MODEL_PATH}")
-    try:
-        _seg_model = YOLO(SEG_MODEL_PATH, verbose=False)
-    except Exception as e:
-        msg = str(e)
-        if "Can't get attribute" in msg and "Segment26" in msg:
-            raise RuntimeError(
-                "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
-                "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
-                "of exporteer het model opnieuw naar een compatibel formaat."
-            ) from e
-        raise RuntimeError(f"Segmentation model laden mislukt: {e}") from e
-    return _seg_model
+
+    model_source = _resolve_segmentation_model_source(model_source)
+    if os.path.isabs(model_source) and not os.path.isfile(model_source):
+        raise RuntimeError(f"Segmentation model niet gevonden: {model_source}")
+
+    with _seg_model_lock:
+        if model_source == SEG_MODEL_PATH and _seg_model is not None:
+            return _seg_model
+
+        model = _seg_models.get(model_source)
+        if model is None:
+            try:
+                model = YOLO(model_source, verbose=False)
+            except Exception as e:
+                msg = str(e)
+                if "Can't get attribute" in msg and "Segment26" in msg:
+                    raise RuntimeError(
+                        "Dit model gebruikt een custom Ultralytics head 'Segment26' die niet aanwezig is in de "
+                        "geinstalleerde Ultralytics-versie. Laad het model met dezelfde trainings-codebase/versie, "
+                        "of exporteer het model opnieuw naar een compatibel formaat."
+                    ) from e
+                raise RuntimeError(f"Segmentation model laden mislukt: {e}") from e
+            _seg_models[model_source] = model
+
+        if model_source == SEG_MODEL_PATH:
+            _seg_model = model
+        return model
 
 
 def _coerce_det_confidence(value, default_value=DET_CONFIDENCE):
@@ -989,12 +1061,12 @@ def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFI
     return annotated, detections, conf, inference_ms
 
 
-def process_segment_frame(frame):
-    model = get_segmentation_model()
+def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CONFIDENCE):
+    model = get_segmentation_model(model_source=model_source)
     h, w = frame.shape[:2]
     overlay = frame.copy()
     infer_t0 = time.perf_counter()
-    results = model(frame, conf=SEG_DETECTION_CONFIDENCE, verbose=False)
+    results = model(frame, conf=confidence, verbose=False)
     infer_ms = (time.perf_counter() - infer_t0) * 1000.0
 
     midpoints = []
@@ -1992,6 +2064,128 @@ def segmentation_feed():
 def api_segmentation_status():
     st = get_seg_state()
     return jsonify(st)
+
+
+def _encode_mjpeg_frame(frame: np.ndarray):
+    ok, buffer = cv2.imencode(".jpg", frame)
+    if not ok:
+        return None
+    return (
+        b"--frame\r\n"
+        b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+    )
+
+
+def _make_segmentation_test_error_frame(message: str, detail: str = ""):
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(frame, "Segmentation Test", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    cv2.putText(frame, message[:48], (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 180, 255), 2)
+    if detail:
+        words = detail.split()
+        lines = []
+        line = []
+        for word in words:
+            if len(" ".join(line + [word])) > 52:
+                lines.append(" ".join(line))
+                line = [word]
+            else:
+                line.append(word)
+        if line:
+            lines.append(" ".join(line))
+        for idx, text in enumerate(lines[:6], start=0):
+            y = 150 + (idx * 36)
+            cv2.putText(frame, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+    return frame
+
+
+def _iter_segmentation_test_frames(source: str, model_source: str):
+    selected_source = (source or "local").strip().lower()
+    if selected_source not in ("local", "droidcam"):
+        selected_source = "local"
+
+    try:
+        get_segmentation_model(model_source=model_source)
+    except Exception as e:
+        frame_bytes = _encode_mjpeg_frame(_make_segmentation_test_error_frame("Model load failed", str(e)))
+        if frame_bytes is not None:
+            while True:
+                yield frame_bytes
+                time.sleep(1.0)
+        return
+
+    if selected_source == "droidcam":
+        stream_url = _normalize_droidcam_url(MOBILE_VIEW_DROIDCAM_URL)
+        while True:
+            try:
+                for jpeg in _iter_http_mjpeg_frames(stream_url):
+                    arr = np.frombuffer(jpeg, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
+                    overlay, _ = process_segment_frame(frame, model_source=model_source)
+                    frame_bytes = _encode_mjpeg_frame(overlay)
+                    if frame_bytes is not None:
+                        yield frame_bytes
+            except Exception as e:
+                frame_bytes = _encode_mjpeg_frame(_make_segmentation_test_error_frame("DroidCam error", str(e)))
+                if frame_bytes is not None:
+                    yield frame_bytes
+                time.sleep(0.8)
+        return
+
+    cam = get_camera(0)
+    while True:
+        ok, frame = cam.read()
+        if not ok or frame is None:
+            error_frame = _make_segmentation_test_error_frame("Camera error", "Geen frame ontvangen van lokale camera.")
+            frame_bytes = _encode_mjpeg_frame(error_frame)
+            if frame_bytes is not None:
+                yield frame_bytes
+            time.sleep(0.2)
+            continue
+
+        try:
+            overlay, _ = process_segment_frame(frame, model_source=model_source)
+        except Exception as e:
+            overlay = _make_segmentation_test_error_frame("Inference error", str(e))
+
+        frame_bytes = _encode_mjpeg_frame(overlay)
+        if frame_bytes is not None:
+            yield frame_bytes
+
+
+@app.route("/segmentation-test")
+def segmentation_test_page():
+    model_options = list_segmentation_model_options()
+    selected_model = _coerce_segmentation_model(request.args.get("model_path"), SEG_MODEL_PATH)
+    source = (request.args.get("source") or "local").strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+    active = request.args.get("run", "1") != "0"
+    selected_model_path = _resolve_segmentation_model_source(selected_model)
+
+    return render_template(
+        "segmentation_test.html",
+        source=source,
+        active=active,
+        model_options=model_options,
+        model_path=selected_model,
+        model_full_path=selected_model_path,
+        droidcam_url=MOBILE_VIEW_DROIDCAM_URL,
+        msg=request.args.get("msg", ""),
+        level=request.args.get("level", "info"),
+    )
+
+
+@app.route("/segmentation-test-feed")
+def segmentation_test_feed():
+    source = (request.args.get("source") or "local").strip().lower()
+    model_source = _coerce_segmentation_model(request.args.get("model_path"), SEG_MODEL_PATH)
+    return Response(
+        _iter_segmentation_test_frames(source=source, model_source=model_source),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
 
 @app.route("/object-detection", methods=["GET", "POST"])
 def object_detection_page():

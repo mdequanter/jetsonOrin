@@ -933,7 +933,9 @@ def get_detection_model(model_source=None):
 def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFIDENCE, model_source=None):
     model = get_detection_model(model_source=model_source)
     conf = _coerce_det_confidence(confidence, DET_CONFIDENCE)
+    t0 = time.perf_counter()
     results = model(img, conf=conf, verbose=False)
+    inference_ms = (time.perf_counter() - t0) * 1000.0
 
     annotated = img.copy()
     detections = []
@@ -964,7 +966,7 @@ def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFI
                 "y2": y2,
             })
 
-    return annotated, detections, conf
+    return annotated, detections, conf, inference_ms
 
 
 def process_segment_frame(frame):
@@ -1978,6 +1980,7 @@ def object_detection_page():
     image_b64 = ""
     detections = []
     filename = ""
+    inference_ms = None
     model_options = list_detection_model_options()
     selected_model = _coerce_detection_model(request.form.get("model_path"), DET_MODEL_PATH)
     confidence = _coerce_det_confidence(request.form.get("confidence", DET_CONFIDENCE), DET_CONFIDENCE)
@@ -2000,7 +2003,7 @@ def object_detection_page():
                 level = "error"
             else:
                 try:
-                    annotated, detections, confidence = detect_objects_uploaded_image(
+                    annotated, detections, confidence, inference_ms = detect_objects_uploaded_image(
                         img,
                         confidence=confidence,
                         model_source=selected_model,
@@ -2023,6 +2026,7 @@ def object_detection_page():
         detections=detections,
         filename=filename,
         confidence=confidence,
+        inference_ms=inference_ms,
         model_path=selected_model,
         model_options=model_options,
     )

@@ -44,6 +44,8 @@ PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "1.0"))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 OLLAMA_CHAT_URL = os.environ.get("OLLAMA_CHAT_URL", "http://10.2.160.41:11434/api/chat")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma3")
+_seg_model = None
+_seg_models = {}
 
 
 def _default_app_settings():
@@ -102,7 +104,7 @@ def save_app_settings(settings: dict):
 
 
 def apply_runtime_settings(settings: dict):
-    global SIGNALING_SERVER_URL, MOBILE_VIEW_DROIDCAM_URL, SEG_MODEL_PATH, VOICE_VOLUME, OLLAMA_CHAT_URL, OLLAMA_CHAT_MODEL, _seg_model
+    global SIGNALING_SERVER_URL, MOBILE_VIEW_DROIDCAM_URL, SEG_MODEL_PATH, VOICE_VOLUME, OLLAMA_CHAT_URL, OLLAMA_CHAT_MODEL, _seg_model, _seg_models
     old_model = SEG_MODEL_PATH
     SIGNALING_SERVER_URL = str(settings.get("segmentation_server", SIGNALING_SERVER_URL)).strip() or SIGNALING_SERVER_URL
     MOBILE_VIEW_DROIDCAM_URL = str(settings.get("droidcam_url", MOBILE_VIEW_DROIDCAM_URL)).strip() or MOBILE_VIEW_DROIDCAM_URL
@@ -628,8 +630,6 @@ _seg_last_heading = 90.0
 _seg_last_frame_id = None
 _seg_last_jpeg = None
 _seg_last_update = 0.0
-_seg_model = None
-_seg_models = {}
 _det_models = {}
 _det_model_lock = threading.Lock()
 _seg_model_lock = threading.Lock()

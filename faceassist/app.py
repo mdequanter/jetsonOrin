@@ -874,14 +874,13 @@ def list_detection_model_options():
         for fn in sorted(os.listdir(MODELS_DIR), key=str.lower):
             if not fn.lower().endswith(".pt"):
                 continue
-            rel_path = os.path.join("models", fn)
-            if rel_path in seen:
+            if fn in seen:
                 continue
             options.append({
-                "value": rel_path,
+                "value": fn,
                 "label": fn,
             })
-            seen.add(rel_path)
+            seen.add(fn)
 
     return options
 
@@ -900,13 +899,13 @@ def _resolve_detection_model_source(model_source):
     if os.path.isabs(selected):
         return selected
 
-    base_candidate = os.path.join(BASE_DIR, selected)
-    if os.path.isfile(base_candidate):
-        return base_candidate
-
     models_candidate = os.path.join(MODELS_DIR, selected)
     if os.path.isfile(models_candidate):
         return models_candidate
+
+    base_candidate = os.path.join(BASE_DIR, selected)
+    if os.path.isfile(base_candidate):
+        return base_candidate
 
     return selected
 

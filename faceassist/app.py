@@ -922,6 +922,8 @@ def get_detection_model(model_source=None):
 
     with _det_model_lock:
         model = _det_models.get(model_source)
+        print(f"Requesting detection model '{model_source}'. Cache hit: {'Yes' if model is not None else 'No'}")
+
         if model is None:
             model = YOLO(model_source, verbose=False)
             _det_models[model_source] = model

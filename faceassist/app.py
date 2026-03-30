@@ -1047,7 +1047,7 @@ def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFI
     return annotated, detections, conf, inference_ms
 
 
-def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CONFIDENCE):
+def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CONFIDENCE, draw_polygons=False):
     model = get_segmentation_model(model_source=model_source)
     h, w = frame.shape[:2]
     overlay = frame.copy()
@@ -1060,24 +1060,36 @@ def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CON
         if r.masks is None or len(r.masks.data) == 0:
             continue
 
-        mask = r.masks.data[0].cpu().numpy()
-        mask = (mask * 255).astype(np.uint8)
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        mask_polygons = list(r.masks.xy) if getattr(r.masks, "xy", None) is not None else []
 
-        green = np.full_like(frame, (0, 255, 0))
-        blended = cv2.addWeighted(frame, 0.3, green, 0.7, 0)
-        overlay[mask > 0] = blended[mask > 0]
+        for mask_idx, mask_tensor in enumerate(r.masks.data):
+            mask = mask_tensor.cpu().numpy()
+            mask = (mask * 255).astype(np.uint8)
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        for rr in SEG_SCAN_HEIGHTS:
-            y = int(h * rr)
-            if y >= h:
-                continue
-            scan_row = mask[y, :]
-            idx = np.where(scan_row > 0)[0]
-            if len(idx) > 0:
-                mx = int(np.mean(idx))
-                midpoints.append((mx, y))
-                cv2.circle(overlay, (mx, y), 5, (255, 0, 0), -1)
+            green = np.full_like(frame, (0, 255, 0))
+            blended = cv2.addWeighted(frame, 0.3, green, 0.7, 0)
+            overlay[mask > 0] = blended[mask > 0]
+
+            if draw_polygons and mask_idx < len(mask_polygons):
+                polygon = np.array(mask_polygons[mask_idx], dtype=np.int32)
+                if polygon.ndim == 2 and len(polygon) >= 3:
+                    cv2.polylines(overlay, [polygon.reshape((-1, 1, 2))], True, (0, 255, 255), 3)
+
+            for rr in SEG_SCAN_HEIGHTS:
+                y = int(h * rr)
+                if y >= h:
+                    continue
+                scan_row = mask[y, :]
+                idx = np.where(scan_row > 0)[0]
+                if len(idx) > 0:
+                    mx = int(np.mean(idx))
+                    midpoints.append((mx, y))
+                    cv2.circle(overlay, (mx, y), 5, (255, 0, 0), -1)
+
+    for rr in SEG_SCAN_HEIGHTS:
+        y = int(h * rr)
+        if y < h:
             cv2.line(overlay, (0, y), (w, y), (150, 150, 150), 1)
 
     direction_angle = 90.0
@@ -2109,7 +2121,7 @@ def _iter_segmentation_test_frames(source: str, model_source: str):
                     if frame is None:
                         continue
                     frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
-                    overlay, _ = process_segment_frame(frame, model_source=model_source)
+                    overlay, _ = process_segment_frame(frame, model_source=model_source, draw_polygons=True)
                     frame_bytes = _encode_mjpeg_frame(overlay)
                     if frame_bytes is not None:
                         yield frame_bytes
@@ -2132,7 +2144,7 @@ def _iter_segmentation_test_frames(source: str, model_source: str):
             continue
 
         try:
-            overlay, _ = process_segment_frame(frame, model_source=model_source)
+            overlay, _ = process_segment_frame(frame, model_source=model_source, draw_polygons=True)
         except Exception as e:
             overlay = _make_segmentation_test_error_frame("Inference error", str(e))
 

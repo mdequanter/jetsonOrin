@@ -628,7 +628,7 @@ _seg_last_frame_id = None
 _seg_last_jpeg = None
 _seg_last_update = 0.0
 _seg_model = None
-_det_model = None
+_det_models = {}
 _det_model_lock = threading.Lock()
 
 def get_camera(cam_index=0):
@@ -858,27 +858,79 @@ def _coerce_det_confidence(value, default_value=DET_CONFIDENCE):
     return max(0.01, min(0.95, v))
 
 
-def get_detection_model():
-    global _det_model
-    if _det_model is not None:
-        return _det_model
+def list_detection_model_options():
+    options = []
+    seen = set()
+
+    default_model = (DET_MODEL_PATH or "").strip() or "yolo11n.pt"
+    if default_model and default_model not in seen:
+        options.append({
+            "value": default_model,
+            "label": os.path.basename(default_model),
+        })
+        seen.add(default_model)
+
+    if os.path.isdir(MODELS_DIR):
+        for fn in sorted(os.listdir(MODELS_DIR), key=str.lower):
+            if not fn.lower().endswith(".pt"):
+                continue
+            rel_path = os.path.join("models", fn)
+            if rel_path in seen:
+                continue
+            options.append({
+                "value": rel_path,
+                "label": fn,
+            })
+            seen.add(rel_path)
+
+    return options
+
+
+def _coerce_detection_model(value, default_value=DET_MODEL_PATH):
+    options = {item["value"] for item in list_detection_model_options()}
+    selected = (value or "").strip()
+    fallback = (default_value or "").strip() or "yolo11n.pt"
+    if selected in options:
+        return selected
+    return fallback
+
+
+def _resolve_detection_model_source(model_source):
+    selected = _coerce_detection_model(model_source, DET_MODEL_PATH)
+    if os.path.isabs(selected):
+        return selected
+
+    base_candidate = os.path.join(BASE_DIR, selected)
+    if os.path.isfile(base_candidate):
+        return base_candidate
+
+    models_candidate = os.path.join(MODELS_DIR, selected)
+    if os.path.isfile(models_candidate):
+        return models_candidate
+
+    return selected
+
+
+def get_detection_model(model_source=None):
     try:
         from ultralytics import YOLO
     except Exception as e:
         raise RuntimeError(f"Ultralytics import faalde: {e}")
 
-    model_source = (DET_MODEL_PATH or "").strip() or "yolo11n.pt"
+    model_source = _resolve_detection_model_source(model_source)
     if os.path.isabs(model_source) and not os.path.isfile(model_source):
         raise RuntimeError(f"YOLO model niet gevonden: {model_source}")
 
     with _det_model_lock:
-        if _det_model is None:
-            _det_model = YOLO(model_source, verbose=False)
-    return _det_model
+        model = _det_models.get(model_source)
+        if model is None:
+            model = YOLO(model_source, verbose=False)
+            _det_models[model_source] = model
+    return model
 
 
-def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFIDENCE):
-    model = get_detection_model()
+def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFIDENCE, model_source=None):
+    model = get_detection_model(model_source=model_source)
     conf = _coerce_det_confidence(confidence, DET_CONFIDENCE)
     results = model(img, conf=conf, verbose=False)
 
@@ -1925,6 +1977,8 @@ def object_detection_page():
     image_b64 = ""
     detections = []
     filename = ""
+    model_options = list_detection_model_options()
+    selected_model = _coerce_detection_model(request.form.get("model_path"), DET_MODEL_PATH)
     confidence = _coerce_det_confidence(request.form.get("confidence", DET_CONFIDENCE), DET_CONFIDENCE)
 
     if request.method == "POST":
@@ -1945,7 +1999,11 @@ def object_detection_page():
                 level = "error"
             else:
                 try:
-                    annotated, detections, confidence = detect_objects_uploaded_image(img, confidence=confidence)
+                    annotated, detections, confidence = detect_objects_uploaded_image(
+                        img,
+                        confidence=confidence,
+                        model_source=selected_model,
+                    )
                     ok, enc = cv2.imencode(".jpg", annotated)
                     if not ok:
                         raise RuntimeError("Annotatie kon niet als JPG worden opgeslagen.")
@@ -1964,7 +2022,8 @@ def object_detection_page():
         detections=detections,
         filename=filename,
         confidence=confidence,
-        model_path=DET_MODEL_PATH,
+        model_path=selected_model,
+        model_options=model_options,
     )
 
 @app.route("/annotate-photo", methods=["GET", "POST"])

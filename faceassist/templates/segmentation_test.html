@@ -3,7 +3,7 @@
 
 {% block content %}
   <h1>Segmentatie testen</h1>
-  <p class="muted">Kies een segmentatiemodel uit <span class="mono">faceassist/models</span> en bekijk direct het live resultaat.</p>
+  <p class="muted">Kies een model uit <span class="mono">faceassist/models</span>. Segmentatiemodellen tonen maskers en polygonen; objectdetectiemodellen tonen boxes en labels.</p>
 
   {% if msg %}
     <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">

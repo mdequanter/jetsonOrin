@@ -1047,7 +1047,13 @@ def detect_objects_uploaded_image(img: np.ndarray, confidence: float = DET_CONFI
     return annotated, detections, conf, inference_ms
 
 
-def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CONFIDENCE, draw_polygons=False):
+def process_segment_frame(
+    frame,
+    model_source=None,
+    confidence=SEG_DETECTION_CONFIDENCE,
+    draw_polygons=False,
+    allow_detection_boxes=False,
+):
     model = get_segmentation_model(model_source=model_source)
     h, w = frame.shape[:2]
     overlay = frame.copy()
@@ -1056,9 +1062,11 @@ def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CON
     infer_ms = (time.perf_counter() - infer_t0) * 1000.0
 
     midpoints = []
+    has_masks = False
     for r in results:
         if r.masks is None or len(r.masks.data) == 0:
             continue
+        has_masks = True
 
         mask_polygons = list(r.masks.xy) if getattr(r.masks, "xy", None) is not None else []
 
@@ -1092,6 +1100,27 @@ def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CON
         if y < h:
             cv2.line(overlay, (0, y), (w, y), (150, 150, 150), 1)
 
+    if allow_detection_boxes and not has_masks:
+        for r in results:
+            if r.boxes is None or len(r.boxes) == 0:
+                continue
+            names = r.names if isinstance(r.names, dict) else {}
+            for b in r.boxes:
+                cls_idx = int(float(b.cls[0].item())) if b.cls is not None else -1
+                conf_score = float(b.conf[0].item()) if b.conf is not None else 0.0
+                x1, y1, x2, y2 = [int(v) for v in b.xyxy[0].tolist()]
+                label = names.get(cls_idx, str(cls_idx))
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 200, 255), 2)
+                cv2.putText(
+                    overlay,
+                    f"{label} {conf_score:.2f}",
+                    (max(0, x1), max(24, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 200, 255),
+                    2,
+                )
+
     direction_angle = 90.0
     start_point = (w // 2, h)
     if midpoints:
@@ -1101,7 +1130,7 @@ def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CON
         dy = start_point[1] - target_point[1]
         direction_angle = float(np.degrees(np.arctan2(dy, dx)))
         cv2.arrowedLine(overlay, start_point, target_point, (0, 0, 255), 5, tipLength=0.2)
-    else:
+    elif has_masks:
         cv2.arrowedLine(overlay, start_point, (w // 2, int(h * 0.6)), (0, 0, 255), 5, tipLength=0.2)
 
     cv2.putText(
@@ -1122,6 +1151,16 @@ def process_segment_frame(frame, model_source=None, confidence=SEG_DETECTION_CON
         (255, 255, 255),
         2,
     )
+    if allow_detection_boxes and not has_masks:
+        cv2.putText(
+            overlay,
+            "Mode: detection",
+            (20, 108),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+        )
     return overlay, direction_angle
 
 
@@ -2121,7 +2160,12 @@ def _iter_segmentation_test_frames(source: str, model_source: str):
                     if frame is None:
                         continue
                     frame = cv2.resize(frame, (MOBILE_VIEW_WIDTH, MOBILE_VIEW_HEIGHT), interpolation=cv2.INTER_AREA)
-                    overlay, _ = process_segment_frame(frame, model_source=model_source, draw_polygons=True)
+                    overlay, _ = process_segment_frame(
+                        frame,
+                        model_source=model_source,
+                        draw_polygons=True,
+                        allow_detection_boxes=True,
+                    )
                     frame_bytes = _encode_mjpeg_frame(overlay)
                     if frame_bytes is not None:
                         yield frame_bytes
@@ -2144,7 +2188,12 @@ def _iter_segmentation_test_frames(source: str, model_source: str):
             continue
 
         try:
-            overlay, _ = process_segment_frame(frame, model_source=model_source, draw_polygons=True)
+            overlay, _ = process_segment_frame(
+                frame,
+                model_source=model_source,
+                draw_polygons=True,
+                allow_detection_boxes=True,
+            )
         except Exception as e:
             overlay = _make_segmentation_test_error_frame("Inference error", str(e))
 

@@ -316,6 +316,41 @@ def append_known_features(known_dir: str, person: str, new_features: list) -> in
     return int(new_stack.shape[0])
 
 
+def play_qr_click(duration_ms: int = 70, frequency: int = 1200, volume: float = 0.35) -> None:
+    """
+    Speelt een korte lokale klik/beep via ALSA. Falen mag de registratie niet blokkeren.
+    """
+    try:
+        sample_rate = 16000
+        sample_count = max(1, int(sample_rate * max(10, duration_ms) / 1000.0))
+        t = np.arange(sample_count, dtype=np.float32)
+        audio = np.sin((2.0 * np.pi * float(frequency) * t) / sample_rate)
+
+        ramp_len = min(sample_count // 2, int(sample_rate * 0.005))
+        if ramp_len > 0:
+            ramp = np.linspace(0.0, 1.0, ramp_len, dtype=np.float32)
+            audio[:ramp_len] *= ramp
+            audio[-ramp_len:] *= ramp[::-1]
+
+        pcm = np.clip(audio * 32767.0 * max(0.0, min(1.0, float(volume))), -32768, 32767)
+        raw_audio = pcm.astype(np.int16).tobytes()
+        result = subprocess.run(
+            ["aplay", "-q", "-r", str(sample_rate), "-f", "S16_LE", "-t", "raw", "-"],
+            input=raw_audio,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode != 0:
+            print("\a", end="", flush=True)
+    except Exception:
+        try:
+            print("\a", end="", flush=True)
+        except Exception:
+            pass
+
+
 # -----------------------------
 # Piper TTS
 # -----------------------------
@@ -521,6 +556,8 @@ def main():
                     help="Aantal foto's om te bewaren in known/<QR-naam>/ na de countdown.")
     ap.add_argument("--qr_capture_interval", type=float, default=0.5,
                     help="Tijd tussen QR-registratiefoto's in seconden.")
+    ap.add_argument("--no_qr_clicks", action="store_true",
+                    help="Geen korte klik/beep afspelen bij start capture en per QR-foto.")
 
     # Piper TTS (NL voice)
     ap.add_argument("--no_tts", action="store_true")
@@ -676,10 +713,14 @@ def main():
                         qr_registration["state"] = "capturing"
                         qr_registration["last_capture_at"] = 0.0
                         print(f"[QR] Countdown klaar. Foto's nemen voor {qr_registration['person']}.", flush=True)
+                        if not args.no_qr_clicks:
+                            play_qr_click()
                     elif speak_enabled and tts_proc is not None and not tts_proc.is_alive():
                         qr_registration["state"] = "capturing"
                         qr_registration["last_capture_at"] = 0.0
                         print("[WAARSCHUWING] TTS-proces is gestopt; foto's nemen.", flush=True)
+                        if not args.no_qr_clicks:
+                            play_qr_click()
 
                 if qr_registration["state"] == "countdown" and now >= qr_registration["next_count_at"]:
                     count = qr_registration["next_count"]
@@ -693,6 +734,8 @@ def main():
                             qr_registration["state"] = "capturing"
                             qr_registration["last_capture_at"] = 0.0
                             print(f"[QR] Countdown klaar. Foto's nemen voor {qr_registration['person']}.", flush=True)
+                            if not args.no_qr_clicks:
+                                play_qr_click()
                     else:
                         if speak_enabled:
                             tts_enqueue(tts_queue, str(count))
@@ -722,7 +765,7 @@ def main():
                         "next_count": args.qr_countdown,
                         "next_count_at": now,
                         "captured": 0,
-                        "features": [],
+                        "features_added": 0,
                         "last_capture_at": 0.0,
                         "last_status_at": 0.0,
                     }
@@ -801,27 +844,31 @@ def main():
                     idx = qr_registration["captured"] + 1
                     try:
                         p = save_known_qr_photo(frame, face, args.known, qr_registration["person"], idx)
+                        added_now = 0
                         try:
                             aligned_qr = recognizer.alignCrop(frame, face)
                             feat_qr = recognizer.feature(aligned_qr).astype(np.float32)
                             if feat_qr.ndim == 1 and feat_qr.shape[0] > 0:
-                                qr_registration["features"].append(feat_qr)
+                                added_now = append_known_features(args.known, qr_registration["person"], [feat_qr])
+                                qr_registration["features_added"] += added_now
+                                known = load_known(args.known)
                         except Exception as e:
                             print(f"[WAARSCHUWING] QR feature extractie mislukt: {e}", flush=True)
 
                         qr_registration["captured"] = idx
                         qr_registration["last_capture_at"] = now
-                        print(f"[OK] QR foto {idx}/{args.qr_photo_count}: {p}", flush=True)
+                        if not args.no_qr_clicks:
+                            play_qr_click()
+                        print(f"[OK] QR foto {idx}/{args.qr_photo_count}: {p} ({added_now} feature toegevoegd)", flush=True)
                     except Exception as e:
                         qr_registration["last_capture_at"] = now
                         print(f"[WAARSCHUWING] QR foto opslaan mislukt: {e}", flush=True)
 
                     if qr_registration["captured"] >= args.qr_photo_count:
-                        added = append_known_features(args.known, qr_registration["person"], qr_registration["features"])
                         known = load_known(args.known)
                         print(
                             f"[INFO] QR-registratie klaar voor {qr_registration['person']}: "
-                            f"{qr_registration['captured']} foto('s), {added} feature(s).",
+                            f"{qr_registration['captured']} foto('s), {qr_registration['features_added']} feature(s).",
                             flush=True,
                         )
                         if speak_enabled:

@@ -31,10 +31,13 @@ import subprocess
 import queue as pyqueue
 import sys
 import json
+import re
 from datetime import datetime
 
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SAFE_PERSON_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 # -----------------------------
@@ -187,6 +190,24 @@ def sanitize_name(name: str) -> str:
     return name
 
 
+def sanitize_person_name(name: str) -> str:
+    cleaned = SAFE_PERSON_RE.sub("_", normalize_qr_text(name))
+    cleaned = cleaned.strip("_")
+    return cleaned or "qr_person"
+
+
+def unique_path(path: str) -> str:
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 1
+    while True:
+        candidate = f"{base}_{n}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+
 def ask_input(prompt: str) -> str:
     sys.stdout.write(prompt)
     sys.stdout.flush()
@@ -234,6 +255,65 @@ def save_unknown_photo(frame, face_row, out_dir: str, idx: int) -> str:
     path = os.path.join(out_dir, f"{ts}_{idx:04d}.jpg")
     cv2.imwrite(path, crop)
     return path
+
+
+def save_known_qr_photo(frame, face_row, known_dir: str, person: str, idx: int) -> str:
+    """
+    Slaat een face-crop op in known/<person>/ voor QR-registratie.
+    """
+    person_dir = os.path.join(known_dir, person)
+    os.makedirs(person_dir, exist_ok=True)
+
+    x, y, fw, fh = face_row[:4].astype(int)
+    h, w = frame.shape[:2]
+    pad_w = int(fw * 0.15)
+    pad_h = int(fh * 0.15)
+    x1 = max(0, x - pad_w)
+    y1 = max(0, y - pad_h)
+    x2 = min(w, x + fw + pad_w)
+    y2 = min(h, y + fh + pad_h)
+    crop = frame[y1:y2, x1:x2]
+    if crop is None or crop.size == 0:
+        raise RuntimeError("Lege QR face-crop")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = unique_path(os.path.join(person_dir, f"{ts}_qr_{idx:04d}.jpg"))
+    cv2.imwrite(path, crop)
+    return path
+
+
+def load_npz_features(npz_path: str):
+    if not os.path.isfile(npz_path):
+        return None
+    data = np.load(npz_path, allow_pickle=True)
+    keys = list(data.keys())
+    key = "features" if "features" in data else (keys[0] if keys else None)
+    if key is None:
+        return None
+    arr = np.asarray(data[key], dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return None
+    return arr
+
+
+def append_known_features(known_dir: str, person: str, new_features: list) -> int:
+    if not new_features:
+        return 0
+
+    os.makedirs(known_dir, exist_ok=True)
+    npz_path = os.path.join(known_dir, f"{person}.npz")
+    new_stack = np.stack(new_features, axis=0).astype(np.float32)
+
+    old = load_npz_features(npz_path)
+    if old is not None:
+        merged = np.concatenate([old, new_stack], axis=0)
+    else:
+        merged = new_stack
+
+    np.savez_compressed(npz_path, features=merged)
+    return int(new_stack.shape[0])
 
 
 # -----------------------------
@@ -291,7 +371,7 @@ def piper_say(text: str, model_path: str, sample_rate: int, length_scale: float 
         p2.kill()
 
 
-def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
+def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args, done_queue: mp.Queue = None):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     try:
@@ -317,8 +397,18 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
         if msg is None:
             break
 
-        text = str(msg).strip()
+        done_token = None
+        if isinstance(msg, dict):
+            text = str(msg.get("text", "")).strip()
+            done_token = msg.get("done_token")
+        else:
+            text = str(msg).strip()
         if not text:
+            if done_token and done_queue is not None:
+                try:
+                    done_queue.put_nowait(done_token)
+                except pyqueue.Full:
+                    pass
             continue
 
         try:
@@ -331,15 +421,23 @@ def tts_worker_loop(tts_queue: mp.Queue, stop_event: mp.Event, args):
             )
         except Exception:
             pass
+        finally:
+            if done_token and done_queue is not None:
+                try:
+                    done_queue.put_nowait(done_token)
+                except pyqueue.Full:
+                    pass
 
 
-def tts_enqueue(tts_queue, text: str):
+def tts_enqueue(tts_queue, text: str, done_token=None) -> bool:
     if tts_queue is None:
-        return
+        return False
+    msg = {"text": text, "done_token": done_token} if done_token else text
     try:
-        tts_queue.put_nowait(text)
+        tts_queue.put_nowait(msg)
+        return True
     except pyqueue.Full:
-        pass
+        return False
 
 
 # -----------------------------
@@ -399,7 +497,7 @@ def main():
                     help="(oud) Max aantal feature-snapshots dat we bijhouden.")
 
     # Opslag
-    ap.add_argument("--known", type=str, default="known", help="Map met .npz identiteiten")
+    ap.add_argument("--known", type=str, default=os.path.join(BASE_DIR, "known"), help="Map met .npz identiteiten")
     ap.add_argument("--min_save_samples", type=int, default=20, help="(oud) Niet opslaan als er te weinig snapshots zijn")
 
     # Foto's (optioneel)
@@ -417,6 +515,12 @@ def main():
                     help="Maximaal aantal QR-tekens voor TTS. Gebruik 0 voor onbeperkt.")
     ap.add_argument("--qr_prefix", type=str, default="Dank je wel om je te registreren. Ga enkele seconden in de deuropening staan met je gezicht naar de camera, je zal worden geregistreerd onder de naam: ",
                     help="Tekst die voor de QR-inhoud wordt uitgesproken.")
+    ap.add_argument("--qr_countdown", type=int, default=10,
+                    help="Aantal seconden aftellen na het uitspreken van de QR-inhoud.")
+    ap.add_argument("--qr_photo_count", type=int, default=5,
+                    help="Aantal foto's om te bewaren in known/<QR-naam>/ na de countdown.")
+    ap.add_argument("--qr_capture_interval", type=float, default=0.5,
+                    help="Tijd tussen QR-registratiefoto's in seconden.")
 
     # Piper TTS (NL voice)
     ap.add_argument("--no_tts", action="store_true")
@@ -432,6 +536,9 @@ def main():
     args.voice_volume = max(0, min(100, int(args.voice_volume)))
     args.qr_every = max(1, int(args.qr_every))
     args.qr_max_chars = max(0, int(args.qr_max_chars))
+    args.qr_countdown = max(0, int(args.qr_countdown))
+    args.qr_photo_count = max(1, int(args.qr_photo_count))
+    args.qr_capture_interval = max(0.0, float(args.qr_capture_interval))
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
@@ -443,11 +550,13 @@ def main():
     # TTS
     stop_event = mp.Event()
     tts_queue = None
+    tts_done_queue = None
     tts_proc = None
     speak_enabled = (not args.no_tts) and str2bool(args.speak)
     if speak_enabled:
         tts_queue = mp.Queue(maxsize=args.tts_queue_size)
-        tts_proc = mp.Process(target=tts_worker_loop, args=(tts_queue, stop_event, args), daemon=True)
+        tts_done_queue = mp.Queue(maxsize=args.tts_queue_size)
+        tts_proc = mp.Process(target=tts_worker_loop, args=(tts_queue, stop_event, args, tts_done_queue), daemon=True)
         tts_proc.start()
         if args.no_qr:
             tts_enqueue(tts_queue, "Gezichtsherkenning is gestart.")
@@ -525,6 +634,8 @@ def main():
 
     # QR-code state
     last_qr_announced_at = {}  # qr text -> time
+    qr_registration = None
+    qr_registration_seq = 0
 
     frame_id = 0
     print("[INFO] Headless actief. Ctrl+C om te stoppen.", flush=True)
@@ -539,18 +650,96 @@ def main():
             frame_id += 1
             now = time.time()
 
-            if qr_enabled and qr_detector is not None and frame_id % args.qr_every == 0:
+            tts_done_tokens = set()
+            if tts_done_queue is not None:
+                while True:
+                    try:
+                        tts_done_tokens.add(tts_done_queue.get_nowait())
+                    except pyqueue.Empty:
+                        break
+
+            if qr_registration is not None:
+                if qr_registration["state"] == "waiting_speech":
+                    if qr_registration.get("speech_token") in tts_done_tokens:
+                        qr_registration["state"] = "countdown"
+                        qr_registration["next_count"] = args.qr_countdown
+                        qr_registration["next_count_at"] = now
+                        print(f"[QR] QR-tekst uitgesproken. Countdown start voor {qr_registration['person']}.", flush=True)
+                    elif speak_enabled and tts_proc is not None and not tts_proc.is_alive():
+                        qr_registration["state"] = "countdown"
+                        qr_registration["next_count"] = args.qr_countdown
+                        qr_registration["next_count_at"] = now
+                        print("[WAARSCHUWING] TTS-proces is gestopt; countdown start zonder spraakbevestiging.", flush=True)
+
+                if qr_registration["state"] == "waiting_countdown_done":
+                    if qr_registration.get("countdown_token") in tts_done_tokens:
+                        qr_registration["state"] = "capturing"
+                        qr_registration["last_capture_at"] = 0.0
+                        print(f"[QR] Countdown klaar. Foto's nemen voor {qr_registration['person']}.", flush=True)
+                    elif speak_enabled and tts_proc is not None and not tts_proc.is_alive():
+                        qr_registration["state"] = "capturing"
+                        qr_registration["last_capture_at"] = 0.0
+                        print("[WAARSCHUWING] TTS-proces is gestopt; foto's nemen.", flush=True)
+
+                if qr_registration["state"] == "countdown" and now >= qr_registration["next_count_at"]:
+                    count = qr_registration["next_count"]
+                    print(f"[QR] Countdown: {count}", flush=True)
+                    if count == 0:
+                        token = f"qr-countdown:{qr_registration['id']}"
+                        qr_registration["countdown_token"] = token
+                        if speak_enabled and tts_enqueue(tts_queue, str(count), done_token=token):
+                            qr_registration["state"] = "waiting_countdown_done"
+                        else:
+                            qr_registration["state"] = "capturing"
+                            qr_registration["last_capture_at"] = 0.0
+                            print(f"[QR] Countdown klaar. Foto's nemen voor {qr_registration['person']}.", flush=True)
+                    else:
+                        if speak_enabled:
+                            tts_enqueue(tts_queue, str(count))
+                        qr_registration["next_count"] = count - 1
+                        qr_registration["next_count_at"] = now + 1.0
+
+            if qr_enabled and qr_registration is None and qr_detector is not None and frame_id % args.qr_every == 0:
                 for qr_text in decode_qr_codes(qr_detector, frame):
                     last_qr = last_qr_announced_at.get(qr_text, 0.0)
                     if (now - last_qr) < args.qr_cooldown:
                         continue
 
                     last_qr_announced_at[qr_text] = now
+                    qr_name = sanitize_person_name(qr_text)
                     print(f"[QR] {qr_text}", flush=True)
+                    print(f"[QR] Registratie-map: {os.path.join(args.known, qr_name)}", flush=True)
+
+                    qr_registration_seq += 1
+                    speech_token = f"qr-speech:{qr_registration_seq}"
+                    qr_registration = {
+                        "id": qr_registration_seq,
+                        "raw_text": qr_text,
+                        "person": qr_name,
+                        "state": "waiting_speech",
+                        "speech_token": speech_token,
+                        "countdown_token": None,
+                        "next_count": args.qr_countdown,
+                        "next_count_at": now,
+                        "captured": 0,
+                        "features": [],
+                        "last_capture_at": 0.0,
+                        "last_status_at": 0.0,
+                    }
 
                     if speak_enabled:
                         tts_text = limit_tts_text(qr_text, args.qr_max_chars)
-                        tts_enqueue(tts_queue, f"{args.qr_prefix} {tts_text}".strip())
+                        spoken = tts_enqueue(tts_queue, f"{args.qr_prefix} {tts_text}".strip(), done_token=speech_token)
+                        if not spoken:
+                            qr_registration["state"] = "countdown"
+                            print("[WAARSCHUWING] TTS-wachtrij vol; countdown start zonder QR-spraakbevestiging.", flush=True)
+                    else:
+                        qr_registration["state"] = "countdown"
+                        print("[QR] TTS staat uit. Countdown start.", flush=True)
+                    break
+
+            if qr_registration is not None and qr_registration["state"] != "capturing":
+                continue
 
             if frame_id % args.infer_every != 0:
                 continue
@@ -560,6 +749,12 @@ def main():
             face = largest_face(faces)
 
             if face is None:
+                if qr_registration is not None and qr_registration["state"] == "capturing":
+                    if (now - qr_registration.get("last_status_at", 0.0)) >= 1.0:
+                        print(f"[QR] Wacht op gezicht voor {qr_registration['person']}...", flush=True)
+                        qr_registration["last_status_at"] = now
+                    continue
+
                 # leave detection
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
@@ -578,6 +773,12 @@ def main():
 
             x, y, fw, fh = face[:4].astype(int)
             if fw < args.min_face:
+                if qr_registration is not None and qr_registration["state"] == "capturing":
+                    if (now - qr_registration.get("last_status_at", 0.0)) >= 1.0:
+                        print(f"[QR] Gezicht te klein voor {qr_registration['person']} ({fw}px).", flush=True)
+                        qr_registration["last_status_at"] = now
+                    continue
+
                 if present and (now - last_seen) >= args.lost_timeout:
                     print(f"[INFO] {present_name} is uit beeld.", flush=True)
                     present = False
@@ -594,6 +795,40 @@ def main():
                 continue
 
             richting = face_direction_nl(x, fw, w)
+
+            if qr_registration is not None and qr_registration["state"] == "capturing":
+                if args.qr_capture_interval <= 0 or (now - qr_registration["last_capture_at"]) >= args.qr_capture_interval:
+                    idx = qr_registration["captured"] + 1
+                    try:
+                        p = save_known_qr_photo(frame, face, args.known, qr_registration["person"], idx)
+                        try:
+                            aligned_qr = recognizer.alignCrop(frame, face)
+                            feat_qr = recognizer.feature(aligned_qr).astype(np.float32)
+                            if feat_qr.ndim == 1 and feat_qr.shape[0] > 0:
+                                qr_registration["features"].append(feat_qr)
+                        except Exception as e:
+                            print(f"[WAARSCHUWING] QR feature extractie mislukt: {e}", flush=True)
+
+                        qr_registration["captured"] = idx
+                        qr_registration["last_capture_at"] = now
+                        print(f"[OK] QR foto {idx}/{args.qr_photo_count}: {p}", flush=True)
+                    except Exception as e:
+                        qr_registration["last_capture_at"] = now
+                        print(f"[WAARSCHUWING] QR foto opslaan mislukt: {e}", flush=True)
+
+                    if qr_registration["captured"] >= args.qr_photo_count:
+                        added = append_known_features(args.known, qr_registration["person"], qr_registration["features"])
+                        known = load_known(args.known)
+                        print(
+                            f"[INFO] QR-registratie klaar voor {qr_registration['person']}: "
+                            f"{qr_registration['captured']} foto('s), {added} feature(s).",
+                            flush=True,
+                        )
+                        if speak_enabled:
+                            tts_enqueue(tts_queue, f"Registratie klaar voor {qr_registration['person']}")
+                        last_qr_announced_at[qr_registration["raw_text"]] = time.time()
+                        qr_registration = None
+                continue
 
             aligned = recognizer.alignCrop(frame, face)
             feat = recognizer.feature(aligned).astype(np.float32)
@@ -637,12 +872,12 @@ def main():
                     #if speak_enabled:
                     #    tts_enqueue(tts_queue, "Ik zie iemand die ik nog niet ken.")
 
-                if unknown_dir is not None:
-                    if (now - unknown_last_photo_at) >= unknown_photo_interval:
-                        unknown_photo_count += 1
-                        p = save_unknown_photo(frame, face, unknown_dir, unknown_photo_count)
-                        unknown_last_photo_at = now
-                        print(f"[OK] Unknown foto {unknown_photo_count}/20: {p}", flush=True)
+                #if unknown_dir is not None:
+                #    if (now - unknown_last_photo_at) >= unknown_photo_interval:
+                #        unknown_photo_count += 1
+                #        p = save_unknown_photo(frame, face, unknown_dir, unknown_photo_count)
+                #        unknown_last_photo_at = now
+                #        print(f"[OK] Unknown foto {unknown_photo_count}/20: {p}", flush=True)
 
                 # klaar: reset + start cooldown
                 if unknown_photo_count >= 20:
@@ -698,11 +933,11 @@ def main():
             # extra check (je had dit ook)
             if best_score > args.threshold:
                 last_t = last_person_photo_at.get(present_name, 0.0)
-                print(f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
+            #    print(f"[DEBUG] Now={now:.1f}, last_t={last_t:.1f}, cooldown={person_photo_cooldown}s", flush=True)
                 if (now - last_t) >= person_photo_cooldown:
-                    p = save_person_snapshot(frame, present_name, out_dir="snapshots")
-                    last_person_photo_at[present_name] = now
-                    print("[OK] Snapshot opgeslagen:", p, flush=True)
+            #        p = save_person_snapshot(frame, present_name, out_dir="snapshots")
+            #        last_person_photo_at[present_name] = now
+            #        print("[OK] Snapshot opgeslagen:", p, flush=True)
 
                     if speak_enabled:
                         tts_enqueue(tts_queue, f"Hallo {present_name}")

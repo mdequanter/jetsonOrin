@@ -293,18 +293,37 @@ def load_npz_features(npz_path: str):
     arr = np.asarray(data[key], dtype=np.float32)
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
+    elif arr.ndim > 2:
+        arr = arr.reshape(arr.shape[0], -1)
     if arr.ndim != 2 or arr.shape[0] == 0:
         return None
     return arr
+
+
+def normalize_face_feature(feat):
+    if feat is None:
+        return None
+    arr = np.asarray(feat, dtype=np.float32)
+    if arr.size == 0:
+        return None
+    return arr.reshape(-1)
 
 
 def append_known_features(known_dir: str, person: str, new_features: list) -> int:
     if not new_features:
         return 0
 
+    normalized = []
+    for feat in new_features:
+        feat_1d = normalize_face_feature(feat)
+        if feat_1d is not None:
+            normalized.append(feat_1d)
+    if not normalized:
+        return 0
+
     os.makedirs(known_dir, exist_ok=True)
     npz_path = os.path.join(known_dir, f"{person}.npz")
-    new_stack = np.stack(new_features, axis=0).astype(np.float32)
+    new_stack = np.stack(normalized, axis=0).astype(np.float32)
 
     old = load_npz_features(npz_path)
     if old is not None:
@@ -848,9 +867,9 @@ def main():
                         try:
                             aligned_qr = recognizer.alignCrop(frame, face)
                             feat_qr = recognizer.feature(aligned_qr).astype(np.float32)
-                            if feat_qr.ndim == 1 and feat_qr.shape[0] > 0:
-                                added_now = append_known_features(args.known, qr_registration["person"], [feat_qr])
-                                qr_registration["features_added"] += added_now
+                            added_now = append_known_features(args.known, qr_registration["person"], [feat_qr])
+                            qr_registration["features_added"] += added_now
+                            if added_now > 0:
                                 known = load_known(args.known)
                         except Exception as e:
                             print(f"[WAARSCHUWING] QR feature extractie mislukt: {e}", flush=True)

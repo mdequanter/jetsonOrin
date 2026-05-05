@@ -16,6 +16,7 @@ NIEUW (vereenvoudigd):
 
 TTS (Piper):
 - Standaard voice: nl_BE-nathalie-medium.onnx (+ .json)
+
 """
 
 import os

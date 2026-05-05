@@ -74,14 +74,22 @@ def largest_face(faces: np.ndarray):
 
 
 def best_match(recognizer, feat, known: dict):
+    feat_match = normalize_match_feature(feat)
+    if feat_match is None:
+        return None, -1.0, -1.0
+
     scores = []
     for name, feats in known.items():
         best = -1.0
         for f in feats:
-            s = float(recognizer.match(feat, f, cv2.FaceRecognizerSF_FR_COSINE))
+            f_match = normalize_match_feature(f)
+            if f_match is None or f_match.shape != feat_match.shape:
+                continue
+            s = float(recognizer.match(feat_match, f_match, cv2.FaceRecognizerSF_FR_COSINE))
             if s > best:
                 best = s
-        scores.append((name, best))
+        if best > -1.0:
+            scores.append((name, best))
     if not scores:
         return None, -1.0, -1.0
     scores.sort(key=lambda x: x[1], reverse=True)
@@ -101,6 +109,15 @@ def face_direction_nl(x: int, w_face: int, frame_w: int) -> str:
 
 def normalize_qr_text(text: str) -> str:
     return " ".join(str(text or "").split())
+
+
+def normalize_match_feature(feat):
+    if feat is None:
+        return None
+    arr = np.asarray(feat, dtype=np.float32)
+    if arr.size == 0:
+        return None
+    return arr.reshape(1, -1)
 
 
 def limit_tts_text(text: str, max_chars: int) -> str:

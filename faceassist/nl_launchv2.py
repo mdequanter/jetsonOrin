@@ -414,7 +414,7 @@ def main():
                     help="Aantal seconden voordat dezelfde QR-code opnieuw wordt uitgesproken.")
     ap.add_argument("--qr_max_chars", type=int, default=500,
                     help="Maximaal aantal QR-tekens voor TTS. Gebruik 0 voor onbeperkt.")
-    ap.add_argument("--qr_prefix", type=str, default="QR-code gevonden.",
+    ap.add_argument("--qr_prefix", type=str, default="Dank je wel om je te registreren. Ga enkele seconden in de deuropening staan met je gezicht naar de camera, je zal worden geregistreerd onder de naam: ",
                     help="Tekst die voor de QR-inhoud wordt uitgesproken.")
 
     # Piper TTS (NL voice)

@@ -11,7 +11,7 @@ This follows the same WebRTC frame queue approach as Publisher.py:
 Examples:
   python Unitree/takePictures.py 5
   python Unitree/takePictures.py 2 --limit 10
-  python Unitree/takePictures.py 5 --ip 10.2.172.107
+  python Unitree/takePictures.py 5 --ip unitree.local
 """
 
 import argparse
@@ -22,7 +22,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 
 import cv2
 
@@ -93,10 +93,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=95,
         help="JPEG quality from 1 to 100.",
     )
+    parser.add_argument(
+        "--startup-timeout",
+        type=positive_float,
+        default=30.0,
+        help="Seconds to wait for the first frame before failing or trying fallback host.",
+    )
     return parser
 
 
-def start_webrtc(frame_queue: Queue, ip: str):
+def queue_error(error_queue: Queue, exc: Exception) -> None:
+    try:
+        error_queue.put_nowait(exc)
+    except Full:
+        pass
+
+
+def start_webrtc(frame_queue: Queue, error_queue: Queue, ip: str):
     """Start the Unitree WebRTC connection in a background asyncio thread."""
 
     try:
@@ -134,19 +147,52 @@ def start_webrtc(frame_queue: Queue, ip: str):
             frame_queue.put(img)
 
     async def setup():
+        print(f"[INFO] Connecting to Unitree at {ip}", flush=True)
         await conn.connect()
         conn.video.switchVideoChannel(True)
         conn.video.add_track_callback(recv_camera_stream)
 
     def run_loop(loop):
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(setup())
-        loop.run_forever()
+        try:
+            loop.run_until_complete(setup())
+            loop.run_forever()
+        except Exception as exc:
+            queue_error(error_queue, exc)
 
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=run_loop, args=(loop,), daemon=True)
     thread.start()
     return loop, thread
+
+
+def stop_webrtc(loop, thread) -> None:
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5.0)
+
+
+def wait_for_first_frame(frame_queue: Queue, error_queue: Queue, timeout: float):
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        try:
+            return frame_queue.get(timeout=0.2), None
+        except Empty:
+            pass
+
+        try:
+            return None, error_queue.get_nowait()
+        except Empty:
+            pass
+
+    return None, TimeoutError("No video frame received before startup timeout.")
+
+
+def connection_hosts(primary_host: str) -> list[str]:
+    hosts = [primary_host]
+    if primary_host != "unitree.local":
+        hosts.append("unitree.local")
+    return hosts
 
 
 def make_filename(output_dir: Path, prefix: str) -> Path:
@@ -176,8 +222,37 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_queue = Queue(maxsize=1)
-    loop, asyncio_thread = start_webrtc(frame_queue, args.ip)
+    frame_queue = None
+    error_queue = None
+    loop = None
+    asyncio_thread = None
+    first_img = None
+
+    for host in connection_hosts(args.ip):
+        frame_queue = Queue(maxsize=1)
+        error_queue = Queue(maxsize=1)
+        loop, asyncio_thread = start_webrtc(frame_queue, error_queue, host)
+        first_img, connect_error = wait_for_first_frame(
+            frame_queue,
+            error_queue,
+            timeout=args.startup_timeout,
+        )
+
+        if first_img is not None:
+            break
+
+        print(f"[ERROR] Connection attempt for {host} failed: {connect_error}", flush=True)
+        stop_webrtc(loop, asyncio_thread)
+        loop = None
+        asyncio_thread = None
+
+    if first_img is None or frame_queue is None or error_queue is None or loop is None:
+        print(
+            "[ERROR] Could not open the Unitree video stream. Make sure Publisher.py, "
+            "viewVideoStream.py, or another WebRTC client is not still running.",
+            flush=True,
+        )
+        return 1
 
     print(f"[INFO] Saving one picture every {interval:g}s to {output_dir}", flush=True)
     print("[INFO] Press Ctrl+C to stop.", flush=True)
@@ -185,14 +260,26 @@ def main() -> int:
     frame_id = 0
     saved = 0
     next_save_at = time.time()
+    pending_img = first_img
 
     try:
         while True:
-            if frame_queue.empty():
-                time.sleep(0.005)
-                continue
+            try:
+                stream_error = error_queue.get_nowait()
+            except Empty:
+                stream_error = None
+            if stream_error is not None:
+                print(f"[ERROR] Unitree video stream failed: {stream_error}", flush=True)
+                return 1
 
-            img = frame_queue.get()
+            if pending_img is not None:
+                img = pending_img
+                pending_img = None
+            else:
+                if frame_queue.empty():
+                    time.sleep(0.005)
+                    continue
+                img = frame_queue.get()
 
             if frame_id % PRINT_EVERY_N_FRAMES == 0:
                 print(
@@ -216,8 +303,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("[INFO] Stopping.", flush=True)
     finally:
-        loop.call_soon_threadsafe(loop.stop)
-        asyncio_thread.join(timeout=5.0)
+        stop_webrtc(loop, asyncio_thread)
 
     return 0
 

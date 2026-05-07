@@ -6,3 +6,5 @@ authtokens.csv
 /faceassist/__pycache__
 /faceassist/qr_codes
 /Unitree/__pycache__
+/faceassist/extracted_faces
+/faceassist/known

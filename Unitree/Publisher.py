@@ -103,6 +103,7 @@ def main():
                 out_path = RECORDS_DIR / f"frame_{ts}.jpg"
                 cv2.imwrite(str(out_path), img)
                 next_save_at = now + SAVE_INTERVAL_SEC
+                f"[SAVE] file={out_path}",
 
     finally:
         if SHOW_PREVIEW:

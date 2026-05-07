@@ -17,7 +17,7 @@ from aiortc import MediaStreamTrack
 MODEL_PATH        = "/home/jetson/Models/kaai.pt"  # path to your trained YOLO model
 DETECTION_CONF    = 0.3
 SCAN_HEIGHTS      = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-RECORDS_DIR       = Path("records")
+RECORDS_DIR       = Path("Pictures")
 SAVE_INTERVAL_SEC = 10.0
 ROS_TOPIC         = "unitree_key_cmd"
 SHOW_PREVIEW      = False  # <- keep False for headless run (no window)

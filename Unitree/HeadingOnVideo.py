@@ -16,7 +16,15 @@ except ImportError as exc:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = SCRIPT_DIR / "models" / "KaaiGang.pt"
+DEFAULT_MODEL_CANDIDATES = (
+    SCRIPT_DIR / "models" / "KaaiGang.pt",
+    SCRIPT_DIR.parent / "faceassist" / "models" / "KaaiGang.pt",
+    Path("/home/jetson/Models/KaaiGang.pt"),
+)
+DEFAULT_MODEL_PATH = next(
+    (path for path in DEFAULT_MODEL_CANDIDATES if path.exists()),
+    DEFAULT_MODEL_CANDIDATES[0],
+)
 DEFAULT_VIDEO_PATH = SCRIPT_DIR / "Videos" / "gangKaai.mp4"
 WINDOW_NAME = "Gang Kaai heading"
 DEFAULT_SCAN_HEIGHTS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)

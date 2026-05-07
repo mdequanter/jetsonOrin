@@ -16,7 +16,8 @@ except ImportError as exc:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = SCRIPT_DIR / "models" / "KaaiGang.pt"
+
+DEFAULT_MODEL_PATH = "/home/jetson/Models/KaaiGang.pt"
 DEFAULT_VIDEO_PATH = SCRIPT_DIR / "Videos" / "gangKaai.mp4"
 WINDOW_NAME = "Gang Kaai segmentation"
 

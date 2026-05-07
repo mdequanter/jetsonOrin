@@ -27,10 +27,12 @@ DEFAULT_MODEL_PATH = next(
 )
 DEFAULT_VIDEO_PATH = SCRIPT_DIR / "Videos" / "gangKaai.mp4"
 WINDOW_NAME = "Gang Kaai heading"
-DEFAULT_SCAN_HEIGHTS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
+DEFAULT_SCAN_HEIGHTS = (0.01, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
 DEFAULT_ROW_WEIGHT_POWER = 2.0
 DEFAULT_LATERAL_STEP_RATIO = 0.05
-DEFAULT_DISPLAY_SCALE = 1.5
+DEFAULT_DISPLAY_SCALE = 1.0
+DEFAULT_BOTTOM_CONNECT_RATIO = 0.08
+DEFAULT_BOTTOM_SEED_X_RATIO = 0.5
 
 # BGR colors for OpenCV.
 COLORS = (
@@ -84,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         "--lateral-step-ratio",
         type=float,
         default=DEFAULT_LATERAL_STEP_RATIO,
-        help="Frame-width ratio used as one left/right step in the row-to-row plan.",
+        help="Frame-width ratio used to color row arrows as left, right, or straight.",
     )
     parser.add_argument(
         "--max-frames",
@@ -108,6 +110,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_DISPLAY_SCALE,
         help="Scale factor for the preview window. This does not change inference or saved video size.",
+    )
+    parser.add_argument(
+        "--bottom-connect-ratio",
+        type=float,
+        default=DEFAULT_BOTTOM_CONNECT_RATIO,
+        help="Bottom frame-height ratio used to keep only ground-connected segmentation.",
+    )
+    parser.add_argument(
+        "--bottom-seed-x-ratio",
+        type=float,
+        default=DEFAULT_BOTTOM_SEED_X_RATIO,
+        help="Horizontal frame ratio used as the bottom seed. 0.5 means bottom center.",
     )
     return parser.parse_args()
 
@@ -261,7 +275,59 @@ def draw_segmentation_polygons(
     return len(detections)
 
 
-def segmentation_mask_from_result(result, frame_size: tuple[int, int]) -> np.ndarray | None:
+def keep_bottom_connected_components(
+    mask: np.ndarray,
+    bottom_connect_ratio: float = DEFAULT_BOTTOM_CONNECT_RATIO,
+    bottom_seed_x_ratio: float = DEFAULT_BOTTOM_SEED_X_RATIO,
+) -> np.ndarray | None:
+    binary_mask = (mask > 0).astype(np.uint8)
+    if cv2.countNonZero(binary_mask) == 0:
+        return None
+
+    height, width = binary_mask.shape[:2]
+    bottom_rows = max(1, int(height * max(bottom_connect_ratio, 0.001)))
+    bottom_start = max(0, height - bottom_rows)
+    seed_x = int(np.clip(bottom_seed_x_ratio, 0.0, 1.0) * (width - 1))
+
+    label_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        binary_mask,
+        connectivity=8,
+    )
+    if label_count <= 1:
+        return None
+
+    bottom_labels = np.unique(labels[bottom_start:, :][binary_mask[bottom_start:, :] > 0])
+    bottom_labels = bottom_labels[bottom_labels != 0]
+    if len(bottom_labels) == 0:
+        return None
+
+    best_label = None
+    best_score = None
+    for label in bottom_labels:
+        bottom_y, bottom_x = np.where(labels[bottom_start:, :] == label)
+        if len(bottom_x) == 0:
+            continue
+
+        x_distance = int(np.min(np.abs(bottom_x - seed_x)))
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        score = (x_distance, -area)
+        if best_score is None or score < best_score:
+            best_label = label
+            best_score = score
+
+    if best_label is None:
+        return None
+
+    connected_mask = (labels == best_label).astype(np.uint8) * 255
+    return connected_mask
+
+
+def segmentation_mask_from_result(
+    result,
+    frame_size: tuple[int, int],
+    bottom_connect_ratio: float = DEFAULT_BOTTOM_CONNECT_RATIO,
+    bottom_seed_x_ratio: float = DEFAULT_BOTTOM_SEED_X_RATIO,
+) -> np.ndarray | None:
     masks = getattr(result, "masks", None)
     if masks is None or masks.data is None or len(masks.data) == 0:
         return None
@@ -269,7 +335,42 @@ def segmentation_mask_from_result(result, frame_size: tuple[int, int]) -> np.nda
     height, width = frame_size
     mask_data = masks.data.detach().cpu().numpy()
     merged_mask = np.any(mask_data > 0.5, axis=0).astype(np.uint8) * 255
-    return cv2.resize(merged_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    resized_mask = cv2.resize(merged_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    return keep_bottom_connected_components(
+        resized_mask,
+        bottom_connect_ratio,
+        bottom_seed_x_ratio,
+    )
+
+
+def contours_from_mask(mask: np.ndarray | None) -> list[np.ndarray]:
+    if mask is None:
+        return []
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return [contour for contour in contours if cv2.contourArea(contour) > 10.0]
+
+
+def count_mask_contours(mask: np.ndarray | None) -> int:
+    return len(contours_from_mask(mask))
+
+
+def draw_connected_mask_contours(
+    frame: np.ndarray,
+    mask: np.ndarray | None,
+    alpha: float,
+    line_width: int,
+) -> int:
+    contours = contours_from_mask(mask)
+    if not contours:
+        return 0
+
+    overlay = frame.copy()
+    color = (0, 255, 255)
+    cv2.drawContours(overlay, contours, -1, color, cv2.FILLED)
+    alpha = min(1.0, max(0.0, alpha))
+    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, dst=frame)
+    cv2.drawContours(frame, contours, -1, color, line_width, cv2.LINE_AA)
+    return len(contours)
 
 
 def extract_rowwise_midpoints(mask: np.ndarray, scan_heights: list[float]) -> list[tuple[int, int]]:
@@ -321,45 +422,48 @@ def order_midpoints_near_to_far(midpoints: list[tuple[int, int]]) -> list[tuple[
     return sorted(midpoints, key=lambda point: point[1], reverse=True)
 
 
-def first_near_midpoint(midpoints: list[tuple[int, int]]) -> tuple[int, int] | None:
-    ordered_points = order_midpoints_near_to_far(midpoints)
-    if not ordered_points:
-        return None
-    return ordered_points[0]
-
-
 def lateral_step_pixels(frame_width: int, lateral_step_ratio: float) -> float:
     return max(1.0, frame_width * max(lateral_step_ratio, 0.001))
 
 
-def create_row_to_row_plan(
+def segment_angle_degrees(start: tuple[int, int], end: tuple[int, int]) -> float:
+    dx = end[0] - start[0]
+    dy = start[1] - end[1]
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def create_row_angle_plan(
     midpoints: list[tuple[int, int]],
-    frame_width: int,
-    lateral_step_ratio: float,
-) -> tuple[str, int, int]:
+    start_point: tuple[int, int] | None = None,
+) -> tuple[str, list[float]]:
     ordered_points = order_midpoints_near_to_far(midpoints)
-    forward_steps = max(0, len(ordered_points) - 1)
-    if forward_steps == 0:
-        return "Plan: n/a", 0, 0
+    if start_point is not None:
+        ordered_points = [start_point, *ordered_points]
 
-    net_dx = ordered_points[-1][0] - ordered_points[0][0]
-    lateral_steps = int(round(net_dx / lateral_step_pixels(frame_width, lateral_step_ratio)))
-    if lateral_steps > 0:
-        turn_text = f"R{lateral_steps}"
-    elif lateral_steps < 0:
-        turn_text = f"L{abs(lateral_steps)}"
-    else:
-        turn_text = "S0"
+    if len(ordered_points) < 2:
+        return "Rows: n/a", []
 
-    return f"Plan: F{forward_steps}, {turn_text}", forward_steps, lateral_steps
+    angles = [
+        segment_angle_degrees(start, end)
+        for start, end in zip(ordered_points, ordered_points[1:])
+    ]
+    angle_text = ", ".join(
+        f"{index}={angle:.1f}"
+        for index, angle in enumerate(angles, start=1)
+    )
+    return f"Rows: {angle_text} deg", angles
 
 
 def draw_row_transition_arrows(
     frame: np.ndarray,
     midpoints: list[tuple[int, int]],
     lateral_step_ratio: float,
+    start_point: tuple[int, int] | None = None,
 ) -> None:
     ordered_points = order_midpoints_near_to_far(midpoints)
+    if start_point is not None:
+        ordered_points = [start_point, *ordered_points]
+
     if len(ordered_points) < 2:
         return
 
@@ -368,7 +472,9 @@ def draw_row_transition_arrows(
 
     for index, (start, end) in enumerate(zip(ordered_points, ordered_points[1:]), start=1):
         dx = end[0] - start[0]
-        if dx > step_px * 0.5:
+        if start_point is not None and index == 1:
+            color = (0, 255, 0)
+        elif dx > step_px * 0.5:
             color = (0, 165, 255)
         elif dx < -step_px * 0.5:
             color = (255, 180, 0)
@@ -399,6 +505,9 @@ def draw_row_transition_arrows(
             cv2.LINE_AA,
         )
 
+    if start_point is not None:
+        cv2.circle(frame, start_point, 7, (0, 255, 0), -1, cv2.LINE_AA)
+
 
 def draw_rowwise_midpoints(frame: np.ndarray, midpoints: list[tuple[int, int]]) -> None:
     if not midpoints:
@@ -411,18 +520,6 @@ def draw_rowwise_midpoints(frame: np.ndarray, midpoints: list[tuple[int, int]]) 
         cv2.line(frame, (0, y), (width - 1, y), (255, 255, 255), 1, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 6, (0, 0, 255), -1, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 8, (255, 255, 255), 2, cv2.LINE_AA)
-
-
-def draw_start_to_first_midpoint_arrow(
-    frame: np.ndarray,
-    start: tuple[int, int],
-    target: tuple[int, int] | None,
-) -> None:
-    if target is None:
-        return
-
-    cv2.arrowedLine(frame, start, target, (0, 255, 0), 4, cv2.LINE_AA, tipLength=0.25)
-    cv2.circle(frame, start, 7, (0, 255, 0), -1, cv2.LINE_AA)
 
 
 def create_video_writer(
@@ -512,29 +609,33 @@ def main() -> int:
             total_ms = (time.perf_counter() - start) * 1000.0
             inference_ms = result.speed.get("inference", total_ms) if result.speed else total_ms
 
-            mask_count = draw_segmentation_polygons(
-                frame,
+            mask = segmentation_mask_from_result(
                 result,
+                frame.shape[:2],
+                args.bottom_connect_ratio,
+                args.bottom_seed_x_ratio,
+            )
+            contour_count = draw_connected_mask_contours(
+                frame,
+                mask,
                 alpha=args.alpha,
                 line_width=args.line_width,
             )
-            mask = segmentation_mask_from_result(result, frame.shape[:2])
             midpoints = extract_rowwise_midpoints(mask, scan_heights) if mask is not None else []
             heading_angle, _weighted_target, arrow_start = calculate_heading(
                 midpoints,
                 frame.shape[:2],
                 args.row_weight_power,
             )
-            first_midpoint = first_near_midpoint(midpoints)
-            row_plan, forward_steps, lateral_steps = create_row_to_row_plan(
-                midpoints,
-                frame.shape[1],
-                args.lateral_step_ratio,
-            )
+            row_angle_plan, row_angles = create_row_angle_plan(midpoints, arrow_start)
 
-            draw_row_transition_arrows(frame, midpoints, args.lateral_step_ratio)
+            draw_row_transition_arrows(
+                frame,
+                midpoints,
+                args.lateral_step_ratio,
+                arrow_start,
+            )
             draw_rowwise_midpoints(frame, midpoints)
-            draw_start_to_first_midpoint_arrow(frame, arrow_start, first_midpoint)
 
             heading_text = "Heading: n/a"
             if heading_angle is not None:
@@ -544,9 +645,9 @@ def main() -> int:
                 frame,
                 [
                     f"Inference: {inference_ms:.1f} ms",
-                    f"Total: {total_ms:.1f} ms | Masks: {mask_count}",
+                    f"Total: {total_ms:.1f} ms | Ground contours: {contour_count}",
                     f"{heading_text} | Midpoints: {len(midpoints)} | Weight: {args.row_weight_power:g}",
-                    f"{row_plan} | Lateral step: {args.lateral_step_ratio:g}w",
+                    row_angle_plan,
                 ],
             )
 
@@ -556,10 +657,11 @@ def main() -> int:
             if args.no_display:
                 print(
                     f"frame={frame_index} inference_ms={inference_ms:.1f} "
-                    f"total_ms={total_ms:.1f} masks={mask_count} "
+                    f"total_ms={total_ms:.1f} ground_contours={contour_count} "
                     f"heading={heading_angle if heading_angle is not None else 'n/a'} "
-                    f"midpoints={len(midpoints)} forward_steps={forward_steps} "
-                    f"lateral_steps={lateral_steps} row_weight_power={args.row_weight_power:g}",
+                    f"midpoints={len(midpoints)} "
+                    f"row_angles={[round(angle, 1) for angle in row_angles]} "
+                    f"row_weight_power={args.row_weight_power:g}",
                     flush=True,
                 )
             else:

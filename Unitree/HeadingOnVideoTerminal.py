@@ -14,13 +14,15 @@ except ImportError as exc:
     ) from exc
 
 from HeadingOnVideo import (
-    DEFAULT_LATERAL_STEP_RATIO,
+    DEFAULT_BOTTOM_CONNECT_RATIO,
+    DEFAULT_BOTTOM_SEED_X_RATIO,
     DEFAULT_MODEL_PATH,
     DEFAULT_ROW_WEIGHT_POWER,
     DEFAULT_SCAN_HEIGHTS,
     DEFAULT_VIDEO_PATH,
     calculate_heading,
-    create_row_to_row_plan,
+    count_mask_contours,
+    create_row_angle_plan,
     extract_rowwise_midpoints,
     parse_scan_heights,
     segmentation_mask_from_result,
@@ -60,10 +62,16 @@ def parse_args() -> argparse.Namespace:
         help="How strongly lower scan rows steer the heading. Use 0 for equal weights.",
     )
     parser.add_argument(
-        "--lateral-step-ratio",
+        "--bottom-connect-ratio",
         type=float,
-        default=DEFAULT_LATERAL_STEP_RATIO,
-        help="Frame-width ratio used as one left/right step in the row-to-row plan.",
+        default=DEFAULT_BOTTOM_CONNECT_RATIO,
+        help="Bottom frame-height ratio used to keep only ground-connected segmentation.",
+    )
+    parser.add_argument(
+        "--bottom-seed-x-ratio",
+        type=float,
+        default=DEFAULT_BOTTOM_SEED_X_RATIO,
+        help="Horizontal frame ratio used as the bottom seed. 0.5 means bottom center.",
     )
     parser.add_argument(
         "--print-every",
@@ -119,7 +127,7 @@ def main() -> int:
     print(f"model={model_path}")
     print(f"video={video_path}")
     print(
-        "columns: frame inference_ms total_ms heading plan midpoints masks fps",
+        "columns: frame inference_ms total_ms heading row_angles midpoints ground_contours fps",
         flush=True,
     )
 
@@ -137,19 +145,20 @@ def main() -> int:
             total_ms = (time.perf_counter() - start) * 1000.0
             inference_ms = result.speed.get("inference", total_ms) if result.speed else total_ms
 
-            mask = segmentation_mask_from_result(result, frame.shape[:2])
+            mask = segmentation_mask_from_result(
+                result,
+                frame.shape[:2],
+                args.bottom_connect_ratio,
+                args.bottom_seed_x_ratio,
+            )
             midpoints = extract_rowwise_midpoints(mask, scan_heights) if mask is not None else []
-            heading_angle, _weighted_target, _arrow_start = calculate_heading(
+            heading_angle, _weighted_target, arrow_start = calculate_heading(
                 midpoints,
                 frame.shape[:2],
                 args.row_weight_power,
             )
-            row_plan, _forward_steps, _lateral_steps = create_row_to_row_plan(
-                midpoints,
-                frame.shape[1],
-                args.lateral_step_ratio,
-            )
-            mask_count = len(result.masks.data) if result.masks is not None else 0
+            row_angle_plan, _row_angles = create_row_angle_plan(midpoints, arrow_start)
+            contour_count = count_mask_contours(mask)
             processed_frames += 1
 
             if frame_index % print_every == 0:
@@ -160,9 +169,9 @@ def main() -> int:
                     f"inference_ms={inference_ms:.1f} "
                     f"total_ms={total_ms:.1f} "
                     f"heading=\"{format_heading(heading_angle)}\" "
-                    f"plan=\"{row_plan}\" "
+                    f"row_angles=\"{row_angle_plan}\" "
                     f"midpoints={len(midpoints)} "
-                    f"masks={mask_count} "
+                    f"ground_contours={contour_count} "
                     f"fps={fps:.1f}",
                     flush=True,
                 )

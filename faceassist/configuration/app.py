@@ -9,7 +9,6 @@ import sys
 
 
 
-from scripts.camera_stream import generate_camera_frames
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FACEASSIST_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
@@ -24,6 +23,10 @@ DETECTION_CONTROL_PATH = os.environ.get(
 SERVICE_NAME = os.environ.get("FACEASSIST_SERVICE", "faceassist.service")
 CONFIG_HOST = os.environ.get("CONFIGURATION_HOST", "0.0.0.0")
 CONFIG_PORT = int(os.environ.get("CONFIGURATION_PORT", "5050"))
+
+
+from scripts.camera_stream import generate_camera_frames
+
 
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)

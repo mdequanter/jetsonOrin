@@ -2,7 +2,6 @@
 
 {% block content %}
   <h1>Configuration</h1>
-  <p class="muted">Beheer detectie, service-status, reboot en geluidsniveau.</p>
 
   {% if msg %}
     <div class="notice {{ level }}">{{ msg }}</div>
@@ -12,10 +11,6 @@
     <h2>Detectie</h2>
     <div class="status-grid">
       <div>
-        <span class="field-label">Script</span>
-        <span class="field-value"><code>{{ recognition_script }}</code></span>
-      </div>
-      <div>
         <span class="field-label">Detectie</span>
         <span class="field-value">
           {% if detection_enabled %}
@@ -24,10 +19,6 @@
             <span class="pill warn">pauze</span>
           {% endif %}
         </span>
-      </div>
-      <div>
-        <span class="field-label">Control file</span>
-        <span class="field-value"><code>{{ detection_control_path }}</code></span>
       </div>
       <div>
         <span class="field-label">Voice Volume</span>

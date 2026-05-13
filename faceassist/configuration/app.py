@@ -24,12 +24,11 @@ SERVICE_NAME = os.environ.get("FACEASSIST_SERVICE", "faceassist.service")
 CONFIG_HOST = os.environ.get("CONFIGURATION_HOST", "0.0.0.0")
 CONFIG_PORT = int(os.environ.get("CONFIGURATION_PORT", "5050"))
 
+if FACEASSIST_DIR not in sys.path:
+    sys.path.insert(0, FACEASSIST_DIR)
 
 from scripts.camera_stream import generate_camera_frames
 
-
-if SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, SCRIPTS_DIR)
 
 app = Flask(__name__)
 

@@ -27,7 +27,7 @@ DEFAULT_MODEL_PATH = next(
 )
 DEFAULT_VIDEO_PATH = SCRIPT_DIR / "Videos" / "gangKaai.mp4"
 WINDOW_NAME = "Gang Kaai heading"
-DEFAULT_SCAN_HEIGHTS = (0.01, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
+DEFAULT_SCAN_HEIGHTS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 DEFAULT_ROW_WEIGHT_POWER = 2.0
 DEFAULT_LATERAL_STEP_RATIO = 0.05
 DEFAULT_DISPLAY_SCALE = 1.0
@@ -422,6 +422,13 @@ def order_midpoints_near_to_far(midpoints: list[tuple[int, int]]) -> list[tuple[
     return sorted(midpoints, key=lambda point: point[1], reverse=True)
 
 
+def first_near_midpoint(midpoints: list[tuple[int, int]]) -> tuple[int, int] | None:
+    ordered_points = order_midpoints_near_to_far(midpoints)
+    if not ordered_points:
+        return None
+    return ordered_points[0]
+
+
 def lateral_step_pixels(frame_width: int, lateral_step_ratio: float) -> float:
     return max(1.0, frame_width * max(lateral_step_ratio, 0.001))
 
@@ -458,12 +465,8 @@ def draw_row_transition_arrows(
     frame: np.ndarray,
     midpoints: list[tuple[int, int]],
     lateral_step_ratio: float,
-    start_point: tuple[int, int] | None = None,
 ) -> None:
     ordered_points = order_midpoints_near_to_far(midpoints)
-    if start_point is not None:
-        ordered_points = [start_point, *ordered_points]
-
     if len(ordered_points) < 2:
         return
 
@@ -472,9 +475,7 @@ def draw_row_transition_arrows(
 
     for index, (start, end) in enumerate(zip(ordered_points, ordered_points[1:]), start=1):
         dx = end[0] - start[0]
-        if start_point is not None and index == 1:
-            color = (0, 255, 0)
-        elif dx > step_px * 0.5:
+        if dx > step_px * 0.5:
             color = (0, 165, 255)
         elif dx < -step_px * 0.5:
             color = (255, 180, 0)
@@ -505,9 +506,6 @@ def draw_row_transition_arrows(
             cv2.LINE_AA,
         )
 
-    if start_point is not None:
-        cv2.circle(frame, start_point, 7, (0, 255, 0), -1, cv2.LINE_AA)
-
 
 def draw_rowwise_midpoints(frame: np.ndarray, midpoints: list[tuple[int, int]]) -> None:
     if not midpoints:
@@ -520,6 +518,18 @@ def draw_rowwise_midpoints(frame: np.ndarray, midpoints: list[tuple[int, int]]) 
         cv2.line(frame, (0, y), (width - 1, y), (255, 255, 255), 1, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 6, (0, 0, 255), -1, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 8, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def draw_start_to_first_midpoint_arrow(
+    frame: np.ndarray,
+    start: tuple[int, int],
+    target: tuple[int, int] | None,
+) -> None:
+    if target is None:
+        return
+
+    cv2.arrowedLine(frame, start, target, (0, 255, 0), 4, cv2.LINE_AA, tipLength=0.25)
+    cv2.circle(frame, start, 7, (0, 255, 0), -1, cv2.LINE_AA)
 
 
 def create_video_writer(
@@ -627,15 +637,12 @@ def main() -> int:
                 frame.shape[:2],
                 args.row_weight_power,
             )
+            first_midpoint = first_near_midpoint(midpoints)
             row_angle_plan, row_angles = create_row_angle_plan(midpoints, arrow_start)
 
-            draw_row_transition_arrows(
-                frame,
-                midpoints,
-                args.lateral_step_ratio,
-                arrow_start,
-            )
+            draw_row_transition_arrows(frame, midpoints, args.lateral_step_ratio)
             draw_rowwise_midpoints(frame, midpoints)
+            draw_start_to_first_midpoint_arrow(frame, arrow_start, first_midpoint)
 
             heading_text = "Heading: n/a"
             if heading_angle is not None:

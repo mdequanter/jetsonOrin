@@ -472,7 +472,7 @@ def move_unknown_session_images_to_known(session_dir: str, person: str, session:
     return person_dir, moved
 
 # ---- Herkenning procesbeheer ----
-RECOGNITION_SCRIPT = os.path.join(BASE_DIR, "nl_launch.py")  # hetzelfde pad als jouw upload/bronbestand :contentReference[oaicite:1]{index=1}
+RECOGNITION_SCRIPT = os.path.join(BASE_DIR, "nl_launchv2.py")  # QR-registratie zit in de v2 launcher.
 _recognition_proc = None
 _recognition_source = "local"
 _log_lines = deque(maxlen=400)
@@ -515,7 +515,7 @@ def start_recognition(source: str = "local"):
     os.makedirs(KNOWN_DIR, exist_ok=True)
 
     # Belangrijk:
-    # - nl_launch.py is headless en kan (optioneel) input vragen voor onbekenden.
+    # - nl_launchv2.py is headless en verwerkt ook QR-registraties.
     #   Deze web-integratie start hem vooral voor "bekenden herkennen" + snapshots opslaan.
     cmd = [
         "python3", RECOGNITION_SCRIPT,
@@ -1712,20 +1712,37 @@ def get_known_embeddings_cached(refresh_sec: float = 5.0):
 
 
 def _best_match(recognizer, feat: np.ndarray, known: dict):
+    feat_match = _normalize_match_feature(feat)
+    if feat_match is None:
+        return None, -1.0, -1.0
+
     scores = []
     for name, feats in known.items():
         best = -1.0
         for f in feats:
-            s = float(recognizer.match(feat, f, cv2.FaceRecognizerSF_FR_COSINE))
+            f_match = _normalize_match_feature(f)
+            if f_match is None or f_match.shape != feat_match.shape:
+                continue
+            s = float(recognizer.match(feat_match, f_match, cv2.FaceRecognizerSF_FR_COSINE))
             if s > best:
                 best = s
-        scores.append((name, best))
+        if best > -1.0:
+            scores.append((name, best))
     if not scores:
         return None, -1.0, -1.0
     scores.sort(key=lambda x: x[1], reverse=True)
     best_name, best_score = scores[0]
     second_score = scores[1][1] if len(scores) > 1 else -1.0
     return best_name, best_score, second_score
+
+
+def _normalize_match_feature(feat):
+    if feat is None:
+        return None
+    arr = np.asarray(feat, dtype=np.float32)
+    if arr.size == 0:
+        return None
+    return arr.reshape(1, -1)
 
 
 def _annotate_face(img, face_row, label: str, color):

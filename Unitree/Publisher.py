@@ -14,7 +14,7 @@ from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTC
 from aiortc import MediaStreamTrack
 
 # --- Settings ---
-MODEL_PATH        = "/home/jetson/Models/kaai.pt"  # path to your trained YOLO model
+MODEL_PATH        = "/home/jetson/Models/KaaiGang.pt"  # path to your trained YOLO model
 DETECTION_CONF    = 0.3
 SCAN_HEIGHTS      = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 RECORDS_DIR       = Path("Pictures")

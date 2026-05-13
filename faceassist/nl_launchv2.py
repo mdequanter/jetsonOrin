@@ -201,12 +201,6 @@ def open_camera_from_url(cam_url: str, width: int, height: int, fps: int):
     return cap
 
 
-def open_runtime_camera(args):
-    if (args.cam_url or "").strip():
-        return open_camera_from_url(args.cam_url, args.width, args.height, args.fps)
-    return open_camera_linux(args.cam, args.width, args.height, args.fps)
-
-
 def str2bool(s: str) -> bool:
     return str(s).strip().lower() in ("1", "true", "yes", "y", "on", "ja", "j")
 
@@ -792,6 +786,9 @@ def main():
                     qr_registration = None
                     detection_paused = True
                 drain_done_queue(tts_done_queue)
+                cap.release()
+                cap = None
+                time.sleep(args.control_poll_interval)
                 time.sleep(0.2)
                 continue
 

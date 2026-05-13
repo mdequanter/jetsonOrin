@@ -9,10 +9,7 @@ import sys
 
 
 
-if SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, SCRIPTS_DIR)
-
-from camera_stream import generate_camera_frames
+from scripts.camera_stream import generate_camera_frames
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FACEASSIST_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))

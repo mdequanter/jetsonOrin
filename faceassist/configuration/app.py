@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import cv2
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -230,10 +231,65 @@ def control_page():
         settings_path=SETTINGS_PATH,
     )
 
+def open_preview_camera():
+    settings = load_settings()
+    cam_url = settings.get("droidcam_url", "").strip()
+
+    if cam_url:
+        cap = cv2.VideoCapture(cam_url)
+    else:
+        cap = cv2.VideoCapture(0)
+
+    return cap
+
+
+def generate_camera_frames():
+    cap = open_preview_camera()
+
+    if not cap.isOpened():
+        print("[FOUT] Preview camera kon niet geopend worden.", flush=True)
+        return
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                time.sleep(0.1)
+                continue
+
+            frame = cv2.resize(frame, (640, 480))
+
+            ok, buffer = cv2.imencode(".jpg", frame)
+            if not ok:
+                continue
+
+            jpg = buffer.tobytes()
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+            )
+
+    finally:
+        cap.release()
+
+
 @app.route("/camera")
 def camera_page():
-    return render_template("camera.html", active_page="camera")
+    return render_template(
+        "camera.html",
+        title="Camera Preview",
+        active_page="camera",
+        detection_enabled=detection_enabled(),
+    )
 
+
+@app.route("/camera/feed")
+def camera_feed():
+    return app.response_class(
+        generate_camera_frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
 
 @app.route("/service/start", methods=["POST"])
 def start_service():

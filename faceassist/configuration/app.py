@@ -257,6 +257,14 @@ def aligncamera_page():
     )
 
 
+@app.route("/aligncamera/feed")
+def aligncamera_feed():
+    return app.response_class(
+        generate_camera_frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+
+
+
 
 @app.route("/camera/feed")
 def camera_feed():

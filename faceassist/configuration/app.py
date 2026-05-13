@@ -230,6 +230,10 @@ def control_page():
         settings_path=SETTINGS_PATH,
     )
 
+@app.route("/camera")
+def logs():
+    return render_template("camera.html", active_page="camera")
+
 
 @app.route("/service/start", methods=["POST"])
 def start_service():
@@ -258,6 +262,7 @@ def enable_detection():
 
 @app.route("/detection/disable", methods=["POST"])
 def disable_detection():
+
     return _set_detection_and_redirect(False, "Detectie gepauzeerd.")
 
 

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h1>Camera</h1>
+
+  {% if msg %}
+    <div class="notice {{ level }}">{{ msg }}</div>
+  {% endif %}
+{% endblock %}

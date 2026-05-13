@@ -25,11 +25,11 @@
     <div class="actions">
       {% if detection_enabled %}
         <form method="post" action="{{ url_for('disable_detection') }}">
-          <button class="btn btn-danger" type="submit">Detectie pauzeren</button>
+          <button class="btn btn-danger" type="submit">Pauze detection</button>
         </form>
       {% else %}
         <form method="post" action="{{ url_for('enable_detection') }}">
-          <button class="btn btn-primary" type="submit">Detectie aanzetten</button>
+          <button class="btn btn-primary" type="submit">Enable detection</button>
         </form>
       {% endif %}
       <a class="btn" href="{{ url_for('control_page') }}#nl-launch">Refresh</a>

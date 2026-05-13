@@ -8,6 +8,58 @@
     <div class="notice {{ level }}">{{ msg }}</div>
   {% endif %}
 
+  <section id="nl-launch" class="panel" style="margin-top:18px;">
+    <h2>nl_launchv2.py</h2>
+    <div class="status-grid">
+      <div>
+        <span class="field-label">Script</span>
+        <span class="field-value"><code>{{ recognition_script }}</code></span>
+      </div>
+      <div>
+        <span class="field-label">State</span>
+        <span class="field-value">
+          {% if recognition_running %}
+            <span class="pill ok">active</span>
+          {% else %}
+            <span class="pill warn">inactive</span>
+          {% endif %}
+        </span>
+      </div>
+      <div>
+        <span class="field-label">Source</span>
+        <span class="field-value">{{ "DroidCam" if recognition_source == "droidcam" else "Local camera" }}</span>
+      </div>
+      <div>
+        <span class="field-label">Voice Volume</span>
+        <span class="field-value">{{ settings.voice_volume }}</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      {% if not recognition_running %}
+        <form method="post" action="{{ url_for('start_nl_launch') }}" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <label class="field-label" for="source">Source</label>
+          <select id="source" name="source">
+            <option value="local" {% if recognition_source == "local" %}selected{% endif %}>Local camera</option>
+            <option value="droidcam" {% if recognition_source == "droidcam" %}selected{% endif %}>DroidCam</option>
+          </select>
+          <button class="btn btn-primary" type="submit">Start nl_launchv2.py</button>
+        </form>
+      {% else %}
+        <form method="post" action="{{ url_for('stop_nl_launch') }}">
+          <button class="btn btn-danger" type="submit">Stop nl_launchv2.py</button>
+        </form>
+      {% endif %}
+      <a class="btn" href="{{ url_for('control_page') }}#nl-launch">Refresh</a>
+    </div>
+
+    <p class="muted" style="margin-top:12px;">
+      The configuration app starts this script directly. It does not call or import the main Flask app.
+    </p>
+
+    <pre id="nl_launch_log" class="log-box">{{ recognition_log|join("\n") }}</pre>
+  </section>
+
   <div class="layout">
     <section class="panel">
       <h2>Service</h2>
@@ -100,6 +152,19 @@
         const value = clamp(number.value);
         slider.value = String(value);
       });
+
+      async function refreshLog() {
+        const log = document.getElementById("nl_launch_log");
+        if (!log) return;
+        try {
+          const res = await fetch("{{ url_for('api_nl_launch_log') }}", { cache: "no-store" });
+          const data = await res.json();
+          log.textContent = (data.lines || []).join("\n");
+        } catch (e) { /* ignore */ }
+      }
+
+      refreshLog();
+      setInterval(refreshLog, 1000);
     })();
   </script>
 {% endblock %}

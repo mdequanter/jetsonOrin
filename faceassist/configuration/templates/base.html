@@ -269,6 +269,28 @@
       font-weight: 700;
     }
 
+    select {
+      min-height: 44px;
+      border: 1px solid #aeb7c2;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 16px;
+      font-weight: 700;
+      background: #fff;
+      color: var(--text);
+    }
+
+    .log-box {
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      margin: 14px 0 0;
+      padding: 12px;
+      border-radius: 8px;
+      background: #101820;
+      color: #edf6ff;
+    }
+
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 0.95em;
@@ -293,7 +315,7 @@
       <div class="brand">Face Assist Configuration</div>
       <nav class="menu" aria-label="Configuration menu">
         <a href="{{ url_for('control_page') }}">Control</a>
-        <a href="{{ main_app_url }}">Main app</a>
+        <a href="{{ url_for('control_page') }}#nl-launch">nl_launchv2.py</a>
       </nav>
     </div>
   </header>

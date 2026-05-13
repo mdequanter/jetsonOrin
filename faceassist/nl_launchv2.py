@@ -201,6 +201,12 @@ def open_camera_from_url(cam_url: str, width: int, height: int, fps: int):
     return cap
 
 
+def open_runtime_camera(args):
+    if (args.cam_url or "").strip():
+        return open_camera_from_url(args.cam_url, args.width, args.height, args.fps)
+    return open_camera_linux(args.cam, args.width, args.height, args.fps)
+
+
 def str2bool(s: str) -> bool:
     return str(s).strip().lower() in ("1", "true", "yes", "y", "on", "ja", "j")
 

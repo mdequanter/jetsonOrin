@@ -63,6 +63,45 @@
     </p>
   </form>
 
+  <div id="nl-launch" class="card">
+    <h2>nl_launchv2.py</h2>
+    <p>
+      Status:
+      {% if nl_launch_running %}
+        <strong>ACTIEF</strong>
+      {% else %}
+        <strong>NIET actief</strong>
+      {% endif %}
+    </p>
+    <p class="muted">
+      Script: <span class="mono">{{ recognition_script }}</span>
+    </p>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+      {% if not nl_launch_running %}
+        <form method="post" action="{{ url_for('settings_nl_launch_start') }}" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:0;">
+          <label for="nl_launch_source" class="muted">Bron:</label>
+          <select id="nl_launch_source" name="source" style="font-size:16px; padding:8px 10px; border-radius:8px; border:1px solid #bbb;">
+            <option value="local" {% if nl_launch_source == 'local' %}selected{% endif %}>Lokale camera</option>
+            <option value="droidcam" {% if nl_launch_source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+          </select>
+          <button class="btn btn-primary" type="submit">Start nl_launchv2.py</button>
+        </form>
+      {% else %}
+        <form method="post" action="{{ url_for('settings_nl_launch_stop') }}" style="margin:0;">
+          <button class="btn btn-danger" type="submit">Stop nl_launchv2.py</button>
+        </form>
+        <p class="muted" style="margin:0;">
+          Actieve bron: <strong>{{ "DroidCam" if nl_launch_source == "droidcam" else "Lokale camera" }}</strong>
+        </p>
+      {% endif %}
+    </div>
+
+    <p class="muted" style="margin-top:10px;">
+      Deze knoppen gebruiken hetzelfde procesbeheer als Personen herkennen en starten hetzelfde script maar handmatig vanuit Instellingen.
+    </p>
+  </div>
+
   <div class="card">
     <h2>Systeem</h2>
     <div style="display:flex; gap:10px; flex-wrap:wrap;">

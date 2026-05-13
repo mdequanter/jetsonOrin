@@ -2021,6 +2021,9 @@ def settings_page():
         msg=msg,
         level=level,
         settings=current_app_settings(),
+        nl_launch_running=recognition_running(),
+        nl_launch_source=get_recognition_source(),
+        recognition_script=RECOGNITION_SCRIPT,
     )
 
 
@@ -2056,6 +2059,53 @@ def settings_shutdown():
         ["systemctl", "poweroff"],
     ])
     return redirect(url_for("settings_page", level="ok", msg="Shutdown aangevraagd."))
+
+
+@app.route("/settings/nl-launch/start", methods=["POST"])
+def settings_nl_launch_start():
+    source = (request.form.get("source") or get_recognition_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+
+    if recognition_running():
+        return redirect(url_for(
+            "settings_page",
+            level="info",
+            msg="nl_launchv2.py draait al.",
+        ))
+
+    try:
+        start_recognition(source=source)
+    except Exception as e:
+        return redirect(url_for(
+            "settings_page",
+            level="error",
+            msg=f"nl_launchv2.py starten mislukt: {e}",
+        ))
+
+    return redirect(url_for(
+        "settings_page",
+        level="ok",
+        msg="nl_launchv2.py gestart.",
+    ))
+
+
+@app.route("/settings/nl-launch/stop", methods=["POST"])
+def settings_nl_launch_stop():
+    if not recognition_running():
+        stop_recognition()
+        return redirect(url_for(
+            "settings_page",
+            level="info",
+            msg="nl_launchv2.py draait niet.",
+        ))
+
+    stop_recognition()
+    return redirect(url_for(
+        "settings_page",
+        level="ok",
+        msg="Stop signaal naar nl_launchv2.py gestuurd.",
+    ))
 
 
 @app.route("/camera")

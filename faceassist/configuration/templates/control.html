@@ -38,10 +38,6 @@
       {% endif %}
       <a class="btn" href="{{ url_for('control_page') }}#nl-launch">Refresh</a>
     </div>
-
-    <p class="muted" style="margin-top:12px;">
-      De service blijft draaien. <span class="mono">nl_launchv2.py</span> leest dit bestand en pauzeert alleen de detectielus.
-    </p>
   </section>
 
   <div class="layout">
@@ -82,9 +78,6 @@
       <div class="actions">
         <a class="btn" href="{{ url_for('control_page') }}">Refresh status</a>
       </div>
-      <p class="muted" style="margin-top:12px;">
-        De service wordt hier niet gestart of gestopt; alleen de detectie wordt gepauzeerd of hervat.
-      </p>
     </section>
 
     <div class="stack">
@@ -100,7 +93,6 @@
             <button class="btn btn-primary" type="submit">Save volume</button>
           </div>
         </form>
-        <p class="muted">Saved to <code>{{ settings_path }}</code>. Restart the service if it is already running.</p>
       </section>
 
       <section class="panel">
@@ -108,7 +100,6 @@
         <form method="post" action="{{ url_for('reboot_system') }}">
           <button class="btn btn-danger" type="submit" onclick="return confirm('Reboot the Jetson now?');">Reboot Jetson</button>
         </form>
-        <p class="muted" style="margin-top:12px;">System actions require passwordless sudo or root permissions for systemctl.</p>
       </section>
     </div>
   </div>

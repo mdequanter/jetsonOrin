@@ -5,11 +5,18 @@ import shutil
 import subprocess
 import threading
 import time
-import cv2
+import sys
 
+
+
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+
+from camera_stream import generate_camera_frames
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FACEASSIST_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+SCRIPTS_DIR = os.path.join(FACEASSIST_DIR, "scripts")
 SETTINGS_PATH = os.path.join(FACEASSIST_DIR, "settings.json")
 RECOGNITION_SCRIPT = os.path.join(FACEASSIST_DIR, "nl_launchv2.py")
 DETECTION_CONTROL_PATH = os.environ.get(
@@ -20,6 +27,9 @@ DETECTION_CONTROL_PATH = os.environ.get(
 SERVICE_NAME = os.environ.get("FACEASSIST_SERVICE", "faceassist.service")
 CONFIG_HOST = os.environ.get("CONFIGURATION_HOST", "0.0.0.0")
 CONFIG_PORT = int(os.environ.get("CONFIGURATION_PORT", "5050"))
+
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
 
 app = Flask(__name__)
 
@@ -227,43 +237,6 @@ def control_page():
         recognition_script=RECOGNITION_SCRIPT,
         settings_path=SETTINGS_PATH,
     )
-
-def open_preview_camera():
-    settings = load_settings()
-    cap = cv2.VideoCapture(0)
-
-    return cap
-
-
-def generate_camera_frames():
-    cap = open_preview_camera()
-
-    if not cap.isOpened():
-        print("[FOUT] Preview camera kon niet geopend worden.", flush=True)
-        return
-
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                time.sleep(0.1)
-                continue
-
-            frame = cv2.resize(frame, (640, 480))
-
-            ok, buffer = cv2.imencode(".jpg", frame)
-            if not ok:
-                continue
-
-            jpg = buffer.tobytes()
-
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-            )
-
-    finally:
-        cap.release()
 
 
 @app.route("/camera")

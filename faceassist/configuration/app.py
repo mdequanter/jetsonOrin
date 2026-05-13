@@ -123,8 +123,8 @@ def _run_first_success(cmds, timeout=12):
 
 def _systemctl_action_commands(action):
     return [
-        ["sudo", "-n", "systemctl", action, SERVICE_NAME],
-        ["systemctl", action, SERVICE_NAME],
+        ["sudo", "-n", "systemctl", "--no-block", action, SERVICE_NAME],
+        ["systemctl", "--no-block", action, SERVICE_NAME],
     ]
 
 

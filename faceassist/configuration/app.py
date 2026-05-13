@@ -247,6 +247,16 @@ def camera_page():
         detection_enabled=detection_enabled(),
     )
 
+@app.route("/aligncamera")
+def aligncamera_page():
+    return render_template(
+        "aligncamera.html",
+        title="Align Camera",
+        active_page="aligncamera",
+        detection_enabled=detection_enabled(),
+    )
+
+
 
 @app.route("/camera/feed")
 def camera_feed():

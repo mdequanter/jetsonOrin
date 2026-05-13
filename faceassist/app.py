@@ -1925,6 +1925,72 @@ def personen_stop():
     stop_recognition()
     return redirect(url_for("personen"))
 
+
+@app.route("/nl-launch")
+def nl_launch_page():
+    source = (request.args.get("source") or get_recognition_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = get_recognition_source()
+    return render_template(
+        "nl_launch.html",
+        running=recognition_running(),
+        source=source,
+        recognition_script=RECOGNITION_SCRIPT,
+        msg=request.args.get("msg", ""),
+        level=request.args.get("level", "info"),
+    )
+
+
+@app.route("/nl-launch/start", methods=["POST"])
+def nl_launch_start():
+    source = (request.form.get("source") or get_recognition_source()).strip().lower()
+    if source not in ("local", "droidcam"):
+        source = "local"
+
+    if recognition_running():
+        return redirect(url_for(
+            "nl_launch_page",
+            level="info",
+            msg="nl_launchv2.py draait al.",
+            source=source,
+        ))
+
+    try:
+        start_recognition(source=source)
+    except Exception as e:
+        return redirect(url_for(
+            "nl_launch_page",
+            level="error",
+            msg=f"nl_launchv2.py starten mislukt: {e}",
+            source=source,
+        ))
+
+    return redirect(url_for(
+        "nl_launch_page",
+        level="ok",
+        msg="nl_launchv2.py gestart.",
+        source=source,
+    ))
+
+
+@app.route("/nl-launch/stop", methods=["POST"])
+def nl_launch_stop():
+    if not recognition_running():
+        stop_recognition()
+        return redirect(url_for(
+            "nl_launch_page",
+            level="info",
+            msg="nl_launchv2.py draait niet.",
+        ))
+
+    stop_recognition()
+    return redirect(url_for(
+        "nl_launch_page",
+        level="ok",
+        msg="Stop signaal naar nl_launchv2.py gestuurd.",
+    ))
+
+
 @app.route("/api/personen/status")
 def api_personen_status():
     return jsonify({

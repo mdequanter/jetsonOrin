@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% set title = "nl_launchv2.py" %}
+
+{% block content %}
+  <h1>nl_launchv2.py</h1>
+
+  {% if msg %}
+    <div class="card" style="border-color:{% if level == 'error' %}#c33{% elif level == 'ok' %}#2b7{% else %}#ddd{% endif %};">
+      <strong>{{ msg }}</strong>
+    </div>
+  {% endif %}
+
+  <div class="card" role="status" aria-live="polite">
+    <p>
+      Status:
+      {% if running %}
+        <strong>ACTIEF</strong>
+      {% else %}
+        <strong>NIET actief</strong>
+      {% endif %}
+    </p>
+    <p class="muted">
+      Script: <span class="mono">{{ recognition_script }}</span>
+    </p>
+
+    <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+      {% if not running %}
+        <form action="{{ url_for('nl_launch_start') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:0;">
+          <label for="source" class="muted">Bron:</label>
+          <select id="source" name="source" style="font-size:16px; padding:8px 10px; border-radius:8px; border:1px solid #bbb;">
+            <option value="local" {% if source == 'local' %}selected{% endif %}>Lokale camera</option>
+            <option value="droidcam" {% if source == 'droidcam' %}selected{% endif %}>DroidCam</option>
+          </select>
+          <button class="btn btn-primary" type="submit">Start nl_launchv2.py</button>
+        </form>
+      {% else %}
+        <form action="{{ url_for('nl_launch_stop') }}" method="post" style="margin:0;">
+          <button class="btn btn-danger" type="submit">Stop nl_launchv2.py</button>
+        </form>
+        <p class="muted" style="margin:0;">
+          Actieve bron: <strong>{{ "DroidCam" if source == "droidcam" else "Lokale camera" }}</strong>
+        </p>
+      {% endif %}
+    </div>
+
+    <p class="muted" style="margin-top:10px;">
+      Deze pagina start hetzelfde proces als Personen herkennen: <span class="mono">faceassist/nl_launchv2.py</span>.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Live log</h2>
+    <pre id="log" class="mono" style="white-space:pre-wrap; margin:0;"></pre>
+  </div>
+
+  <script>
+    async function refreshLog() {
+      try {
+        const res = await fetch("{{ url_for('api_personen_log') }}", { cache: "no-store" });
+        const data = await res.json();
+        document.getElementById("log").textContent = (data.lines || []).join("\n");
+      } catch (e) { /* negeren */ }
+    }
+    refreshLog();
+    setInterval(refreshLog, 1000);
+  </script>
+{% endblock %}

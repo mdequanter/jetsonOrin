@@ -231,7 +231,7 @@ def control_page():
     )
 
 @app.route("/camera")
-def logs():
+def camera_page():
     return render_template("camera.html", active_page="camera")
 
 

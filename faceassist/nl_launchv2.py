@@ -38,6 +38,10 @@ YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection
 SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SAFE_PERSON_RE = re.compile(r"[^A-Za-z0-9_-]+")
+DEFAULT_DETECTION_CONTROL_PATH = os.environ.get(
+    "FACEASSIST_DETECTION_CONTROL",
+    os.path.join(BASE_DIR, "detection_control.json"),
+)
 
 
 # -----------------------------
@@ -511,6 +515,49 @@ def tts_enqueue(tts_queue, text: str, done_token=None) -> bool:
         return False
 
 
+class DetectionControl:
+    def __init__(self, path: str, poll_interval: float = 0.5, default_enabled: bool = True):
+        self.path = os.path.abspath(path) if path else ""
+        self.poll_interval = max(0.1, float(poll_interval))
+        self.default_enabled = bool(default_enabled)
+        self._last_checked = 0.0
+        self._enabled = bool(default_enabled)
+
+    def enabled(self) -> bool:
+        now = time.time()
+        if (now - self._last_checked) < self.poll_interval:
+            return self._enabled
+        self._last_checked = now
+
+        if not self.path or not os.path.isfile(self.path):
+            self._enabled = self.default_enabled
+            return self._enabled
+
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._enabled = bool(data.get("detection_enabled", data.get("enabled", self.default_enabled)))
+            else:
+                self._enabled = self.default_enabled
+        except Exception as exc:
+            print(f"[WAARSCHUWING] Detectie-control lezen mislukt: {exc}", flush=True)
+            self._enabled = self.default_enabled
+        return self._enabled
+
+
+def drain_done_queue(done_queue) -> set:
+    tokens = set()
+    if done_queue is None:
+        return tokens
+    while True:
+        try:
+            tokens.add(done_queue.get_nowait())
+        except pyqueue.Empty:
+            break
+    return tokens
+
+
 # -----------------------------
 # Snapshot opslag (features) - behouden, maar niet gebruikt voor deze vraag
 # -----------------------------
@@ -604,6 +651,10 @@ def main():
     ap.add_argument("--piper_length_scale", type=float, default=1.0)
     ap.add_argument("--voice_volume", type=int, default=100)
     ap.add_argument("--tts_queue_size", type=int, default=20)
+    ap.add_argument("--control_file", type=str, default=DEFAULT_DETECTION_CONTROL_PATH,
+                    help="JSON-bestand waarmee detectie aan/uit gezet wordt zonder het proces te stoppen.")
+    ap.add_argument("--control_poll_interval", type=float, default=0.5,
+                    help="Aantal seconden tussen checks van het detectie-controlbestand.")
 
     args = ap.parse_args()
     args.voice_volume = max(0, min(100, int(args.voice_volume)))
@@ -612,6 +663,7 @@ def main():
     args.qr_countdown = max(0, int(args.qr_countdown))
     args.qr_photo_count = max(1, int(args.qr_photo_count))
     args.qr_capture_interval = max(0.0, float(args.qr_capture_interval))
+    args.control_poll_interval = max(0.1, float(args.control_poll_interval))
 
     yunet_path = os.path.join("models", "face_detection_yunet_2023mar.onnx")
     sface_path = os.path.join("models", "face_recognition_sface_2021dec.onnx")
@@ -711,10 +763,36 @@ def main():
     qr_registration_seq = 0
 
     frame_id = 0
+    detection_control = DetectionControl(args.control_file, args.control_poll_interval, default_enabled=True)
+    detection_paused = False
+    print(f"[INFO] Detectie-controlbestand: {detection_control.path}", flush=True)
     print("[INFO] Headless actief. Ctrl+C om te stoppen.", flush=True)
 
     try:
         while True:
+            if not detection_control.enabled():
+                if not detection_paused:
+                    print("[INFO] Detectie gepauzeerd via configuration.", flush=True)
+                    present = False
+                    present_name = None
+                    last_seen = 0.0
+                    consec_count = 0
+                    candidate_name = None
+                    unknown_consec = 0
+                    unknown_started_at = None
+                    unknown_dir = "unknown"
+                    unknown_photo_count = 0
+                    unknown_last_photo_at = 0.0
+                    qr_registration = None
+                    detection_paused = True
+                drain_done_queue(tts_done_queue)
+                time.sleep(0.2)
+                continue
+
+            if detection_paused:
+                print("[INFO] Detectie hervat via configuration.", flush=True)
+                detection_paused = False
+
             ok, frame = cap.read()
             if not ok or frame is None:
                 time.sleep(0.1)
@@ -723,13 +801,7 @@ def main():
             frame_id += 1
             now = time.time()
 
-            tts_done_tokens = set()
-            if tts_done_queue is not None:
-                while True:
-                    try:
-                        tts_done_tokens.add(tts_done_queue.get_nowait())
-                    except pyqueue.Empty:
-                        break
+            tts_done_tokens = drain_done_queue(tts_done_queue)
 
             if qr_registration is not None:
                 if qr_registration["state"] == "waiting_speech":

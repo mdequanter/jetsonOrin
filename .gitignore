@@ -4,7 +4,9 @@ faceassist/__pycache__/app.cpython-312.pyc
 /faceassist/__pycache__
 authtokens.csv
 /faceassist/__pycache__
+/faceassist/configuration/__pycache__
 /faceassist/qr_codes
 /Unitree/__pycache__
 /faceassist/extracted_faces
 /faceassist/known
+/faceassist/detection_control.json

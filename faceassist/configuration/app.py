@@ -262,6 +262,7 @@ def aligncamera_feed():
     return app.response_class(
         generate_camera_frames(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 

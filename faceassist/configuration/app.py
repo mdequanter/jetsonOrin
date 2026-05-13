@@ -20,7 +20,6 @@ DETECTION_CONTROL_PATH = os.environ.get(
 SERVICE_NAME = os.environ.get("FACEASSIST_SERVICE", "faceassist.service")
 CONFIG_HOST = os.environ.get("CONFIGURATION_HOST", "0.0.0.0")
 CONFIG_PORT = int(os.environ.get("CONFIGURATION_PORT", "5050"))
-DEFAULT_DROIDCAM_URL = os.environ.get("MOBILE_VIEW_DROIDCAM_URL", "http://192.168.0.55:4747/video")
 
 app = Flask(__name__)
 
@@ -39,7 +38,6 @@ def _default_voice_volume():
 
 def _default_settings():
     return {
-        "droidcam_url": DEFAULT_DROIDCAM_URL,
         "voice_volume": _default_voice_volume(),
     }
 
@@ -60,7 +58,6 @@ def load_settings():
 
     merged = dict(defaults)
     merged.update(settings)
-    merged["droidcam_url"] = str(merged.get("droidcam_url", defaults["droidcam_url"])).strip() or defaults["droidcam_url"]
     settings["voice_volume"] = _coerce_voice_volume(
         settings.get("voice_volume", _default_voice_volume()),
         _default_voice_volume(),
@@ -233,12 +230,7 @@ def control_page():
 
 def open_preview_camera():
     settings = load_settings()
-    cam_url = settings.get("droidcam_url", "").strip()
-
-    if cam_url:
-        cap = cv2.VideoCapture(cam_url)
-    else:
-        cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0)
 
     return cap
 

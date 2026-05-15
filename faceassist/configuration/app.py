@@ -329,12 +329,8 @@ def reboot_system():
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown_system():
-    # Strak: enkel poweroff via systemd.
-    _run_system_action_later([
-        ["sudo", "-n", "systemctl", "poweroff"],
-        ["systemctl", "poweroff"],
-    ])
-    return redirect(url_for("settings_page", level="ok", msg="Shutdown requested."))
+    _run_system_action_later(_system_action_commands("poweroff"))
+    return _redirect_with("Jetson shutdown requested.", "ok")
 
 
 

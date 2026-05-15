@@ -260,7 +260,7 @@ def aligncamera_page():
 @app.route("/aligncamera/feed")
 def aligncamera_feed():
     return app.response_class(
-        generate_camera_frames(),
+        generate_aruco_frames(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -326,6 +326,16 @@ def set_volume():
 def reboot_system():
     _run_system_action_later(_system_action_commands("reboot"))
     return _redirect_with("Jetson reboot requested.", "ok")
+
+@app.route("/shutdown", methods=["POST"])
+def shutdown_system():
+    # Strak: enkel poweroff via systemd.
+    _run_system_action_later([
+        ["sudo", "-n", "systemctl", "poweroff"],
+        ["systemctl", "poweroff"],
+    ])
+    return redirect(url_for("settings_page", level="ok", msg="Shutdown requested."))
+
 
 
 if __name__ == "__main__":

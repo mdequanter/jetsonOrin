@@ -40,7 +40,8 @@ l : neerliggen
 h : hello
 x : stretch
 y : Sit / t: Rize sit
-f : 
+f : Scrape
+g : Front Jump
 
 m : moonwalk (NON FUNCTIONAL)
 -----------------
@@ -163,13 +164,19 @@ def keyboard_listener(conn, loop, stop_event):
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": 1010, "parameter": {"data": False}}
                 ), loop)
-        elif k == "f": # Wiggle
+        elif k == "f": # Scrape
             asyncio.run_coroutine_threadsafe(
                 conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": 1029, "parameter": {"data": False}}
                 ), loop)
 
+        elif k == "g": # Front Jump
+            asyncio.run_coroutine_threadsafe(
+                conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"],
+                    {"api_id": 1031, "parameter": {"data": False}}
+                ), loop)
 
         # MoonWalk (NON FUNCTIONAL)
         elif k == "m":

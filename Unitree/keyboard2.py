@@ -280,7 +280,7 @@ def keyboard_listener(conn, loop, stop_event):
 async def main():
     conn = UnitreeWebRTCConnection(
         WebRTCConnectionMethod.LocalSTA,
-        ip="10.2.172.107"
+        ip="192.168.0.73"
     )
 
     await conn.connect()

@@ -32,13 +32,15 @@ FOLLOW_MAX_FORWARD_SPEED = 0.35
 FOLLOW_MAX_TURN_SPEED = 0.8
 FOLLOW_SIZE_DEADBAND = 0.12
 FOLLOW_CENTER_DEADBAND = 0.12
+LIGHT_TOGGLE_MARKER_ID = 26
+LIGHT_BRIGHTNESS = 1
 
 ARUCO_ACTIONS = {
     22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
     23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}, True),
     24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}, False),
     25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}, True),
-    26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}, True),
+    26: ("toggle light", None, False),
     27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
 }
 
@@ -146,6 +148,15 @@ async def send_move(conn, x=0, y=0, z=0):
         },
     )
 
+async def send_light(conn, brightness):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["VUI"],
+        {
+            "api_id": 1005,
+            "parameter": {"brightness": brightness},
+        },
+    )
+
 async def send_action(conn, payload, needs_recovery):
     action_error = None
 
@@ -190,6 +201,17 @@ def report_move_result(future):
         future.result()
     except Exception as exc:
         print(f"Follow move failed: {exc}", flush=True)
+
+def report_light_result(future, brightness, light_state, action_state):
+    try:
+        future.result()
+        light_state["on"] = brightness > 0
+        status = "on" if light_state["on"] else "off"
+        print(f"Light toggled {status}", flush=True)
+    except Exception as exc:
+        print(f"Light toggle failed: {exc}", flush=True)
+    finally:
+        action_state["in_progress"] = False
 
 def stop_follow_marker(conn, loop, follow_state):
     if follow_state["active"]:
@@ -245,6 +267,8 @@ def main():
     last_printed_ids = None
     executed_marker_ids = set()
     action_state = {"in_progress": False}
+    light_state = {"on": False}
+    previous_marker_ids = set()
     follow_state = {
         "active": False,
         "target_side_px": None,
@@ -301,11 +325,35 @@ def main():
                     print(f"ArUco markers: {marker_ids}", flush=True)
                     last_printed_ids = marker_ids
 
+                current_marker_ids = set(marker_ids)
+                if (
+                    not action_state["in_progress"]
+                    and LIGHT_TOGGLE_MARKER_ID in current_marker_ids
+                    and LIGHT_TOGGLE_MARKER_ID not in previous_marker_ids
+                ):
+                    action_state["in_progress"] = True
+                    brightness = 0 if light_state["on"] else LIGHT_BRIGHTNESS
+                    future = asyncio.run_coroutine_threadsafe(
+                        send_light(conn, brightness),
+                        loop,
+                    )
+                    future.add_done_callback(
+                        lambda done, seen_brightness=brightness: report_light_result(
+                            done,
+                            seen_brightness,
+                            light_state,
+                            action_state,
+                        )
+                    )
+                    stop_follow_marker(conn, loop, follow_state)
+                    print("Action triggered: marker 26 -> toggle light", flush=True)
+
                 if not action_state["in_progress"]:
                     marker_id = next(
                         (
                             current_id for current_id in sorted(marker_ids)
                             if current_id in ARUCO_ACTIONS
+                            and current_id != LIGHT_TOGGLE_MARKER_ID
                             and current_id not in executed_marker_ids
                         ),
                         None,
@@ -335,6 +383,7 @@ def main():
 
                 if not action_state["in_progress"]:
                     update_follow_marker(conn, loop, img, marker_info, follow_state)
+                previous_marker_ids = current_marker_ids
                 # Display the frame
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

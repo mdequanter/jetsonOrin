@@ -14,6 +14,7 @@ import threading
 import time
 from queue import Queue
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
+from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
 
 # Enable logging for debugging
@@ -21,6 +22,16 @@ logging.basicConfig(level=logging.FATAL)
 
 ROBOT_IP = "192.168.0.73"
 ARUCO_DICTIONARY = "DICT_4X4_50"
+ACTION_COOLDOWN_SECONDS = 5.0
+
+ARUCO_ACTIONS = {
+    22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}),
+    23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}),
+    24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}),
+    25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}),
+    26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}),
+    27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}),
+}
 
 def create_aruco_detector(dictionary_name):
     if not hasattr(cv2, "aruco"):
@@ -76,13 +87,41 @@ def detect_and_draw_aruco(img, detect_markers):
             2,
             cv2.LINE_AA,
         )
+        if marker_id in ARUCO_ACTIONS:
+            action_name, _payload = ARUCO_ACTIONS[marker_id]
+            cv2.putText(
+                img,
+                action_name,
+                (center_x - 55, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
     return marker_ids
+
+async def send_action(conn, payload):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        payload,
+    )
+
+def report_action_result(future, marker_id, action_name):
+    try:
+        future.result()
+    except Exception as exc:
+        print(
+            f"Action failed for marker {marker_id} ({action_name}): {exc}",
+            flush=True,
+        )
 
 def main():
     frame_queue = Queue()
     detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
     last_printed_ids = None
+    last_triggered_at = {}
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
@@ -132,6 +171,33 @@ def main():
                 if marker_ids != last_printed_ids:
                     print(f"ArUco markers: {marker_ids}", flush=True)
                     last_printed_ids = marker_ids
+
+                now = time.time()
+                for marker_id in marker_ids:
+                    if marker_id not in ARUCO_ACTIONS:
+                        continue
+
+                    last_at = last_triggered_at.get(marker_id, 0)
+                    if now - last_at < ACTION_COOLDOWN_SECONDS:
+                        continue
+
+                    action_name, payload = ARUCO_ACTIONS[marker_id]
+                    future = asyncio.run_coroutine_threadsafe(
+                        send_action(conn, payload.copy()),
+                        loop,
+                    )
+                    future.add_done_callback(
+                        lambda done, seen_id=marker_id, seen_action=action_name: report_action_result(
+                            done,
+                            seen_id,
+                            seen_action,
+                        )
+                    )
+                    last_triggered_at[marker_id] = now
+                    print(
+                        f"Action triggered: marker {marker_id} -> {action_name}",
+                        flush=True,
+                    )
                 # Display the frame
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

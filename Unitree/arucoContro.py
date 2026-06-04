@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -114,6 +115,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=positive_float,
         default=2.0,
         help="Seconds to wait between connection attempts.",
+    )
+    parser.add_argument(
+        "--datachannel-timeout",
+        type=positive_float,
+        default=20.0,
+        help="Seconds to wait until the WebRTC data channel is verified/open.",
+    )
+    parser.add_argument(
+        "--aes-key",
+        default=None,
+        help=(
+            "Optional 32-hex-character AES-128 key for newer Go2 firmware. "
+            "You can also set UNITREE_AES_KEY."
+        ),
     )
     parser.add_argument(
         "--preview",
@@ -214,6 +229,8 @@ def start_unitree(
     ensure_normal_mode_at_startup: bool,
     connect_retries: int,
     retry_delay: float,
+    datachannel_timeout: float,
+    aes_key: str | None,
 ):
     try:
         from aiortc import MediaStreamTrack
@@ -233,6 +250,34 @@ def start_unitree(
         raise SystemExit(1)
 
     conn = None
+    datachannel_ready = threading.Event()
+
+    async def wait_for_datachannel(timeout: float) -> None:
+        """Wait until Unitree marks the data channel as verified/open.
+
+        Some versions of unitree_webrtc_connect already do this inside
+        conn.connect(); older versions return before validation is complete.
+        This helper is safe for both versions.
+        """
+        if conn is None or not hasattr(conn, "datachannel"):
+            raise RuntimeError("Unitree connection has no datachannel object.")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if getattr(conn.datachannel, "data_channel_opened", False):
+                datachannel_ready.set()
+                print("[INFO] Data channel is open/verified.", flush=True)
+                return
+            await asyncio.sleep(0.1)
+
+        pc_state = getattr(getattr(conn, "pc", None), "connectionState", "unknown")
+        ice_state = getattr(getattr(conn, "pc", None), "iceConnectionState", "unknown")
+        raise TimeoutError(
+            "Data channel did not open/verify. "
+            f"PeerConnection={pc_state}, ICE={ice_state}. "
+            "If video works but commands fail on newer Go2 firmware, pass --aes-key "
+            "or set UNITREE_AES_KEY."
+        )
 
     async def recv_camera_stream(track: MediaStreamTrack):
         while True:
@@ -264,6 +309,8 @@ def start_unitree(
     async def send_action(action: Action):
         if conn is None:
             raise RuntimeError("Unitree connection is not ready.")
+        if not datachannel_ready.is_set():
+            await wait_for_datachannel(datachannel_timeout)
         api_id = SPORT_CMD[action.api_id] if isinstance(action.api_id, str) else action.api_id
         payload = {"api_id": api_id}
         if action.parameter is not None:
@@ -275,7 +322,11 @@ def start_unitree(
         last_error = None
 
         for attempt in range(1, connect_retries + 1):
-            conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ip)
+            conn = UnitreeWebRTCConnection(
+                WebRTCConnectionMethod.LocalSTA,
+                ip=ip,
+                aes_128_key=aes_key,
+            )
             try:
                 print(
                     f"[INFO] Connecting to Unitree at {ip} "
@@ -283,6 +334,7 @@ def start_unitree(
                     flush=True,
                 )
                 await conn.connect()
+                await wait_for_datachannel(datachannel_timeout)
                 conn.video.switchVideoChannel(True)
                 conn.video.add_track_callback(recv_camera_stream)
                 if ensure_normal_mode_at_startup:
@@ -361,6 +413,8 @@ def main() -> int:
         args.ensure_normal_mode,
         args.connect_retries,
         args.retry_delay,
+        args.datachannel_timeout,
+        args.aes_key or os.environ.get("UNITREE_AES_KEY"),
     )
 
     first_img, connect_error = wait_for_first_frame(

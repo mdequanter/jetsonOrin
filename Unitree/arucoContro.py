@@ -1,12 +1,7 @@
 import cv2
 import numpy as np
 
-# Create an OpenCV window and display a blank image
-height, width = 720, 1280  # Adjust the size as needed
-img = np.zeros((height, width, 3), dtype=np.uint8)
-cv2.imshow('Video', img)
-cv2.waitKey(1)  # Ensure the window is created
-
+import argparse
 import asyncio
 import logging
 import os
@@ -34,6 +29,17 @@ FOLLOW_SIZE_DEADBAND = 0.12
 FOLLOW_CENTER_DEADBAND = 0.12
 LIGHT_TOGGLE_MARKER_ID = 26
 LIGHT_BRIGHTNESS = 1
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Control the Unitree with ArUco markers from the WebRTC video stream."
+    )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Show the OpenCV video window. Without this, the script runs terminal-only.",
+    )
+    return parser.parse_args()
 
 ARUCO_ACTIONS = {
     22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
@@ -262,6 +268,7 @@ def update_follow_marker(conn, loop, img, marker_info, follow_state):
     follow_state["last_command_at"] = now
 
 def main():
+    args = parse_args()
     frame_queue = Queue()
     detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
     last_printed_ids = None
@@ -384,15 +391,16 @@ def main():
                 if not action_state["in_progress"]:
                     update_follow_marker(conn, loop, img, marker_info, follow_state)
                 previous_marker_ids = current_marker_ids
-                # Display the frame
-                cv2.imshow('Video', img)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                if args.preview:
+                    cv2.imshow('Video', img)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
             else:
                 # Sleep briefly to prevent high CPU usage
                 time.sleep(0.01)
     finally:
-        cv2.destroyAllWindows()
+        if args.preview:
+            cv2.destroyAllWindows()
         # Stop the asyncio event loop
         loop.call_soon_threadsafe(loop.stop)
         asyncio_thread.join()

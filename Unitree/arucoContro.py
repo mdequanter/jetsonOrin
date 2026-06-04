@@ -1,161 +1,51 @@
-#!/usr/bin/env python3
-"""
-Control Unitree sport actions with ArUco markers shown to the robot camera.
-
-Default marker mapping:
-  1 -> h / Hello
-  2 -> x / Stretch
-  3 -> y / Sit
-  4 -> t / Rize sit
-  5 -> f / Scrape
-  6 -> g / Front Jump
-
-Examples:
-  python Unitree/arucoContro.py
-  python Unitree/arucoContro.py --ip 192.168.0.73 --preview
-  python Unitree/arucoContro.py --ensure-normal-mode
-  python Unitree/arucoContro.py --zero-based
-"""
-
-import argparse
-import asyncio
-import json
-import logging
-import os
-import sys
-import threading
-import time
-from dataclasses import dataclass
-from queue import Empty, Full, Queue
-
 import cv2
 import numpy as np
 
+# Create an OpenCV window and display a blank image
+height, width = 720, 1280  # Adjust the size as needed
+img = np.zeros((height, width, 3), dtype=np.uint8)
+cv2.imshow('Video', img)
+cv2.waitKey(1)  # Ensure the window is created
 
+import asyncio
+import logging
+import os
+import threading
+import time
+from queue import Queue
+from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
+from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
+from aiortc import MediaStreamTrack
+
+# Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
-DEFAULT_IP = "192.168.0.73"
 
+ROBOT_IP = "192.168.0.73"
+ARUCO_DICTIONARY = "DICT_4X4_50"
+RECOVERY_DELAY_SECONDS = 3.0
+FOLLOW_MARKER_ID = 14
+FOLLOW_COMMAND_INTERVAL_SECONDS = 0.2
+FOLLOW_LOST_STOP_SECONDS = 1.0
+FOLLOW_FORWARD_GAIN = 0.45
+FOLLOW_TURN_GAIN = 0.8
+FOLLOW_MAX_FORWARD_SPEED = 0.35
+FOLLOW_MAX_TURN_SPEED = 0.8
+FOLLOW_SIZE_DEADBAND = 0.12
+FOLLOW_CENTER_DEADBAND = 0.12
 
-@dataclass(frozen=True)
-class Action:
-    key: str
-    name: str
-    api_id: int | str
-    parameter: dict | None = None
-
-
-DEFAULT_ACTIONS = {
-    1: Action("h", "Hello", "Hello"),
-    2: Action("x", "Stretch", "Stretch", {"data": False}),
-    3: Action("y", "Sit", 1009, {"data": False}),
-    4: Action("t", "Rize sit", 1010, {"data": False}),
-    5: Action("f", "Scrape", 1029, {"data": False}),
-    6: Action("g", "Front Jump", 1031, {"data": False}),
+ARUCO_ACTIONS = {
+    22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
+    23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}, True),
+    24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}, False),
+    25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}, True),
+    26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}, True),
+    27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
 }
 
-ZERO_BASED_ACTIONS = {
-    marker_id - 1: action for marker_id, action in DEFAULT_ACTIONS.items()
-}
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
 
-
-def positive_float(value: str) -> float:
-    parsed = float(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be greater than 0")
-    return parsed
-
-
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be greater than 0")
-    return parsed
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Detect ArUco markers from the Unitree stream and run sport actions."
-    )
-    parser.add_argument(
-        "--ip",
-        default=DEFAULT_IP,
-        help="Unitree robot IP/host for LocalSTA mode.",
-    )
-    parser.add_argument(
-        "--dictionary",
-        default="DICT_4X4_50",
-        help="OpenCV ArUco dictionary name, for example DICT_4X4_50 or DICT_5X5_100.",
-    )
-    parser.add_argument(
-        "--cooldown",
-        type=positive_float,
-        default=5.0,
-        help="Seconds before the same marker can trigger again.",
-    )
-    parser.add_argument(
-        "--confirm-frames",
-        type=positive_int,
-        default=5,
-        help="Require the same marker for this many frames before triggering.",
-    )
-    parser.add_argument(
-        "--startup-timeout",
-        type=positive_float,
-        default=30.0,
-        help="Seconds to wait for the first video frame.",
-    )
-    parser.add_argument(
-        "--connect-retries",
-        type=positive_int,
-        default=3,
-        help="Number of Unitree WebRTC connection attempts before failing.",
-    )
-    parser.add_argument(
-        "--retry-delay",
-        type=positive_float,
-        default=2.0,
-        help="Seconds to wait between connection attempts.",
-    )
-    parser.add_argument(
-        "--datachannel-timeout",
-        type=positive_float,
-        default=20.0,
-        help="Seconds to wait until the WebRTC data channel is verified/open.",
-    )
-    parser.add_argument(
-        "--aes-key",
-        default=None,
-        help=(
-            "Optional 32-hex-character AES-128 key for newer Go2 firmware. "
-            "You can also set UNITREE_AES_KEY."
-        ),
-    )
-    parser.add_argument(
-        "--preview",
-        action="store_true",
-        help="Show an OpenCV preview window with detected markers.",
-    )
-    parser.add_argument(
-        "--zero-based",
-        action="store_true",
-        help="Use marker IDs 0-5 instead of 1-6 for the action mapping.",
-    )
-    parser.add_argument(
-        "--ensure-normal-mode",
-        action="store_true",
-        help="Query/switch the robot to normal mode at startup. This needs the datachannel immediately.",
-    )
-    return parser
-
-
-def queue_error(error_queue: Queue, exc: Exception) -> None:
-    try:
-        error_queue.put_nowait(exc)
-    except Full:
-        pass
-
-
-def aruco_dictionary(dictionary_name: str):
+def create_aruco_detector(dictionary_name):
     if not hasattr(cv2, "aruco"):
         raise RuntimeError(
             "This OpenCV install has no cv2.aruco module. Install opencv-contrib-python."
@@ -163,344 +53,300 @@ def aruco_dictionary(dictionary_name: str):
 
     dictionary_id = getattr(cv2.aruco, dictionary_name, None)
     if dictionary_id is None:
-        valid_names = sorted(name for name in dir(cv2.aruco) if name.startswith("DICT_"))
-        raise ValueError(
-            f"Unknown ArUco dictionary {dictionary_name!r}. Valid examples: "
-            + ", ".join(valid_names[:8])
-        )
+        raise RuntimeError(f"Unknown ArUco dictionary: {dictionary_name}")
 
     if hasattr(cv2.aruco, "getPredefinedDictionary"):
-        return cv2.aruco.getPredefinedDictionary(dictionary_id)
-    return cv2.aruco.Dictionary_get(dictionary_id)
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    else:
+        dictionary = cv2.aruco.Dictionary_get(dictionary_id)
 
-
-def aruco_parameters():
     if hasattr(cv2.aruco, "DetectorParameters"):
-        return cv2.aruco.DetectorParameters()
-    return cv2.aruco.DetectorParameters_create()
-
-
-def detect_markers(img: np.ndarray, dictionary, parameters):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        parameters = cv2.aruco.DetectorParameters()
+    else:
+        parameters = cv2.aruco.DetectorParameters_create()
 
     if hasattr(cv2.aruco, "ArucoDetector"):
         detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-        corners, ids, rejected = detector.detectMarkers(gray)
-    else:
-        corners, ids, rejected = cv2.aruco.detectMarkers(
-            gray,
-            dictionary,
-            parameters=parameters,
-        )
+        return lambda frame: detector.detectMarkers(frame)
+
+    return lambda frame: cv2.aruco.detectMarkers(
+        frame,
+        dictionary,
+        parameters=parameters,
+    )
+
+def detect_and_draw_aruco(img, detect_markers):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, ids, _rejected = detect_markers(gray)
 
     if ids is None:
-        return [], corners, ids
+        return [], {}
 
+    cv2.aruco.drawDetectedMarkers(img, corners, ids)
     marker_ids = [int(marker_id[0]) for marker_id in ids]
-    return marker_ids, corners, ids
+    marker_info = {}
 
-
-def largest_marker_id(marker_ids: list[int], corners) -> int | None:
-    if not marker_ids:
-        return None
-
-    best_id = None
-    best_area = -1.0
     for marker_id, marker_corners in zip(marker_ids, corners):
-        points = marker_corners.reshape((4, 2)).astype(np.float32)
-        area = cv2.contourArea(points)
-        if area > best_area:
-            best_area = area
-            best_id = marker_id
-
-    return best_id
-
-
-def print_mapping(actions: dict[int, Action]) -> None:
-    print("[INFO] ArUco action mapping:", flush=True)
-    for marker_id, action in sorted(actions.items()):
-        print(f"  marker {marker_id}: {action.key} / {action.name}", flush=True)
-
-
-def start_unitree(
-    frame_queue: Queue,
-    error_queue: Queue,
-    ip: str,
-    ensure_normal_mode_at_startup: bool,
-    connect_retries: int,
-    retry_delay: float,
-    datachannel_timeout: float,
-    aes_key: str | None,
-):
-    try:
-        from aiortc import MediaStreamTrack
-        from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
-        from unitree_webrtc_connect.webrtc_driver import (
-            UnitreeWebRTCConnection,
-            WebRTCConnectionMethod,
+        points = marker_corners.reshape((4, 2)).astype(int)
+        center_x = int(points[:, 0].mean())
+        center_y = int(points[:, 1].mean())
+        side_lengths = [
+            np.linalg.norm(points[0] - points[1]),
+            np.linalg.norm(points[1] - points[2]),
+            np.linalg.norm(points[2] - points[3]),
+            np.linalg.norm(points[3] - points[0]),
+        ]
+        marker_info[marker_id] = {
+            "center_x": center_x,
+            "center_y": center_y,
+            "side_px": float(np.mean(side_lengths)),
+        }
+        cv2.putText(
+            img,
+            f"ID {marker_id}",
+            (center_x - 30, center_y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
         )
-    except ImportError as exc:
+        if marker_id in ARUCO_ACTIONS:
+            action_name, _payload, _needs_recovery = ARUCO_ACTIONS[marker_id]
+            cv2.putText(
+                img,
+                action_name,
+                (center_x - 55, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        if marker_id == FOLLOW_MARKER_ID:
+            cv2.putText(
+                img,
+                "follow",
+                (center_x - 35, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+    return marker_ids, marker_info
+
+async def send_move(conn, x=0, y=0, z=0):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {
+            "api_id": SPORT_CMD["Move"],
+            "parameter": {"x": x, "y": y, "z": z},
+        },
+    )
+
+async def send_action(conn, payload, needs_recovery):
+    action_error = None
+
+    try:
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            payload,
+        )
+    except Exception as exc:
+        action_error = exc
+
+    if needs_recovery:
+        await asyncio.sleep(RECOVERY_DELAY_SECONDS)
+
+        recovery_payload = {
+            "api_id": SPORT_CMD["RecoveryStand"],
+            "parameter": {"data": False},
+        }
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            recovery_payload,
+        )
+
+    if action_error is not None:
+        raise action_error
+
+def report_action_result(future, marker_id, action_name, needs_recovery, action_state):
+    try:
+        future.result()
+        recovery_text = " + RecoveryStand" if needs_recovery else ""
+        print(f"Action completed: marker {marker_id} ({action_name}){recovery_text}", flush=True)
+    except Exception as exc:
         print(
-            "[ERROR] Missing Unitree WebRTC dependencies. Run this on the Jetson "
-            "environment where your Unitree scripts work.",
-            file=sys.stderr,
+            f"Action failed for marker {marker_id} ({action_name}): {exc}",
             flush=True,
         )
-        print(f"[ERROR] Import error: {exc}", file=sys.stderr, flush=True)
-        raise SystemExit(1)
+    finally:
+        action_state["in_progress"] = False
 
-    conn = None
-    datachannel_ready = threading.Event()
-
-    async def wait_for_datachannel(timeout: float) -> None:
-        """Wait until Unitree marks the data channel as verified/open.
-
-        Some versions of unitree_webrtc_connect already do this inside
-        conn.connect(); older versions return before validation is complete.
-        This helper is safe for both versions.
-        """
-        if conn is None or not hasattr(conn, "datachannel"):
-            raise RuntimeError("Unitree connection has no datachannel object.")
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if getattr(conn.datachannel, "data_channel_opened", False):
-                datachannel_ready.set()
-                print("[INFO] Data channel is open/verified.", flush=True)
-                return
-            await asyncio.sleep(0.1)
-
-        pc_state = getattr(getattr(conn, "pc", None), "connectionState", "unknown")
-        ice_state = getattr(getattr(conn, "pc", None), "iceConnectionState", "unknown")
-        raise TimeoutError(
-            "Data channel did not open/verify. "
-            f"PeerConnection={pc_state}, ICE={ice_state}. "
-            "If video works but commands fail on newer Go2 firmware, pass --aes-key "
-            "or set UNITREE_AES_KEY."
-        )
-
-    async def recv_camera_stream(track: MediaStreamTrack):
-        while True:
-            frame = await track.recv()
-            img = frame.to_ndarray(format="bgr24")
-
-            if not frame_queue.empty():
-                try:
-                    frame_queue.get_nowait()
-                except Empty:
-                    pass
-            frame_queue.put(img)
-
-    async def ensure_normal_mode():
-        if conn is None:
-            raise RuntimeError("Unitree connection is not ready.")
-        response = await conn.datachannel.pub_sub.publish_request_new(
-            RTC_TOPIC["MOTION_SWITCHER"],
-            {"api_id": 1001},
-        )
-        data = json.loads(response["data"]["data"])
-        if data["name"] != "normal":
-            await conn.datachannel.pub_sub.publish_request_new(
-                RTC_TOPIC["MOTION_SWITCHER"],
-                {"api_id": 1002, "parameter": {"name": "normal"}},
-            )
-            await asyncio.sleep(5)
-
-    async def send_action(action: Action):
-        if conn is None:
-            raise RuntimeError("Unitree connection is not ready.")
-        if not datachannel_ready.is_set():
-            await wait_for_datachannel(datachannel_timeout)
-        api_id = SPORT_CMD[action.api_id] if isinstance(action.api_id, str) else action.api_id
-        payload = {"api_id": api_id}
-        if action.parameter is not None:
-            payload["parameter"] = action.parameter
-        await conn.datachannel.pub_sub.publish_request_new(RTC_TOPIC["SPORT_MOD"], payload)
-
-    async def setup():
-        nonlocal conn
-        last_error = None
-
-        for attempt in range(1, connect_retries + 1):
-            conn = UnitreeWebRTCConnection(
-                WebRTCConnectionMethod.LocalSTA,
-                ip=ip,
-                aes_128_key=aes_key,
-            )
-            try:
-                print(
-                    f"[INFO] Connecting to Unitree at {ip} "
-                    f"(attempt {attempt}/{connect_retries})",
-                    flush=True,
-                )
-                await conn.connect()
-                await wait_for_datachannel(datachannel_timeout)
-                conn.video.switchVideoChannel(True)
-                conn.video.add_track_callback(recv_camera_stream)
-                if ensure_normal_mode_at_startup:
-                    await ensure_normal_mode()
-                return
-            except Exception as exc:
-                last_error = exc
-                print(f"[WARN] Connection attempt {attempt} failed: {exc}", flush=True)
-                if attempt < connect_retries:
-                    await asyncio.sleep(retry_delay)
-
-        raise last_error
-
-    def run_loop(loop):
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(setup())
-            loop.run_forever()
-        except Exception as exc:
-            queue_error(error_queue, exc)
-
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=run_loop, args=(loop,), daemon=True)
-    thread.start()
-    return loop, thread, send_action
-
-
-def stop_unitree(loop, thread) -> None:
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join(timeout=5.0)
-
-
-def report_action_result(future, marker_id: int, action: Action) -> None:
+def report_move_result(future):
     try:
         future.result()
     except Exception as exc:
+        print(f"Follow move failed: {exc}", flush=True)
+
+def stop_follow_marker(conn, loop, follow_state):
+    if follow_state["active"]:
+        asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+        follow_state["active"] = False
+        follow_state["target_side_px"] = None
+        print("Follow marker paused: stop", flush=True)
+
+def update_follow_marker(conn, loop, img, marker_info, follow_state):
+    marker = marker_info.get(FOLLOW_MARKER_ID)
+    now = time.time()
+
+    if marker is None:
+        if follow_state["active"] and now - follow_state["last_seen_at"] >= FOLLOW_LOST_STOP_SECONDS:
+            asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+            follow_state["active"] = False
+            follow_state["target_side_px"] = None
+            print("Follow marker lost: stop", flush=True)
+        return
+
+    follow_state["active"] = True
+    follow_state["last_seen_at"] = now
+
+    if follow_state["target_side_px"] is None:
+        follow_state["target_side_px"] = marker["side_px"]
         print(
-            f"[ERROR] Action failed for marker={marker_id} key={action.key} "
-            f"name={action.name}: {exc}",
+            f"Follow marker {FOLLOW_MARKER_ID}: target size set to "
+            f"{follow_state['target_side_px']:.1f}px",
             flush=True,
         )
 
+    if now - follow_state["last_command_at"] < FOLLOW_COMMAND_INTERVAL_SECONDS:
+        return
 
-def wait_for_first_frame(frame_queue: Queue, error_queue: Queue, timeout: float):
-    deadline = time.time() + timeout
+    target_side = follow_state["target_side_px"]
+    current_side = marker["side_px"]
+    size_error = (target_side - current_side) / max(target_side, 1.0)
+    center_error = (marker["center_x"] - (img.shape[1] / 2)) / (img.shape[1] / 2)
 
-    while time.time() < deadline:
-        try:
-            return frame_queue.get(timeout=0.2), None
-        except Empty:
-            pass
+    x_speed = 0 if abs(size_error) < FOLLOW_SIZE_DEADBAND else size_error * FOLLOW_FORWARD_GAIN
+    z_speed = 0 if abs(center_error) < FOLLOW_CENTER_DEADBAND else -center_error * FOLLOW_TURN_GAIN
 
-        try:
-            return None, error_queue.get_nowait()
-        except Empty:
-            pass
+    x_speed = clamp(x_speed, -FOLLOW_MAX_FORWARD_SPEED, FOLLOW_MAX_FORWARD_SPEED)
+    z_speed = clamp(z_speed, -FOLLOW_MAX_TURN_SPEED, FOLLOW_MAX_TURN_SPEED)
 
-    return None, TimeoutError("No video frame received before startup timeout.")
+    future = asyncio.run_coroutine_threadsafe(send_move(conn, x=x_speed, z=z_speed), loop)
+    future.add_done_callback(report_move_result)
+    follow_state["last_command_at"] = now
 
+def main():
+    frame_queue = Queue()
+    detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
+    last_printed_ids = None
+    executed_marker_ids = set()
+    action_state = {"in_progress": False}
+    follow_state = {
+        "active": False,
+        "target_side_px": None,
+        "last_seen_at": 0,
+        "last_command_at": 0,
+    }
 
-def main() -> int:
-    args = build_parser().parse_args()
-    actions = ZERO_BASED_ACTIONS if args.zero_based else DEFAULT_ACTIONS
-    dictionary = aruco_dictionary(args.dictionary)
-    parameters = aruco_parameters()
+    # Choose a connection method (uncomment the correct one)
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
-    print_mapping(actions)
-    print("[INFO] Press Ctrl+C to stop.", flush=True)
+    # Async function to receive video frames and put them in the queue
+    async def recv_camera_stream(track: MediaStreamTrack):
+        while True:
+            frame = await track.recv()
+            # Convert the frame to a NumPy array
+            img = frame.to_ndarray(format="bgr24")
+            frame_queue.put(img)
 
-    frame_queue = Queue(maxsize=1)
-    error_queue = Queue(maxsize=1)
-    loop, thread, send_action = start_unitree(
-        frame_queue,
-        error_queue,
-        args.ip,
-        args.ensure_normal_mode,
-        args.connect_retries,
-        args.retry_delay,
-        args.datachannel_timeout,
-        args.aes_key or os.environ.get("UNITREE_AES_KEY"),
-    )
+    def run_asyncio_loop(loop):
+        asyncio.set_event_loop(loop)
+        async def setup():
+            try:
+                # Connect to the device
+                await conn.connect()
 
-    first_img, connect_error = wait_for_first_frame(
-        frame_queue,
-        error_queue,
-        args.startup_timeout,
-    )
-    if first_img is None:
-        print(f"[ERROR] Could not open Unitree video stream: {connect_error}", flush=True)
-        stop_unitree(loop, thread)
-        return 1
+                # Switch video channel on and start receiving video frames
+                conn.video.switchVideoChannel(True)
 
-    last_triggered_at: dict[int, float] = {}
-    stable_marker_id = None
-    stable_count = 0
-    pending_img = first_img
-    frame_id = 0
+                # Add callback to handle received video frames
+                conn.video.add_track_callback(recv_camera_stream)
+            except Exception as e:
+                logging.error(f"Error in WebRTC connection: {e}")
+
+        # Run the setup coroutine and then start the event loop
+        loop.run_until_complete(setup())
+        loop.run_forever()
+
+    # Create a new event loop for the asyncio code
+    loop = asyncio.new_event_loop()
+
+    # Start the asyncio event loop in a separate thread
+    asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
+    asyncio_thread.start()
 
     try:
         while True:
-            try:
-                stream_error = error_queue.get_nowait()
-            except Empty:
-                stream_error = None
-            if stream_error is not None:
-                print(f"[ERROR] Unitree stream failed: {stream_error}", flush=True)
-                return 1
+            if not frame_queue.empty():
+                img = frame_queue.get()
+                marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
+                if marker_ids != last_printed_ids:
+                    print(f"ArUco markers: {marker_ids}", flush=True)
+                    last_printed_ids = marker_ids
 
-            if pending_img is not None:
-                img = pending_img
-                pending_img = None
-            else:
-                try:
-                    img = frame_queue.get(timeout=0.05)
-                except Empty:
-                    continue
-
-            marker_ids, corners, ids = detect_markers(img, dictionary, parameters)
-            marker_id = largest_marker_id(marker_ids, corners)
-
-            if marker_id != stable_marker_id:
-                stable_marker_id = marker_id
-                stable_count = 1 if marker_id is not None else 0
-            elif marker_id is not None:
-                stable_count += 1
-
-            now = time.time()
-            if marker_id is not None and frame_id % 15 == 0:
-                print(f"[DETECT] visible={marker_ids} selected={marker_id}", flush=True)
-
-            if marker_id in actions and stable_count == args.confirm_frames:
-                last_at = last_triggered_at.get(marker_id, 0.0)
-                if now - last_at >= args.cooldown:
-                    action = actions[marker_id]
-                    future = asyncio.run_coroutine_threadsafe(send_action(action), loop)
-                    future.add_done_callback(
-                        lambda done, seen_id=marker_id, seen_action=action: report_action_result(
-                            done,
-                            seen_id,
-                            seen_action,
+                if not action_state["in_progress"]:
+                    marker_id = next(
+                        (
+                            current_id for current_id in sorted(marker_ids)
+                            if current_id in ARUCO_ACTIONS
+                            and current_id not in executed_marker_ids
+                        ),
+                        None,
+                    )
+                    if marker_id is not None:
+                        executed_marker_ids.add(marker_id)
+                        action_state["in_progress"] = True
+                        action_name, payload, needs_recovery = ARUCO_ACTIONS[marker_id]
+                        future = asyncio.run_coroutine_threadsafe(
+                            send_action(conn, payload.copy(), needs_recovery),
+                            loop,
                         )
-                    )
-                    last_triggered_at[marker_id] = now
-                    print(
-                        f"[ACTION] marker={marker_id} key={action.key} name={action.name}",
-                        flush=True,
-                    )
+                        future.add_done_callback(
+                            lambda done, seen_id=marker_id, seen_action=action_name, seen_recovery=needs_recovery: report_action_result(
+                                done,
+                                seen_id,
+                                seen_action,
+                                seen_recovery,
+                                action_state,
+                            )
+                        )
+                        print(
+                            f"Action triggered once: marker {marker_id} -> {action_name}",
+                            flush=True,
+                        )
+                        stop_follow_marker(conn, loop, follow_state)
 
-            if args.preview:
-                if ids is not None:
-                    cv2.aruco.drawDetectedMarkers(img, corners, ids)
-                cv2.imshow("Unitree ArUco Control", img)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if not action_state["in_progress"]:
+                    update_follow_marker(conn, loop, img, marker_info, follow_state)
+                # Display the frame
+                cv2.imshow('Video', img)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
-
-            frame_id += 1
-
-    except KeyboardInterrupt:
-        print("[INFO] Stopping.", flush=True)
+            else:
+                # Sleep briefly to prevent high CPU usage
+                time.sleep(0.01)
     finally:
-        if args.preview:
-            cv2.destroyAllWindows()
-        stop_unitree(loop, thread)
-
-    return 0
-
+        cv2.destroyAllWindows()
+        # Stop the asyncio event loop
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio_thread.join()
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

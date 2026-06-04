@@ -123,11 +123,7 @@ def keyboard_listener(conn, loop, stop_event):
     def queue_euler():
         asyncio.run_coroutine_threadsafe(
             send_euler(conn, euler_roll, euler_pitch, euler_yaw), loop)
-        print(
-            f"Euler roll={euler_roll:.2f}, "
-            f"pitch={euler_pitch:.2f}, yaw={euler_yaw:.2f}"
-        )
-
+ 
     while not stop_event.is_set():
         try:
             k = get_key().lower()

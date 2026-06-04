@@ -13,6 +13,7 @@ Default marker mapping:
 Examples:
   python Unitree/arucoContro.py
   python Unitree/arucoContro.py --ip 192.168.0.73 --preview
+  python Unitree/arucoContro.py --ensure-normal-mode
   python Unitree/arucoContro.py --zero-based
 """
 
@@ -31,6 +32,7 @@ import numpy as np
 
 
 logging.basicConfig(level=logging.FATAL)
+DEFAULT_IP = "192.168.0.73"
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ip",
-        default="unitree.local",
+        default=DEFAULT_IP,
         help="Unitree robot IP/host for LocalSTA mode.",
     )
     parser.add_argument(
@@ -102,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait for the first video frame.",
     )
     parser.add_argument(
+        "--connect-retries",
+        type=positive_int,
+        default=3,
+        help="Number of Unitree WebRTC connection attempts before failing.",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=positive_float,
+        default=2.0,
+        help="Seconds to wait between connection attempts.",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="Show an OpenCV preview window with detected markers.",
@@ -110,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--zero-based",
         action="store_true",
         help="Use marker IDs 0-5 instead of 1-6 for the action mapping.",
+    )
+    parser.add_argument(
+        "--ensure-normal-mode",
+        action="store_true",
+        help="Query/switch the robot to normal mode at startup. This needs the datachannel immediately.",
     )
     return parser
 
@@ -188,7 +207,14 @@ def print_mapping(actions: dict[int, Action]) -> None:
         print(f"  marker {marker_id}: {action.key} / {action.name}", flush=True)
 
 
-def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
+def start_unitree(
+    frame_queue: Queue,
+    error_queue: Queue,
+    ip: str,
+    ensure_normal_mode_at_startup: bool,
+    connect_retries: int,
+    retry_delay: float,
+):
     try:
         from aiortc import MediaStreamTrack
         from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
@@ -206,7 +232,7 @@ def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
         print(f"[ERROR] Import error: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(1)
 
-    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ip)
+    conn = None
 
     async def recv_camera_stream(track: MediaStreamTrack):
         while True:
@@ -221,6 +247,8 @@ def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
             frame_queue.put(img)
 
     async def ensure_normal_mode():
+        if conn is None:
+            raise RuntimeError("Unitree connection is not ready.")
         response = await conn.datachannel.pub_sub.publish_request_new(
             RTC_TOPIC["MOTION_SWITCHER"],
             {"api_id": 1001},
@@ -234,6 +262,8 @@ def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
             await asyncio.sleep(5)
 
     async def send_action(action: Action):
+        if conn is None:
+            raise RuntimeError("Unitree connection is not ready.")
         api_id = SPORT_CMD[action.api_id] if isinstance(action.api_id, str) else action.api_id
         payload = {"api_id": api_id}
         if action.parameter is not None:
@@ -241,11 +271,30 @@ def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
         await conn.datachannel.pub_sub.publish_request_new(RTC_TOPIC["SPORT_MOD"], payload)
 
     async def setup():
-        print(f"[INFO] Connecting to Unitree at {ip}", flush=True)
-        await conn.connect()
-        await ensure_normal_mode()
-        conn.video.switchVideoChannel(True)
-        conn.video.add_track_callback(recv_camera_stream)
+        nonlocal conn
+        last_error = None
+
+        for attempt in range(1, connect_retries + 1):
+            conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ip)
+            try:
+                print(
+                    f"[INFO] Connecting to Unitree at {ip} "
+                    f"(attempt {attempt}/{connect_retries})",
+                    flush=True,
+                )
+                await conn.connect()
+                conn.video.switchVideoChannel(True)
+                conn.video.add_track_callback(recv_camera_stream)
+                if ensure_normal_mode_at_startup:
+                    await ensure_normal_mode()
+                return
+            except Exception as exc:
+                last_error = exc
+                print(f"[WARN] Connection attempt {attempt} failed: {exc}", flush=True)
+                if attempt < connect_retries:
+                    await asyncio.sleep(retry_delay)
+
+        raise last_error
 
     def run_loop(loop):
         asyncio.set_event_loop(loop)
@@ -264,6 +313,17 @@ def start_unitree(frame_queue: Queue, error_queue: Queue, ip: str):
 def stop_unitree(loop, thread) -> None:
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=5.0)
+
+
+def report_action_result(future, marker_id: int, action: Action) -> None:
+    try:
+        future.result()
+    except Exception as exc:
+        print(
+            f"[ERROR] Action failed for marker={marker_id} key={action.key} "
+            f"name={action.name}: {exc}",
+            flush=True,
+        )
 
 
 def wait_for_first_frame(frame_queue: Queue, error_queue: Queue, timeout: float):
@@ -294,7 +354,14 @@ def main() -> int:
 
     frame_queue = Queue(maxsize=1)
     error_queue = Queue(maxsize=1)
-    loop, thread, send_action = start_unitree(frame_queue, error_queue, args.ip)
+    loop, thread, send_action = start_unitree(
+        frame_queue,
+        error_queue,
+        args.ip,
+        args.ensure_normal_mode,
+        args.connect_retries,
+        args.retry_delay,
+    )
 
     first_img, connect_error = wait_for_first_frame(
         frame_queue,
@@ -348,7 +415,14 @@ def main() -> int:
                 last_at = last_triggered_at.get(marker_id, 0.0)
                 if now - last_at >= args.cooldown:
                     action = actions[marker_id]
-                    asyncio.run_coroutine_threadsafe(send_action(action), loop)
+                    future = asyncio.run_coroutine_threadsafe(send_action(action), loop)
+                    future.add_done_callback(
+                        lambda done, seen_id=marker_id, seen_action=action: report_action_result(
+                            done,
+                            seen_id,
+                            seen_action,
+                        )
+                    )
                     last_triggered_at[marker_id] = now
                     print(
                         f"[ACTION] marker={marker_id} key={action.key} name={action.name}",

@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.FATAL)
 
 ROBOT_IP = "192.168.0.73"
 ARUCO_DICTIONARY = "DICT_4X4_50"
-ACTION_COOLDOWN_SECONDS = 5.0
+RECOVERY_DELAY_SECONDS = 3.0
 
 ARUCO_ACTIONS = {
     22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}),
@@ -103,25 +103,51 @@ def detect_and_draw_aruco(img, detect_markers):
     return marker_ids
 
 async def send_action(conn, payload):
+    action_error = None
+
+    try:
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            payload,
+        )
+    except Exception as exc:
+        action_error = exc
+
+    await asyncio.sleep(RECOVERY_DELAY_SECONDS)
+
+    recovery_payload = {
+        "api_id": SPORT_CMD["RecoveryStand"],
+        "parameter": {"data": False},
+    }
     await conn.datachannel.pub_sub.publish_request_new(
         RTC_TOPIC["SPORT_MOD"],
-        payload,
+        recovery_payload,
     )
 
-def report_action_result(future, marker_id, action_name):
+    if action_error is not None:
+        raise action_error
+
+def report_action_result(future, marker_id, action_name, action_state):
     try:
         future.result()
+        print(
+            f"Action completed: marker {marker_id} ({action_name}) + RecoveryStand",
+            flush=True,
+        )
     except Exception as exc:
         print(
             f"Action failed for marker {marker_id} ({action_name}): {exc}",
             flush=True,
         )
+    finally:
+        action_state["in_progress"] = False
 
 def main():
     frame_queue = Queue()
     detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
     last_printed_ids = None
-    last_triggered_at = {}
+    executed_marker_ids = set()
+    action_state = {"in_progress": False}
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
@@ -172,32 +198,35 @@ def main():
                     print(f"ArUco markers: {marker_ids}", flush=True)
                     last_printed_ids = marker_ids
 
-                now = time.time()
-                for marker_id in marker_ids:
-                    if marker_id not in ARUCO_ACTIONS:
-                        continue
-
-                    last_at = last_triggered_at.get(marker_id, 0)
-                    if now - last_at < ACTION_COOLDOWN_SECONDS:
-                        continue
-
-                    action_name, payload = ARUCO_ACTIONS[marker_id]
-                    future = asyncio.run_coroutine_threadsafe(
-                        send_action(conn, payload.copy()),
-                        loop,
+                if not action_state["in_progress"]:
+                    marker_id = next(
+                        (
+                            current_id for current_id in sorted(marker_ids)
+                            if current_id in ARUCO_ACTIONS
+                            and current_id not in executed_marker_ids
+                        ),
+                        None,
                     )
-                    future.add_done_callback(
-                        lambda done, seen_id=marker_id, seen_action=action_name: report_action_result(
-                            done,
-                            seen_id,
-                            seen_action,
+                    if marker_id is not None:
+                        executed_marker_ids.add(marker_id)
+                        action_state["in_progress"] = True
+                        action_name, payload = ARUCO_ACTIONS[marker_id]
+                        future = asyncio.run_coroutine_threadsafe(
+                            send_action(conn, payload.copy()),
+                            loop,
                         )
-                    )
-                    last_triggered_at[marker_id] = now
-                    print(
-                        f"Action triggered: marker {marker_id} -> {action_name}",
-                        flush=True,
-                    )
+                        future.add_done_callback(
+                            lambda done, seen_id=marker_id, seen_action=action_name: report_action_result(
+                                done,
+                                seen_id,
+                                seen_action,
+                                action_state,
+                            )
+                        )
+                        print(
+                            f"Action triggered once: marker {marker_id} -> {action_name}",
+                            flush=True,
+                        )
                 # Display the frame
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

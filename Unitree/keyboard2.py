@@ -39,7 +39,7 @@ l : neerliggen
 -----------------
 h : hello
 x : stretch
-1 : Sit
+y : Sit / t: Rize sit
 m : moonwalk (NON FUNCTIONAL)
 -----------------
  LIGHT CONTROLS
@@ -149,11 +149,17 @@ def keyboard_listener(conn, loop, stop_event):
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}
                 ), loop)
-        elif k == "y":
+        elif k == "y": # sit
             asyncio.run_coroutine_threadsafe(
                 conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": 1009, "parameter": {"data": False}}
+                ), loop)
+        elif k == "t": # rize sit
+            asyncio.run_coroutine_threadsafe(
+                conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["SPORT_MOD"],
+                    {"api_id": 1010, "parameter": {"data": False}}
                 ), loop)
 
 

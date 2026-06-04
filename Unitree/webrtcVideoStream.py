@@ -23,6 +23,15 @@ logging.basicConfig(level=logging.FATAL)
 ROBOT_IP = "192.168.0.73"
 ARUCO_DICTIONARY = "DICT_4X4_50"
 RECOVERY_DELAY_SECONDS = 3.0
+FOLLOW_MARKER_ID = 14
+FOLLOW_COMMAND_INTERVAL_SECONDS = 0.2
+FOLLOW_LOST_STOP_SECONDS = 0.5
+FOLLOW_FORWARD_GAIN = 0.45
+FOLLOW_TURN_GAIN = 0.8
+FOLLOW_MAX_FORWARD_SPEED = 0.35
+FOLLOW_MAX_TURN_SPEED = 0.8
+FOLLOW_SIZE_DEADBAND = 0.12
+FOLLOW_CENTER_DEADBAND = 0.12
 
 ARUCO_ACTIONS = {
     22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
@@ -32,6 +41,9 @@ ARUCO_ACTIONS = {
     26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}, True),
     27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
 }
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
 
 def create_aruco_detector(dictionary_name):
     if not hasattr(cv2, "aruco"):
@@ -68,15 +80,27 @@ def detect_and_draw_aruco(img, detect_markers):
     corners, ids, _rejected = detect_markers(gray)
 
     if ids is None:
-        return []
+        return [], {}
 
     cv2.aruco.drawDetectedMarkers(img, corners, ids)
     marker_ids = [int(marker_id[0]) for marker_id in ids]
+    marker_info = {}
 
     for marker_id, marker_corners in zip(marker_ids, corners):
         points = marker_corners.reshape((4, 2)).astype(int)
         center_x = int(points[:, 0].mean())
         center_y = int(points[:, 1].mean())
+        side_lengths = [
+            np.linalg.norm(points[0] - points[1]),
+            np.linalg.norm(points[1] - points[2]),
+            np.linalg.norm(points[2] - points[3]),
+            np.linalg.norm(points[3] - points[0]),
+        ]
+        marker_info[marker_id] = {
+            "center_x": center_x,
+            "center_y": center_y,
+            "side_px": float(np.mean(side_lengths)),
+        }
         cv2.putText(
             img,
             f"ID {marker_id}",
@@ -99,8 +123,28 @@ def detect_and_draw_aruco(img, detect_markers):
                 2,
                 cv2.LINE_AA,
             )
+        if marker_id == FOLLOW_MARKER_ID:
+            cv2.putText(
+                img,
+                "follow",
+                (center_x - 35, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
-    return marker_ids
+    return marker_ids, marker_info
+
+async def send_move(conn, x=0, y=0, z=0):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {
+            "api_id": SPORT_CMD["Move"],
+            "parameter": {"x": x, "y": y, "z": z},
+        },
+    )
 
 async def send_action(conn, payload, needs_recovery):
     action_error = None
@@ -141,12 +185,72 @@ def report_action_result(future, marker_id, action_name, needs_recovery, action_
     finally:
         action_state["in_progress"] = False
 
+def report_move_result(future):
+    try:
+        future.result()
+    except Exception as exc:
+        print(f"Follow move failed: {exc}", flush=True)
+
+def stop_follow_marker(conn, loop, follow_state):
+    if follow_state["active"]:
+        asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+        follow_state["active"] = False
+        follow_state["target_side_px"] = None
+        print("Follow marker paused: stop", flush=True)
+
+def update_follow_marker(conn, loop, img, marker_info, follow_state):
+    marker = marker_info.get(FOLLOW_MARKER_ID)
+    now = time.time()
+
+    if marker is None:
+        if follow_state["active"] and now - follow_state["last_seen_at"] >= FOLLOW_LOST_STOP_SECONDS:
+            asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+            follow_state["active"] = False
+            follow_state["target_side_px"] = None
+            print("Follow marker lost: stop", flush=True)
+        return
+
+    follow_state["active"] = True
+    follow_state["last_seen_at"] = now
+
+    if follow_state["target_side_px"] is None:
+        follow_state["target_side_px"] = marker["side_px"]
+        print(
+            f"Follow marker {FOLLOW_MARKER_ID}: target size set to "
+            f"{follow_state['target_side_px']:.1f}px",
+            flush=True,
+        )
+
+    if now - follow_state["last_command_at"] < FOLLOW_COMMAND_INTERVAL_SECONDS:
+        return
+
+    target_side = follow_state["target_side_px"]
+    current_side = marker["side_px"]
+    size_error = (target_side - current_side) / max(target_side, 1.0)
+    center_error = (marker["center_x"] - (img.shape[1] / 2)) / (img.shape[1] / 2)
+
+    x_speed = 0 if abs(size_error) < FOLLOW_SIZE_DEADBAND else size_error * FOLLOW_FORWARD_GAIN
+    z_speed = 0 if abs(center_error) < FOLLOW_CENTER_DEADBAND else -center_error * FOLLOW_TURN_GAIN
+
+    x_speed = clamp(x_speed, -FOLLOW_MAX_FORWARD_SPEED, FOLLOW_MAX_FORWARD_SPEED)
+    z_speed = clamp(z_speed, -FOLLOW_MAX_TURN_SPEED, FOLLOW_MAX_TURN_SPEED)
+
+    future = asyncio.run_coroutine_threadsafe(send_move(conn, x=x_speed, z=z_speed), loop)
+    future.add_done_callback(report_move_result)
+    follow_state["last_command_at"] = now
+
 def main():
     frame_queue = Queue()
     detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
     last_printed_ids = None
     executed_marker_ids = set()
     action_state = {"in_progress": False}
+    follow_state = {
+        "active": False,
+        "target_side_px": None,
+        "last_seen_at": 0,
+        "last_command_at": 0,
+    }
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
@@ -192,7 +296,7 @@ def main():
         while True:
             if not frame_queue.empty():
                 img = frame_queue.get()
-                marker_ids = detect_and_draw_aruco(img, detect_markers)
+                marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
                 if marker_ids != last_printed_ids:
                     print(f"ArUco markers: {marker_ids}", flush=True)
                     last_printed_ids = marker_ids
@@ -227,6 +331,10 @@ def main():
                             f"Action triggered once: marker {marker_id} -> {action_name}",
                             flush=True,
                         )
+                        stop_follow_marker(conn, loop, follow_state)
+
+                if not action_state["in_progress"]:
+                    update_follow_marker(conn, loop, img, marker_info, follow_state)
                 # Display the frame
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

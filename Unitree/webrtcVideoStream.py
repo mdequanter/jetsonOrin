@@ -20,9 +20,69 @@ from aiortc import MediaStreamTrack
 logging.basicConfig(level=logging.FATAL)
 
 ROBOT_IP = "192.168.0.73"
+ARUCO_DICTIONARY = "DICT_4X4_50"
+
+def create_aruco_detector(dictionary_name):
+    if not hasattr(cv2, "aruco"):
+        raise RuntimeError(
+            "This OpenCV install has no cv2.aruco module. Install opencv-contrib-python."
+        )
+
+    dictionary_id = getattr(cv2.aruco, dictionary_name, None)
+    if dictionary_id is None:
+        raise RuntimeError(f"Unknown ArUco dictionary: {dictionary_name}")
+
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    else:
+        dictionary = cv2.aruco.Dictionary_get(dictionary_id)
+
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        parameters = cv2.aruco.DetectorParameters()
+    else:
+        parameters = cv2.aruco.DetectorParameters_create()
+
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        return lambda frame: detector.detectMarkers(frame)
+
+    return lambda frame: cv2.aruco.detectMarkers(
+        frame,
+        dictionary,
+        parameters=parameters,
+    )
+
+def detect_and_draw_aruco(img, detect_markers):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, ids, _rejected = detect_markers(gray)
+
+    if ids is None:
+        return []
+
+    cv2.aruco.drawDetectedMarkers(img, corners, ids)
+    marker_ids = [int(marker_id[0]) for marker_id in ids]
+
+    for marker_id, marker_corners in zip(marker_ids, corners):
+        points = marker_corners.reshape((4, 2)).astype(int)
+        center_x = int(points[:, 0].mean())
+        center_y = int(points[:, 1].mean())
+        cv2.putText(
+            img,
+            f"ID {marker_id}",
+            (center_x - 30, center_y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return marker_ids
 
 def main():
     frame_queue = Queue()
+    detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
+    last_printed_ids = None
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
@@ -68,7 +128,10 @@ def main():
         while True:
             if not frame_queue.empty():
                 img = frame_queue.get()
-                print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
+                marker_ids = detect_and_draw_aruco(img, detect_markers)
+                if marker_ids != last_printed_ids:
+                    print(f"ArUco markers: {marker_ids}", flush=True)
+                    last_printed_ids = marker_ids
                 # Display the frame
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

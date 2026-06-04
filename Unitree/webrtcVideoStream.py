@@ -25,12 +25,12 @@ ARUCO_DICTIONARY = "DICT_4X4_50"
 RECOVERY_DELAY_SECONDS = 3.0
 
 ARUCO_ACTIONS = {
-    22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}),
-    23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}),
-    24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}),
-    25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}),
-    26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}),
-    27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}),
+    22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
+    23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}, True),
+    24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}, False),
+    25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}, True),
+    26: ("f / Scrape", {"api_id": 1029, "parameter": {"data": False}}, True),
+    27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
 }
 
 def create_aruco_detector(dictionary_name):
@@ -88,7 +88,7 @@ def detect_and_draw_aruco(img, detect_markers):
             cv2.LINE_AA,
         )
         if marker_id in ARUCO_ACTIONS:
-            action_name, _payload = ARUCO_ACTIONS[marker_id]
+            action_name, _payload, _needs_recovery = ARUCO_ACTIONS[marker_id]
             cv2.putText(
                 img,
                 action_name,
@@ -102,7 +102,7 @@ def detect_and_draw_aruco(img, detect_markers):
 
     return marker_ids
 
-async def send_action(conn, payload):
+async def send_action(conn, payload, needs_recovery):
     action_error = None
 
     try:
@@ -113,27 +113,26 @@ async def send_action(conn, payload):
     except Exception as exc:
         action_error = exc
 
-    await asyncio.sleep(RECOVERY_DELAY_SECONDS)
+    if needs_recovery:
+        await asyncio.sleep(RECOVERY_DELAY_SECONDS)
 
-    recovery_payload = {
-        "api_id": SPORT_CMD["RecoveryStand"],
-        "parameter": {"data": False},
-    }
-    await conn.datachannel.pub_sub.publish_request_new(
-        RTC_TOPIC["SPORT_MOD"],
-        recovery_payload,
-    )
+        recovery_payload = {
+            "api_id": SPORT_CMD["RecoveryStand"],
+            "parameter": {"data": False},
+        }
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            recovery_payload,
+        )
 
     if action_error is not None:
         raise action_error
 
-def report_action_result(future, marker_id, action_name, action_state):
+def report_action_result(future, marker_id, action_name, needs_recovery, action_state):
     try:
         future.result()
-        print(
-            f"Action completed: marker {marker_id} ({action_name}) + RecoveryStand",
-            flush=True,
-        )
+        recovery_text = " + RecoveryStand" if needs_recovery else ""
+        print(f"Action completed: marker {marker_id} ({action_name}){recovery_text}", flush=True)
     except Exception as exc:
         print(
             f"Action failed for marker {marker_id} ({action_name}): {exc}",
@@ -210,16 +209,17 @@ def main():
                     if marker_id is not None:
                         executed_marker_ids.add(marker_id)
                         action_state["in_progress"] = True
-                        action_name, payload = ARUCO_ACTIONS[marker_id]
+                        action_name, payload, needs_recovery = ARUCO_ACTIONS[marker_id]
                         future = asyncio.run_coroutine_threadsafe(
-                            send_action(conn, payload.copy()),
+                            send_action(conn, payload.copy(), needs_recovery),
                             loop,
                         )
                         future.add_done_callback(
-                            lambda done, seen_id=marker_id, seen_action=action_name: report_action_result(
+                            lambda done, seen_id=marker_id, seen_action=action_name, seen_recovery=needs_recovery: report_action_result(
                                 done,
                                 seen_id,
                                 seen_action,
+                                seen_recovery,
                                 action_state,
                             )
                         )

@@ -153,7 +153,7 @@ def keyboard_listener(conn, loop, stop_event):
             asyncio.run_coroutine_threadsafe(
                 conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
-                    {"api_id": SPORT_CMD["1009"], "parameter": {"data": False}}
+                    {"api_id": 1009, "parameter": {"data": False}}
                 ), loop)
 
 

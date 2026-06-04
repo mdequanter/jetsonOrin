@@ -55,7 +55,6 @@ x : stretch
 y : Sit / t: Rize sit
 f : Scrape
 g : Front Jump
-j : Hand stand
 
 
 -----------------
@@ -242,12 +241,7 @@ def keyboard_listener(conn, loop, stop_event):
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": 1031, "parameter": {"data": False}}
                 ), loop)
-        elif k == "j": # Hand stand
-            asyncio.run_coroutine_threadsafe(
-                conn.datachannel.pub_sub.publish_request_new(
-                    RTC_TOPIC["SPORT_MOD"],
-                    {"api_id": 1301, "parameter": {"data": False}}
-                ), loop)
+
 
 
 

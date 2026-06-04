@@ -40,7 +40,7 @@ l : neerliggen
 h : hello
 x : stretch
 y : Sit / t: Rize sit
-f : Wiggle
+f : 
 
 m : moonwalk (NON FUNCTIONAL)
 -----------------
@@ -149,7 +149,7 @@ def keyboard_listener(conn, loop, stop_event):
             asyncio.run_coroutine_threadsafe(
                 conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
-                    {"api_id": 1033, "parameter": {"data": False}}
+                    {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}
                 ), loop)
         elif k == "y": # sit
             asyncio.run_coroutine_threadsafe(
@@ -167,7 +167,7 @@ def keyboard_listener(conn, loop, stop_event):
             asyncio.run_coroutine_threadsafe(
                 conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
-                    {"api_id": 1033, "parameter": {"data": False}}
+                    {"api_id": 1029, "parameter": {"data": False}}
                 ), loop)
 
 

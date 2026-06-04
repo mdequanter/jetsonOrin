@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.FATAL)
 
 MOVE_SPEED = 0.5
 TURN_SPEED = 1
+EULER_STEP = 0.1
+EULER_LIMIT = 0.4
 BRIGHTNESS_LVL = 1
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN, VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -34,6 +36,17 @@ q : zijwaarts links
 d : zijwaarts rechts
 o : opstaan
 l : neerliggen
+spatie : stop bewegen
+-----------------
+ ROBOT POSE / EULER
+-----------------
+n : roll links
+b : roll rechts
+v : pitch naar voren
+c : pitch naar achteren
+, : yaw links
+. : yaw rechts
+w : pose reset
 -----------------
  EXTRA MOVEMENTS
 -----------------
@@ -44,7 +57,7 @@ f : Scrape
 g : Front Jump
 j : Hand stand
 
-m : moonwalk (NON FUNCTIONAL)
+
 -----------------
  LIGHT CONTROLS
 -----------------
@@ -78,6 +91,18 @@ async def send_move(conn, x=0, y=0, z=0):
         }
     )
 
+async def send_euler(conn, roll=0, pitch=0, yaw=0):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {
+            "api_id": SPORT_CMD["Euler"],
+            "parameter": {"x": roll, "y": pitch, "z": yaw}
+        }
+    )
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
 def get_key():
     """Read a single keypress from stdin (works over SSH)."""
     fd = sys.stdin.fileno()
@@ -91,6 +116,18 @@ def get_key():
 
 def keyboard_listener(conn, loop, stop_event):
     """Blocking keyboard loop running in a separate thread."""
+    euler_roll = 0
+    euler_pitch = 0
+    euler_yaw = 0
+
+    def queue_euler():
+        asyncio.run_coroutine_threadsafe(
+            send_euler(conn, euler_roll, euler_pitch, euler_yaw), loop)
+        print(
+            f"Euler roll={euler_roll:.2f}, "
+            f"pitch={euler_pitch:.2f}, yaw={euler_yaw:.2f}"
+        )
+
     while not stop_event.is_set():
         try:
             k = get_key().lower()
@@ -138,6 +175,37 @@ def keyboard_listener(conn, loop, stop_event):
             asyncio.run_coroutine_threadsafe(
                 send_move(conn, x=0), loop)
 
+        # Robot pose / Euler controls
+        elif k == "n":
+            euler_roll = clamp(euler_roll + EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == "b":
+            euler_roll = clamp(euler_roll - EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == "v":
+            euler_pitch = clamp(euler_pitch + EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == "c":
+            euler_pitch = clamp(euler_pitch - EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == ",":
+            euler_yaw = clamp(euler_yaw + EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == ".":
+            euler_yaw = clamp(euler_yaw - EULER_STEP, -EULER_LIMIT, EULER_LIMIT)
+            queue_euler()
+
+        elif k == "w":
+            euler_roll = 0
+            euler_pitch = 0
+            euler_yaw = 0
+            queue_euler()
+
         # Hello
         elif k == "h":
             asyncio.run_coroutine_threadsafe(
@@ -184,6 +252,7 @@ def keyboard_listener(conn, loop, stop_event):
                     RTC_TOPIC["SPORT_MOD"],
                     {"api_id": 1301, "parameter": {"data": False}}
                 ), loop)
+
 
 
         # MoonWalk (NON FUNCTIONAL)
@@ -298,8 +367,13 @@ def keyboard_listener(conn, loop, stop_event):
 
         # EMERGENCY STOP
         elif k == "r":
+            euler_roll = 0
+            euler_pitch = 0
+            euler_yaw = 0
             asyncio.run_coroutine_threadsafe(
                 send_move(conn, x=0, z=0), loop)
+            asyncio.run_coroutine_threadsafe(
+                send_euler(conn, euler_roll, euler_pitch, euler_yaw), loop)
 
         # Print controls
         elif k == "p":

@@ -28,15 +28,6 @@ logging.basicConfig(level=logging.FATAL)
 ROBOT_IP = "unitree.local"
 ARUCO_DICTIONARY = "DICT_4X4_50"
 RECOVERY_DELAY_SECONDS = 3.0
-FOLLOW_MARKER_ID = 14
-FOLLOW_COMMAND_INTERVAL_SECONDS = 0.2
-FOLLOW_LOST_STOP_SECONDS = 1.0
-FOLLOW_FORWARD_GAIN = 0.45
-FOLLOW_TURN_GAIN = 0.8
-FOLLOW_MAX_FORWARD_SPEED = 0.35
-FOLLOW_MAX_TURN_SPEED = 0.8
-FOLLOW_SIZE_DEADBAND = 0.12
-FOLLOW_CENTER_DEADBAND = 0.12
 LIGHT_TOGGLE_MARKER_ID = 26
 LIGHT_BRIGHTNESS = 1
 FRAME_WIDTH = 640
@@ -62,9 +53,6 @@ ARUCO_ACTIONS = {
     26: ("toggle light", None, False),
     27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
 }
-
-def clamp(value, minimum, maximum):
-    return max(minimum, min(maximum, value))
 
 def resize_to_width(img, width):
     height, current_width = img.shape[:2]
@@ -204,28 +192,7 @@ def detect_and_draw_aruco(img, detect_markers):
                 2,
                 cv2.LINE_AA,
             )
-        if marker_id == FOLLOW_MARKER_ID:
-            cv2.putText(
-                img,
-                "follow",
-                (center_x - 35, center_y + 22),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 0),
-                2,
-                cv2.LINE_AA,
-            )
-
     return marker_ids, marker_info
-
-async def send_move(conn, x=0, y=0, z=0):
-    await conn.datachannel.pub_sub.publish_request_new(
-        RTC_TOPIC["SPORT_MOD"],
-        {
-            "api_id": SPORT_CMD["Move"],
-            "parameter": {"x": x, "y": y, "z": z},
-        },
-    )
 
 async def send_light(conn, brightness):
     await conn.datachannel.pub_sub.publish_request_new(
@@ -275,12 +242,6 @@ def report_action_result(future, marker_id, action_name, needs_recovery, action_
     finally:
         action_state["in_progress"] = False
 
-def report_move_result(future):
-    try:
-        future.result()
-    except Exception as exc:
-        print(f"Follow move failed: {exc}", flush=True)
-
 def report_light_result(future, brightness, light_state, action_state):
     try:
         future.result()
@@ -292,54 +253,6 @@ def report_light_result(future, brightness, light_state, action_state):
     finally:
         action_state["in_progress"] = False
 
-def stop_follow_marker(conn, loop, follow_state):
-    if follow_state["active"]:
-        asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
-        follow_state["active"] = False
-        follow_state["target_side_px"] = None
-        print("Follow marker paused: stop", flush=True)
-
-def update_follow_marker(conn, loop, img, marker_info, follow_state):
-    marker = marker_info.get(FOLLOW_MARKER_ID)
-    now = time.time()
-
-    if marker is None:
-        if follow_state["active"] and now - follow_state["last_seen_at"] >= FOLLOW_LOST_STOP_SECONDS:
-            asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
-            follow_state["active"] = False
-            follow_state["target_side_px"] = None
-            print("Follow marker lost: stop", flush=True)
-        return
-
-    follow_state["active"] = True
-    follow_state["last_seen_at"] = now
-
-    if follow_state["target_side_px"] is None:
-        follow_state["target_side_px"] = marker["side_px"]
-        print(
-            f"Follow marker {FOLLOW_MARKER_ID}: target size set to "
-            f"{follow_state['target_side_px']:.1f}px",
-            flush=True,
-        )
-
-    if now - follow_state["last_command_at"] < FOLLOW_COMMAND_INTERVAL_SECONDS:
-        return
-
-    target_side = follow_state["target_side_px"]
-    current_side = marker["side_px"]
-    size_error = (target_side - current_side) / max(target_side, 1.0)
-    center_error = (marker["center_x"] - (img.shape[1] / 2)) / (img.shape[1] / 2)
-
-    x_speed = 0 if abs(size_error) < FOLLOW_SIZE_DEADBAND else size_error * FOLLOW_FORWARD_GAIN
-    z_speed = 0 if abs(center_error) < FOLLOW_CENTER_DEADBAND else -center_error * FOLLOW_TURN_GAIN
-
-    x_speed = clamp(x_speed, -FOLLOW_MAX_FORWARD_SPEED, FOLLOW_MAX_FORWARD_SPEED)
-    z_speed = clamp(z_speed, -FOLLOW_MAX_TURN_SPEED, FOLLOW_MAX_TURN_SPEED)
-
-    future = asyncio.run_coroutine_threadsafe(send_move(conn, x=x_speed, z=z_speed), loop)
-    future.add_done_callback(report_move_result)
-    follow_state["last_command_at"] = now
-
 def main():
     args = parse_args()
     frame_queue = Queue(maxsize=1)
@@ -349,12 +262,6 @@ def main():
     action_state = {"in_progress": False}
     light_state = {"on": False}
     previous_marker_ids = set()
-    follow_state = {
-        "active": False,
-        "target_side_px": None,
-        "last_seen_at": 0,
-        "last_command_at": 0,
-    }
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
@@ -430,18 +337,11 @@ def main():
                 polygon_count = draw_prediction_polygons(img, result)
                 draw_inference_time(img, total_ms)
 
-                print (f"results: {result}")
-
-                print(
-                    f"Inference completed in {total_ms:.1f} ms, "
-                    f"polygons={polygon_count}, processing ArUco markers...",
-                    flush=True,
-                )
 
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
                 if marker_ids != last_printed_ids:
-                    print(f"ArUco markers: {marker_ids}", flush=True)
+                    #print(f"ArUco markers: {marker_ids}", flush=True)
                     last_printed_ids = marker_ids
 
                 current_marker_ids = set(marker_ids)
@@ -464,7 +364,6 @@ def main():
                             action_state,
                         )
                     )
-                    stop_follow_marker(conn, loop, follow_state)
                     print("Action triggered: marker 26 -> toggle light", flush=True)
 
                 if not action_state["in_progress"]:
@@ -498,10 +397,7 @@ def main():
                             f"Action triggered once: marker {marker_id} -> {action_name}",
                             flush=True,
                         )
-                        stop_follow_marker(conn, loop, follow_state)
 
-                if not action_state["in_progress"]:
-                    update_follow_marker(conn, loop, img, marker_info, follow_state)
                 previous_marker_ids = current_marker_ids
                 if args.preview:
                     cv2.imshow('Video', img)

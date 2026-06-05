@@ -15,7 +15,6 @@ from unitree_webrtc_connect.webrtc_driver import (
 from aiortc.contrib.media import MediaPlayer
 
 
-# Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
 ROBOT_IP = os.environ.get("UNITREE_ROBOT_IP", "unitree.local")
@@ -110,63 +109,64 @@ def create_speech_mp3(text: str):
     return mp3_path, duration
 
 
-async def send_mp3_to_robot(mp3_path: str, duration: float):
-    if not os.path.isfile(mp3_path):
-        raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
-
+async def connect_to_robot():
     conn = UnitreeWebRTCConnection(
         WebRTCConnectionMethod.LocalSTA,
         ip=ROBOT_IP
     )
 
-    # Other possible connection methods:
-    # conn = UnitreeWebRTCConnection(
-    #     WebRTCConnectionMethod.LocalSTA,
-    #     serialNumber="B42D2000XXXXXXXX"
-    # )
-    # conn = UnitreeWebRTCConnection(
-    #     WebRTCConnectionMethod.Remote,
-    #     serialNumber="B42D2000XXXXXXXX",
-    #     username="email@gmail.com",
-    #     password="pass"
-    # )
-    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
+    print("[INFO] Connecting to robot...")
+    await conn.connect()
+    print("[OK] Connected to robot")
+
+    return conn
+
+
+async def speak_mp3(conn, mp3_path: str, duration: float):
+    if not os.path.isfile(mp3_path):
+        raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
+
+    print(f"[INFO] Sending MP3 to robot: {mp3_path}")
+
+    player = MediaPlayer(mp3_path)
+    audio_track = player.audio
+
+    if audio_track is None:
+        raise RuntimeError(f"No audio track found in file: {mp3_path}")
+
+    conn.pc.addTrack(audio_track)
+
+    print("[OK] Audio track added to WebRTC connection")
+    print("[INFO] Speaking...")
+
+    await asyncio.sleep(duration + 1.5)
 
     try:
-        await conn.connect()
+        audio_track.stop()
+    except Exception:
+        pass
 
-        print(f"[INFO] Sending MP3 to robot: {mp3_path}")
+    print("[OK] Speech finished")
 
-        player = MediaPlayer(mp3_path)
-        audio_track = player.audio
 
-        if audio_track is None:
-            raise RuntimeError(f"No audio track found in file: {mp3_path}")
-
-        conn.pc.addTrack(audio_track)
-
-        print("[OK] Audio track added to WebRTC connection")
-        print("[INFO] Speaking...")
-
-        # Wait until speech is finished.
-        # Extra margin avoids cutting off the last part.
-        await asyncio.sleep(duration + 1.5)
-
-        print("[OK] Speech finished")
-
-    finally:
-        try:
-            await conn.pc.close()
-        except Exception:
-            pass
+async def async_input(prompt: str) -> str:
+    return await asyncio.to_thread(input, prompt)
 
 
 async def main():
+    conn = None
+
     try:
         check_dependencies()
 
+        conn = await connect_to_robot()
+
         while True:
-            text = input("\nEnter text for the robot to say, or type 'q' to quit:\n> ").strip()
+            text = await async_input(
+                "\nEnter text for the robot to say, or type 'q' to quit:\n> "
+            )
+
+            text = text.strip()
 
             if text.lower() in ["q", "quit", "exit", "stop"]:
                 print("[INFO] Stopping.")
@@ -176,9 +176,12 @@ async def main():
                 print("[INFO] Empty text ignored.")
                 continue
 
-            mp3_path, duration = create_speech_mp3(text)
+            try:
+                mp3_path, duration = create_speech_mp3(text)
+                await speak_mp3(conn, mp3_path, duration)
 
-            await send_mp3_to_robot(mp3_path, duration)
+            except Exception as e:
+                print(f"[ERROR] {e}")
 
     except ValueError as e:
         logging.error(f"An error occurred: {e}")
@@ -188,6 +191,14 @@ async def main():
 
     except RuntimeError as e:
         logging.error(e)
+
+    finally:
+        if conn is not None:
+            try:
+                print("[INFO] Closing robot connection...")
+                await conn.pc.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

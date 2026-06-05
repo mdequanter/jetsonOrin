@@ -3,6 +3,7 @@
 import os
 import subprocess
 import shutil
+import argparse
 
 
 KNOWN_DIR = "known"
@@ -26,7 +27,12 @@ def load_names(known_dir):
 def sanitize_filename(text: str) -> str:
     text = text.strip().replace(" ", "_")
     allowed = "-_.()abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    return "".join(c for c in text if c in allowed)
+    cleaned = "".join(c for c in text if c in allowed)
+
+    if not cleaned:
+        cleaned = "speech"
+
+    return cleaned
 
 
 def generate_sentences(name):
@@ -68,13 +74,33 @@ def convert_wav_to_mp3(wav_path: str, mp3_path: str):
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg fout bij omzetting naar mp3:\n{result.stderr}"
         )
 
 
-def main():
+def generate_mp3(text: str, output_file: str):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    safe_file = sanitize_filename(output_file)
+
+    wav_path = os.path.join(OUTPUT_DIR, f"{safe_file}.wav")
+    mp3_path = os.path.join(OUTPUT_DIR, f"{safe_file}.mp3")
+
+    print(f"[INFO] Genereer WAV: {text}")
+    generate_wav_with_piper(text, wav_path, PIPER_MODEL)
+
+    print(f"[INFO] Converteer naar MP3: {mp3_path}")
+    convert_wav_to_mp3(wav_path, mp3_path)
+
+    os.remove(wav_path)
+
+    print(f"[OK] MP3 aangemaakt: {mp3_path}")
+
+
+def check_dependencies():
     if not os.path.exists(PIPER_MODEL):
         raise FileNotFoundError(f"Piper model niet gevonden: {PIPER_MODEL}")
 
@@ -84,7 +110,44 @@ def main():
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("Het commando 'ffmpeg' is niet gevonden in PATH.")
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Genereer Nederlandse spraak als MP3 met Piper."
+    )
+
+    parser.add_argument(
+        "--text",
+        type=str,
+        help="De tekst die uitgesproken moet worden."
+    )
+
+    parser.add_argument(
+        "--file",
+        type=str,
+        help="Naam van het uitvoerbestand zonder extensie."
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    check_dependencies()
+
+    # Modus 1: eigen tekst + eigen bestandsnaam
+    if args.text:
+        if args.file:
+            output_file = args.file
+        else:
+            output_file = sanitize_filename(args.text[:40])
+
+        generate_mp3(args.text, output_file)
+        return
+
+    # Modus 2: oude werking, automatisch op basis van known/*.npz
     names = load_names(KNOWN_DIR)
+
     if not names:
         print(f"[INFO] Geen .npz bestanden gevonden in '{KNOWN_DIR}'")
         return
@@ -93,17 +156,10 @@ def main():
 
     for name in names:
         safe_name = sanitize_filename(name)
+
         for pos_key, sentence in generate_sentences(name):
-            wav_path = os.path.join(OUTPUT_DIR, f"{safe_name}_{pos_key}.wav")
-            mp3_path = os.path.join(OUTPUT_DIR, f"{safe_name}_{pos_key}.mp3")
-
-            print(f"[INFO] Genereer WAV: {sentence}")
-            generate_wav_with_piper(sentence, wav_path, PIPER_MODEL)
-
-            print(f"[INFO] Converteer naar MP3: {mp3_path}")
-            convert_wav_to_mp3(wav_path, mp3_path)
-
-            os.remove(wav_path)
+            output_file = f"{safe_name}_{pos_key}"
+            generate_mp3(sentence, output_file)
 
     print(f"[OK] Klaar. MP3-bestanden staan in: {OUTPUT_DIR}")
 

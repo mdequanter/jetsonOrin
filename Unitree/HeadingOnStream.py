@@ -349,6 +349,8 @@ def main():
                 result = model.predict(img, **predict_kwargs)[0]
                 total_ms = (time.perf_counter() - start) * 1000.0
 
+                print(f"Inference completed in {total_ms:.1f} ms, processing ArUco markers...", flush=True)
+
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
                 if marker_ids != last_printed_ids:

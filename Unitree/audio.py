@@ -29,7 +29,7 @@ MP3_FILE = "speech.mp3"
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Laat de Unitree-robot een tekst uitspreken via Piper en WebRTC."
+        description="Laat de Unitree-robot een tekst uitspreken en sluit daarna af."
     )
 
     parser.add_argument(
@@ -129,89 +129,72 @@ async def send_mp3_to_robot(mp3_path: str, duration: float):
     if not os.path.isfile(mp3_path):
         raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
 
-    conn = None
-    player = None
-    audio_track = None
+    conn = UnitreeWebRTCConnection(
+        WebRTCConnectionMethod.LocalSTA,
+        ip=ROBOT_IP
+    )
 
-    try:
-        conn = UnitreeWebRTCConnection(
-            WebRTCConnectionMethod.LocalSTA,
-            ip=ROBOT_IP
-        )
+    print("[INFO] Connecting to robot...")
+    await conn.connect()
+    print("[OK] Connected to robot")
 
-        print("[INFO] Connecting to robot...")
-        await conn.connect()
-        print("[OK] Connected to robot")
+    print(f"[INFO] Sending MP3 to robot: {mp3_path}")
 
-        print(f"[INFO] Sending MP3 to robot: {mp3_path}")
+    player = MediaPlayer(mp3_path)
+    audio_track = player.audio
 
-        player = MediaPlayer(mp3_path)
-        audio_track = player.audio
+    if audio_track is None:
+        raise RuntimeError(f"No audio track found in file: {mp3_path}")
 
-        if audio_track is None:
-            raise RuntimeError(f"No audio track found in file: {mp3_path}")
+    conn.pc.addTrack(audio_track)
 
-        conn.pc.addTrack(audio_track)
+    print("[OK] Audio track added to WebRTC connection")
+    print("[INFO] Speaking...")
 
-        print("[OK] Audio track added to WebRTC connection")
-        print("[INFO] Speaking...")
+    # Wacht tot de zin uitgesproken is.
+    # De extra marge voorkomt dat de laatste woorden worden afgekapt.
+    await asyncio.sleep(duration + 3.0)
 
-        await asyncio.sleep(duration + 1.5)
+    print("[OK] Speech finished")
 
-        print("[OK] Speech finished")
-
-    finally:
-        if audio_track is not None:
-            try:
-                audio_track.stop()
-            except Exception:
-                pass
-
-        if player is not None:
-            try:
-                if hasattr(player, "stop"):
-                    player.stop()
-            except Exception:
-                pass
-
-        if conn is not None:
-            try:
-                print("[INFO] Closing robot connection...")
-                await conn.pc.close()
-                print("[OK] Robot connection closed")
-            except Exception:
-                pass
+    # Belangrijk:
+    # Geen conn.pc.close()
+    # Geen audio_track.stop()
+    # Geen player.stop()
+    #
+    # Dit bootst het gedrag na van je werkende script,
+    # waarbij het proces gewoon wordt gestopt na gebruik.
 
 
 async def main():
-    try:
-        args = parse_args()
-        text = args.text.strip()
+    args = parse_args()
+    text = args.text.strip()
 
-        if not text:
-            print("[ERROR] Empty text.")
-            return
+    if not text:
+        print("[ERROR] Empty text.")
+        return 1
 
-        check_dependencies()
+    check_dependencies()
 
-        mp3_path, duration = create_speech_mp3(text)
-        await send_mp3_to_robot(mp3_path, duration)
+    mp3_path, duration = create_speech_mp3(text)
+    await send_mp3_to_robot(mp3_path, duration)
 
-        print("[OK] Done.")
-
-    except ValueError as e:
-        logging.error(f"An error occurred: {e}")
-
-    except FileNotFoundError as e:
-        logging.error(e)
-
-    except RuntimeError as e:
-        logging.error(e)
+    print("[OK] Done.")
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(main())
+
+        # Hard afsluiten zodat WebRTC/aiortc geen half-gesloten toestand achterlaat
+        # in de Unitree AudioHub.
+        os._exit(exit_code)
+
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
-        sys.exit(0)
+        os._exit(0)
+
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        os._exit(1)

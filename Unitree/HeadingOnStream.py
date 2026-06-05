@@ -337,8 +337,6 @@ def main():
         "imgsz": 640,
         "verbose": False,
     }
-    if args.device:
-        predict_kwargs["device"] = args.device
 
 
     try:

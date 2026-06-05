@@ -331,6 +331,16 @@ def main():
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
 
+
+    predict_kwargs = {
+        "conf": 0.25,
+        "imgsz": 640,
+        "verbose": False,
+    }
+    if args.device:
+        predict_kwargs["device"] = args.device
+
+
     try:
         while True:
             if not frame_queue.empty():

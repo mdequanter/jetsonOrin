@@ -15,7 +15,7 @@ from aiortc import MediaStreamTrack
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
-ROBOT_IP = "192.168.0.73"
+ROBOT_IP = "unitree.local"
 ARUCO_DICTIONARY = "DICT_4X4_50"
 RECOVERY_DELAY_SECONDS = 3.0
 FOLLOW_MARKER_ID = 14

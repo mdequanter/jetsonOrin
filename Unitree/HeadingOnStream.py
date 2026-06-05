@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import logging
+import threading
 import time
 from pathlib import Path
+from queue import Queue
 
 import cv2
 import numpy as np
+from aiortc import MediaStreamTrack
+from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
 
 try:
     from ultralytics import YOLO
@@ -564,36 +570,23 @@ def main() -> int:
     display_scale = max(args.display_scale, 0.1)
 
     model_path = Path(args.model).expanduser()
-    video_path = Path(args.video).expanduser()
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
 
     model = YOLO(str(model_path), verbose=False)
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
+    frame_queue = Queue()
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    logging.basicConfig(level=logging.FATAL)
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
     writer = None
 
-    if args.save_output:
-        writer = create_video_writer(
-            Path(args.save_output).expanduser(),
-            fps,
-            (frame_width, frame_height),
-        )
+    height, width = 720, 1280
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.imshow(WINDOW_NAME, img)
+    cv2.waitKey(1)
 
     if not args.no_display:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(
-            WINDOW_NAME,
-            int(frame_width * display_scale),
-            int(frame_height * display_scale),
-        )
 
     predict_kwargs = {
         "conf": args.conf,
@@ -603,16 +596,46 @@ def main() -> int:
     if args.device:
         predict_kwargs["device"] = args.device
 
+    async def recv_camera_stream(track: MediaStreamTrack):
+        while True:
+            frame = await track.recv()
+            img = frame.to_ndarray(format="bgr24")
+            frame_queue.put(img)
+
+    def run_asyncio_loop(loop):
+        asyncio.set_event_loop(loop)
+
+        async def setup():
+            try:
+                await conn.connect()
+                conn.video.switchVideoChannel(True)
+                conn.video.add_track_callback(recv_camera_stream)
+            except Exception as e:
+                logging.error(f"Error in WebRTC connection: {e}")
+
+        loop.run_until_complete(setup())
+        loop.run_forever()
+
+    loop = asyncio.new_event_loop()
+    asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
+    asyncio_thread.start()
+
     frame_index = 0
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                if args.loop:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
-                break
+            if frame_queue.empty():
+                time.sleep(0.01)
+                continue
+
+            frame = frame_queue.get()
+
+            if writer is None and args.save_output:
+                writer = create_video_writer(
+                    Path(args.save_output).expanduser(),
+                    30.0,
+                    (frame.shape[1], frame.shape[0]),
+                )
 
             start = time.perf_counter()
             result = model.predict(frame, **predict_kwargs)[0]
@@ -681,11 +704,12 @@ def main() -> int:
             if args.max_frames > 0 and frame_index >= args.max_frames:
                 break
     finally:
-        cap.release()
         if writer is not None:
             writer.release()
         if not args.no_display:
             cv2.destroyAllWindows()
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio_thread.join()
 
     return 0
 

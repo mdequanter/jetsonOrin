@@ -9,6 +9,7 @@ cv2.waitKey(1)  # Ensure the window is created
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from queue import Queue
@@ -18,11 +19,13 @@ from aiortc import MediaStreamTrack
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
+ROBOT_IP = os.environ.get("UNITREE_ROBOT_IP", "unitree.local")
+
 def main():
     frame_queue = Queue()
 
     # Choose a connection method (uncomment the correct one)
-    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
@@ -67,7 +70,7 @@ def main():
                 img = frame_queue.get()
                 print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
                 # Display the frame
-                #cv2.imshow('Video', img)
+                cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
             else:

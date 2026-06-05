@@ -619,7 +619,7 @@ def main() -> int:
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
 
-    model = YOLO(str(model_path), verbose=False)
+    model = None
 
     frame_index = 0
 
@@ -630,6 +630,9 @@ def main() -> int:
                 continue
 
             frame = frame_queue.get()
+
+            if model is None:
+                model = YOLO(str(model_path), verbose=False)
 
             if writer is None and args.save_output:
                 writer = create_video_writer(

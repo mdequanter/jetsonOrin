@@ -16,8 +16,6 @@ from ultralytics import YOLO
 MODEL_PATH = r"models/unrealsim.pt"
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-PREDICTION_COLOR = (0, 255, 255)
-PREDICTION_ALPHA = 0.35
 
 model = YOLO(MODEL_PATH, verbose=False)
 
@@ -62,35 +60,6 @@ ARUCO_ACTIONS = {
 
 def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
-
-def draw_prediction_polygons(img, result):
-    masks = getattr(result, "masks", None)
-    if masks is None or masks.xy is None:
-        return 0
-
-    height, width = img.shape[:2]
-    overlay = img.copy()
-    polygons = []
-
-    for polygon in masks.xy:
-        if polygon is None or len(polygon) < 3:
-            continue
-
-        points = np.round(polygon).astype(np.int32).reshape((-1, 1, 2))
-        points[:, 0, 0] = np.clip(points[:, 0, 0], 0, width - 1)
-        points[:, 0, 1] = np.clip(points[:, 0, 1], 0, height - 1)
-        polygons.append(points)
-
-    if not polygons:
-        return 0
-
-    cv2.fillPoly(overlay, polygons, PREDICTION_COLOR)
-    cv2.addWeighted(overlay, PREDICTION_ALPHA, img, 1.0 - PREDICTION_ALPHA, 0, dst=img)
-
-    for points in polygons:
-        cv2.polylines(img, [points], True, PREDICTION_COLOR, 2, cv2.LINE_AA)
-
-    return len(polygons)
 
 def create_aruco_detector(dictionary_name):
     if not hasattr(cv2, "aruco"):
@@ -376,19 +345,9 @@ def main():
                 img = frame_queue.get()
 
 
-                start = time.perf_counter()
+                #start = time.perf_counter()
                 result = model.predict(img, **predict_kwargs)[0]
-                total_ms = (time.perf_counter() - start) * 1000.0
-                polygon_count = draw_prediction_polygons(img, result)
-
-                print (f"result: {result}")
-
-                print(
-                    f"Inference completed in {total_ms:.1f} ms, "
-                    f"polygons={polygon_count}, processing ArUco markers...",
-                    flush=True,
-                )
-
+                #total_ms = (time.perf_counter() - start) * 1000.0
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
                 if marker_ids != last_printed_ids:

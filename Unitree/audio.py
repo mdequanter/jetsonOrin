@@ -7,6 +7,7 @@ import sys
 import subprocess
 import shutil
 import wave
+import argparse
 
 from unitree_webrtc_connect.webrtc_driver import (
     UnitreeWebRTCConnection,
@@ -24,6 +25,21 @@ PIPER_MODEL = "/home/jetson/jetsonOrin/voices/nl_BE-nathalie-medium.onnx"
 OUTPUT_DIR = "speech_mp3"
 WAV_FILE = "speech.wav"
 MP3_FILE = "speech.mp3"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Laat de Unitree-robot een tekst uitspreken via Piper en WebRTC."
+    )
+
+    parser.add_argument(
+        "-t",
+        "--text",
+        required=True,
+        help="De tekst die de robot moet uitspreken."
+    )
+
+    return parser.parse_args()
 
 
 def check_dependencies():
@@ -167,35 +183,21 @@ async def send_mp3_to_robot(mp3_path: str, duration: float):
                 pass
 
 
-async def async_input(prompt: str) -> str:
-    return await asyncio.to_thread(input, prompt)
-
-
 async def main():
     try:
+        args = parse_args()
+        text = args.text.strip()
+
+        if not text:
+            print("[ERROR] Empty text.")
+            return
+
         check_dependencies()
 
-        while True:
-            text = await async_input(
-                "\nEnter text for the robot to say, or type 'q' to quit:\n> "
-            )
+        mp3_path, duration = create_speech_mp3(text)
+        await send_mp3_to_robot(mp3_path, duration)
 
-            text = text.strip()
-
-            if text.lower() in ["q", "quit", "exit", "stop"]:
-                print("[INFO] Stopping.")
-                break
-
-            if not text:
-                print("[INFO] Empty text ignored.")
-                continue
-
-            try:
-                mp3_path, duration = create_speech_mp3(text)
-                await send_mp3_to_robot(mp3_path, duration)
-
-            except Exception as e:
-                print(f"[ERROR] {e}")
+        print("[OK] Done.")
 
     except ValueError as e:
         logging.error(f"An error occurred: {e}")

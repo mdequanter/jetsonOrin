@@ -397,6 +397,7 @@ def main():
                 total_ms = (time.perf_counter() - start) * 1000.0
                 draw_inference_time(img, total_ms)
 
+                print (f"results: {result}")
 
                 print(f"Inference completed in {total_ms:.1f} ms, processing ArUco markers...", flush=True)
 

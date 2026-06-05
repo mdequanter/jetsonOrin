@@ -14,7 +14,7 @@ from aiortc import MediaStreamTrack
 from ultralytics import YOLO
 
 MODEL_PATH = r"models/unrealsim.pt"
-DETECTION_CONFIDENCE = 0.1
+DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
 model = YOLO(MODEL_PATH, verbose=False)
@@ -38,7 +38,7 @@ FOLLOW_CENTER_DEADBAND = 0.12
 LIGHT_TOGGLE_MARKER_ID = 26
 LIGHT_BRIGHTNESS = 1
 FRAME_WIDTH = 640
-MAX_PROCESSING_FPS = 5
+MAX_PROCESSING_FPS = 2.0
 MIN_PROCESS_INTERVAL_SECONDS = 1.0 / MAX_PROCESSING_FPS
 
 def parse_args():
@@ -398,7 +398,7 @@ def main():
                 draw_inference_time(img, total_ms)
 
 
-                #print(f"Inference completed in {total_ms:.1f} ms, processing ArUco markers...", flush=True)
+                print(f"Inference completed in {total_ms:.1f} ms, processing ArUco markers...", flush=True)
 
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)

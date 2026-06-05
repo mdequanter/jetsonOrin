@@ -19,6 +19,7 @@ SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
 model = YOLO(MODEL_PATH, verbose=False)
 
+
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
@@ -335,7 +336,10 @@ def main():
             if not frame_queue.empty():
                 img = frame_queue.get()
 
-                results = model(img, conf=DETECTION_CONFIDENCE, verbose=False)
+
+                start = time.perf_counter()
+                result = model.predict(img, **predict_kwargs)[0]
+                total_ms = (time.perf_counter() - start) * 1000.0
 
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)

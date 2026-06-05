@@ -335,7 +335,7 @@ def main():
             if not frame_queue.empty():
                 img = frame_queue.get()
 
-                results = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)
+                results = model(img, conf=DETECTION_CONFIDENCE, verbose=False)
 
 
                 marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)

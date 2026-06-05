@@ -573,7 +573,6 @@ def main() -> int:
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
 
-    model = YOLO(str(model_path), verbose=False)
     frame_queue = Queue()
 
     logging.basicConfig(level=logging.FATAL)
@@ -619,6 +618,8 @@ def main() -> int:
     loop = asyncio.new_event_loop()
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
+
+    model = YOLO(str(model_path), verbose=False)
 
     frame_index = 0
 

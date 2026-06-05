@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 import time
-from queue import Queue
+from queue import Empty, Queue
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
@@ -37,6 +37,9 @@ FOLLOW_SIZE_DEADBAND = 0.12
 FOLLOW_CENTER_DEADBAND = 0.12
 LIGHT_TOGGLE_MARKER_ID = 26
 LIGHT_BRIGHTNESS = 1
+FRAME_WIDTH = 640
+MAX_PROCESSING_FPS = 2.0
+MIN_PROCESS_INTERVAL_SECONDS = 1.0 / MAX_PROCESSING_FPS
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -60,6 +63,36 @@ ARUCO_ACTIONS = {
 
 def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
+
+def resize_to_width(img, width):
+    height, current_width = img.shape[:2]
+    if current_width == width:
+        return img
+
+    scale = width / current_width
+    new_height = int(height * scale)
+    return cv2.resize(img, (width, new_height), interpolation=cv2.INTER_AREA)
+
+def drain_frame_queue(frame_queue):
+    latest_img = None
+    while True:
+        try:
+            latest_img = frame_queue.get_nowait()
+        except Empty:
+            return latest_img
+
+def draw_inference_time(img, total_ms):
+    cv2.putText(
+        img,
+        f"Inference: {total_ms:.1f} ms",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
 
 def create_aruco_detector(dictionary_name):
     if not hasattr(cv2, "aruco"):
@@ -277,7 +310,7 @@ def update_follow_marker(conn, loop, img, marker_info, follow_state):
 
 def main():
     args = parse_args()
-    frame_queue = Queue()
+    frame_queue = Queue(maxsize=1)
     detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
     last_printed_ids = None
     executed_marker_ids = set()
@@ -301,9 +334,16 @@ def main():
     async def recv_camera_stream(track: MediaStreamTrack):
         while True:
             frame = await track.recv()
-            # Convert the frame to a NumPy array
+            # Convert the frame to a NumPy array and keep only the newest frame.
             img = frame.to_ndarray(format="bgr24")
-            frame_queue.put(img)
+            img = resize_to_width(img, FRAME_WIDTH)
+
+            if frame_queue.full():
+                try:
+                    frame_queue.get_nowait()
+                except Empty:
+                    pass
+            frame_queue.put_nowait(img)
 
     def run_asyncio_loop(loop):
         asyncio.set_event_loop(loop)
@@ -337,17 +377,25 @@ def main():
         "imgsz": 640,
         "verbose": False,
     }
+    last_processed_at = 0.0
 
 
     try:
         while True:
-            if not frame_queue.empty():
-                img = frame_queue.get()
+            now = time.perf_counter()
+            if now - last_processed_at < MIN_PROCESS_INTERVAL_SECONDS:
+                drain_frame_queue(frame_queue)
+                time.sleep(0.01)
+                continue
 
+            img = drain_frame_queue(frame_queue)
+            if img is not None:
+                last_processed_at = time.perf_counter()
 
                 start = time.perf_counter()
                 result = model.predict(img, **predict_kwargs)[0]
                 total_ms = (time.perf_counter() - start) * 1000.0
+                draw_inference_time(img, total_ms)
 
 
                 print(f"Inference completed in {total_ms:.1f} ms, processing ArUco markers...", flush=True)

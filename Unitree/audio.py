@@ -14,6 +14,7 @@ from unitree_webrtc_connect.webrtc_driver import (
 from aiortc.contrib.media import MediaPlayer
 
 
+# Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
 ROBOT_IP = os.environ.get("UNITREE_ROBOT_IP", "unitree.local")
@@ -84,7 +85,7 @@ def create_speech_mp3(text: str) -> str:
     wav_path = os.path.abspath(os.path.join(OUTPUT_DIR, WAV_FILE))
     mp3_path = os.path.abspath(os.path.join(OUTPUT_DIR, MP3_FILE))
 
-    print(f"[INFO] Generating WAV: {wav_path}")
+    print(f"[INFO] Generating speech WAV: {wav_path}")
     generate_wav_with_piper(text, wav_path, PIPER_MODEL)
 
     print(f"[INFO] Creating MP3: {mp3_path}")
@@ -93,10 +94,14 @@ def create_speech_mp3(text: str) -> str:
     if os.path.exists(wav_path):
         os.remove(wav_path)
 
+    print(f"[OK] Speech MP3 created: {mp3_path}")
     return mp3_path
 
 
-async def connect_to_robot():
+async def send_mp3_to_robot(mp3_path: str):
+    if not os.path.isfile(mp3_path):
+        raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
+
     conn = UnitreeWebRTCConnection(
         WebRTCConnectionMethod.LocalSTA,
         ip=ROBOT_IP
@@ -115,18 +120,9 @@ async def connect_to_robot():
     # )
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
-    print("[INFO] Connecting to robot...")
     await conn.connect()
-    print("[OK] Connected to robot")
 
-    return conn
-
-
-async def play_mp3_on_robot(conn, mp3_path: str):
-    if not os.path.isfile(mp3_path):
-        raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
-
-    print(f"[INFO] Playing MP3 on robot: {mp3_path}")
+    print(f"[INFO] Sending MP3 to robot: {mp3_path}")
 
     player = MediaPlayer(mp3_path)
     audio_track = player.audio
@@ -136,39 +132,33 @@ async def play_mp3_on_robot(conn, mp3_path: str):
 
     conn.pc.addTrack(audio_track)
 
-    print("[OK] Audio track added")
+    print("[OK] Audio track added to WebRTC connection")
 
-    # Wait until the MP3 has finished playing.
-    # This is an approximation. Increase if long texts are cut off.
-    await asyncio.sleep(5)
-
-
-async def input_loop(conn):
-    while True:
-        text = input("\nEnter text for the robot to say, or type 'q' to quit:\n> ").strip()
-
-        if text.lower() in ["q", "quit", "exit"]:
-            print("[INFO] Exiting.")
-            break
-
-        if not text:
-            print("[INFO] Empty text ignored.")
-            continue
-
-        try:
-            mp3_path = create_speech_mp3(text)
-            await play_mp3_on_robot(conn, mp3_path)
-
-        except Exception as e:
-            print(f"[ERROR] {e}")
+    await asyncio.sleep(3600)
 
 
 async def main():
-    check_dependencies()
+    try:
+        check_dependencies()
 
-    conn = await connect_to_robot()
+        text = input("Enter text for the robot to say: ").strip()
 
-    await input_loop(conn)
+        if not text:
+            print("[ERROR] No text entered.")
+            return
+
+        mp3_path = create_speech_mp3(text)
+
+        await send_mp3_to_robot(mp3_path)
+
+    except ValueError as e:
+        logging.error(f"An error occurred: {e}")
+
+    except FileNotFoundError as e:
+        logging.error(e)
+
+    except RuntimeError as e:
+        logging.error(e)
 
 
 if __name__ == "__main__":

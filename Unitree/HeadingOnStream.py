@@ -12,12 +12,29 @@ from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTC
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
 from ultralytics import YOLO
+from HeadingOnVideo import (
+    DEFAULT_BOTTOM_CONNECT_RATIO,
+    DEFAULT_BOTTOM_SEED_X_RATIO,
+    DEFAULT_LATERAL_STEP_RATIO,
+    DEFAULT_ROW_WEIGHT_POWER,
+    calculate_heading,
+    draw_row_transition_arrows,
+    draw_rowwise_midpoints,
+    draw_start_to_first_midpoint_arrow,
+    extract_rowwise_midpoints,
+    first_near_midpoint,
+    segmentation_mask_from_result,
+)
 
 MODEL_PATH = r"models/KaaiGang.pt"
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 PREDICTION_COLOR = (0, 255, 255)
 PREDICTION_ALPHA = 0.35
+ROW_WEIGHT_POWER = DEFAULT_ROW_WEIGHT_POWER
+LATERAL_STEP_RATIO = DEFAULT_LATERAL_STEP_RATIO
+BOTTOM_CONNECT_RATIO = DEFAULT_BOTTOM_CONNECT_RATIO
+BOTTOM_SEED_X_RATIO = DEFAULT_BOTTOM_SEED_X_RATIO
 
 model = YOLO(MODEL_PATH, verbose=False)
 
@@ -84,6 +101,23 @@ def draw_inference_time(img, total_ms):
     )
 
 
+def draw_heading_info(img, heading_angle, midpoint_count):
+    heading_text = "Heading: n/a"
+    if heading_angle is not None:
+        heading_text = f"Heading: {heading_angle:.1f} deg"
+
+    cv2.putText(
+        img,
+        f"{heading_text} | Midpoints: {midpoint_count}",
+        (10, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
+
+
 def draw_prediction_polygons(img, result):
     masks = getattr(result, "masks", None)
     if masks is None or masks.xy is None:
@@ -112,6 +146,29 @@ def draw_prediction_polygons(img, result):
         cv2.polylines(img, [points], True, PREDICTION_COLOR, 2, cv2.LINE_AA)
 
     return len(polygons)
+
+
+def draw_heading_arrows(img, result):
+    mask = segmentation_mask_from_result(
+        result,
+        img.shape[:2],
+        BOTTOM_CONNECT_RATIO,
+        BOTTOM_SEED_X_RATIO,
+    )
+    midpoints = extract_rowwise_midpoints(mask, SCAN_HEIGHTS) if mask is not None else []
+    heading_angle, _weighted_target, arrow_start = calculate_heading(
+        midpoints,
+        img.shape[:2],
+        ROW_WEIGHT_POWER,
+    )
+    first_midpoint = first_near_midpoint(midpoints)
+
+    draw_row_transition_arrows(img, midpoints, LATERAL_STEP_RATIO)
+    draw_rowwise_midpoints(img, midpoints)
+    draw_start_to_first_midpoint_arrow(img, arrow_start, first_midpoint)
+    draw_heading_info(img, heading_angle, len(midpoints))
+
+    return heading_angle, len(midpoints)
 
 
 def create_aruco_detector(dictionary_name):
@@ -335,6 +392,7 @@ def main():
                 result = model.predict(img, **predict_kwargs)[0]
                 total_ms = (time.perf_counter() - start) * 1000.0
                 polygon_count = draw_prediction_polygons(img, result)
+                heading_angle, midpoint_count = draw_heading_arrows(img, result)
                 draw_inference_time(img, total_ms)
 
 

@@ -13,7 +13,7 @@ from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
 from ultralytics import YOLO
 
-MODEL_PATH = r"models/unrealsim.pt"
+MODEL_PATH = r"models/KaaiGang.pt"
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 

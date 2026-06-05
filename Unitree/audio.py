@@ -109,44 +109,62 @@ def create_speech_mp3(text: str):
     return mp3_path, duration
 
 
-async def connect_to_robot():
-    conn = UnitreeWebRTCConnection(
-        WebRTCConnectionMethod.LocalSTA,
-        ip=ROBOT_IP
-    )
-
-    print("[INFO] Connecting to robot...")
-    await conn.connect()
-    print("[OK] Connected to robot")
-
-    return conn
-
-
-async def speak_mp3(conn, mp3_path: str, duration: float):
+async def send_mp3_to_robot(mp3_path: str, duration: float):
     if not os.path.isfile(mp3_path):
         raise FileNotFoundError(f"MP3 file not found: {mp3_path}")
 
-    print(f"[INFO] Sending MP3 to robot: {mp3_path}")
-
-    player = MediaPlayer(mp3_path)
-    audio_track = player.audio
-
-    if audio_track is None:
-        raise RuntimeError(f"No audio track found in file: {mp3_path}")
-
-    conn.pc.addTrack(audio_track)
-
-    print("[OK] Audio track added to WebRTC connection")
-    print("[INFO] Speaking...")
-
-    await asyncio.sleep(duration + 1.5)
+    conn = None
+    player = None
+    audio_track = None
 
     try:
-        audio_track.stop()
-    except Exception:
-        pass
+        conn = UnitreeWebRTCConnection(
+            WebRTCConnectionMethod.LocalSTA,
+            ip=ROBOT_IP
+        )
 
-    print("[OK] Speech finished")
+        print("[INFO] Connecting to robot...")
+        await conn.connect()
+        print("[OK] Connected to robot")
+
+        print(f"[INFO] Sending MP3 to robot: {mp3_path}")
+
+        player = MediaPlayer(mp3_path)
+        audio_track = player.audio
+
+        if audio_track is None:
+            raise RuntimeError(f"No audio track found in file: {mp3_path}")
+
+        conn.pc.addTrack(audio_track)
+
+        print("[OK] Audio track added to WebRTC connection")
+        print("[INFO] Speaking...")
+
+        await asyncio.sleep(duration + 1.5)
+
+        print("[OK] Speech finished")
+
+    finally:
+        if audio_track is not None:
+            try:
+                audio_track.stop()
+            except Exception:
+                pass
+
+        if player is not None:
+            try:
+                if hasattr(player, "stop"):
+                    player.stop()
+            except Exception:
+                pass
+
+        if conn is not None:
+            try:
+                print("[INFO] Closing robot connection...")
+                await conn.pc.close()
+                print("[OK] Robot connection closed")
+            except Exception:
+                pass
 
 
 async def async_input(prompt: str) -> str:
@@ -154,12 +172,8 @@ async def async_input(prompt: str) -> str:
 
 
 async def main():
-    conn = None
-
     try:
         check_dependencies()
-
-        conn = await connect_to_robot()
 
         while True:
             text = await async_input(
@@ -178,7 +192,7 @@ async def main():
 
             try:
                 mp3_path, duration = create_speech_mp3(text)
-                await speak_mp3(conn, mp3_path, duration)
+                await send_mp3_to_robot(mp3_path, duration)
 
             except Exception as e:
                 print(f"[ERROR] {e}")
@@ -191,14 +205,6 @@ async def main():
 
     except RuntimeError as e:
         logging.error(e)
-
-    finally:
-        if conn is not None:
-            try:
-                print("[INFO] Closing robot connection...")
-                await conn.pc.close()
-            except Exception:
-                pass
 
 
 if __name__ == "__main__":

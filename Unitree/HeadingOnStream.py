@@ -1,722 +1,420 @@
-from __future__ import annotations
+import cv2
+import numpy as np
 
 import argparse
 import asyncio
 import logging
+import os
 import threading
 import time
-from pathlib import Path
 from queue import Queue
-
-import cv2
-import numpy as np
-from aiortc import MediaStreamTrack
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
+from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
+from aiortc import MediaStreamTrack
+from ultralytics import YOLO
 
-try:
-    from ultralytics import YOLO
-except ImportError as exc:
-    raise SystemExit(
-        "Missing dependency: ultralytics. Install it with: pip install ultralytics"
-    ) from exc
+MODEL_PATH = r"models/unrealsim.pt"
+DETECTION_CONFIDENCE = 0.3
+SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
+model = YOLO(MODEL_PATH, verbose=False)
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_CANDIDATES = (
-    SCRIPT_DIR / "models" / "KaaiGang.pt",
-    SCRIPT_DIR.parent / "faceassist" / "models" / "KaaiGang.pt",
-    Path("/home/jetson/Models/KaaiGang.pt"),
-)
-DEFAULT_MODEL_PATH = next(
-    (path for path in DEFAULT_MODEL_CANDIDATES if path.exists()),
-    DEFAULT_MODEL_CANDIDATES[0],
-)
-DEFAULT_VIDEO_PATH = SCRIPT_DIR / "Videos" / "gangKaai.mp4"
-WINDOW_NAME = "Gang Kaai heading"
-DEFAULT_SCAN_HEIGHTS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
-DEFAULT_ROW_WEIGHT_POWER = 2.0
-DEFAULT_LATERAL_STEP_RATIO = 0.05
-DEFAULT_DISPLAY_SCALE = 1.0
-DEFAULT_BOTTOM_CONNECT_RATIO = 0.08
-DEFAULT_BOTTOM_SEED_X_RATIO = 0.5
+# Enable logging for debugging
+logging.basicConfig(level=logging.FATAL)
 
-# BGR colors for OpenCV.
-COLORS = (
-    (0, 255, 255),
-    (255, 0, 255),
-    (0, 180, 255),
-    (80, 220, 80),
-    (255, 140, 0),
-    (220, 120, 220),
-    (120, 220, 255),
-)
+ROBOT_IP = "unitree.local"
+ARUCO_DICTIONARY = "DICT_4X4_50"
+RECOVERY_DELAY_SECONDS = 3.0
+FOLLOW_MARKER_ID = 14
+FOLLOW_COMMAND_INTERVAL_SECONDS = 0.2
+FOLLOW_LOST_STOP_SECONDS = 1.0
+FOLLOW_FORWARD_GAIN = 0.45
+FOLLOW_TURN_GAIN = 0.8
+FOLLOW_MAX_FORWARD_SPEED = 0.35
+FOLLOW_MAX_TURN_SPEED = 0.8
+FOLLOW_SIZE_DEADBAND = 0.12
+FOLLOW_CENTER_DEADBAND = 0.12
+LIGHT_TOGGLE_MARKER_ID = 26
+LIGHT_BRIGHTNESS = 1
 
-
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
-        description="Show Ultralytics segmentation polygons and inference time."
+        description="Control the Unitree with ArUco markers from the WebRTC video stream."
     )
     parser.add_argument(
-        "--model",
-        default=str(DEFAULT_MODEL_PATH),
-        help=f"YOLO segmentation model path. Default: {DEFAULT_MODEL_PATH}",
-    )
-    parser.add_argument(
-        "--video",
-        default=str(DEFAULT_VIDEO_PATH),
-        help=f"Input video path. Default: {DEFAULT_VIDEO_PATH}",
-    )
-    parser.add_argument("--conf", type=float, default=0.25, help="Detection confidence.")
-    parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size.")
-    parser.add_argument(
-        "--device",
-        default=None,
-        help='Ultralytics device, for example "cpu", "0", or "0,1".',
-    )
-    parser.add_argument(
-        "--alpha", type=float, default=0.35, help="Mask fill opacity from 0.0 to 1.0."
-    )
-    parser.add_argument("--line-width", type=int, default=2, help="Polygon line width.")
-    parser.add_argument(
-        "--scan-heights",
-        default=",".join(str(value) for value in DEFAULT_SCAN_HEIGHTS),
-        help="Comma-separated row positions as frame-height ratios, for example 0.2,0.4,0.6.",
-    )
-    parser.add_argument(
-        "--row-weight-power",
-        type=float,
-        default=DEFAULT_ROW_WEIGHT_POWER,
-        help="How strongly lower scan rows steer the heading. Use 0 for equal weights.",
-    )
-    parser.add_argument(
-        "--lateral-step-ratio",
-        type=float,
-        default=DEFAULT_LATERAL_STEP_RATIO,
-        help="Frame-width ratio used to color row arrows as left, right, or straight.",
-    )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="Stop after this many frames. Use 0 to process the whole video.",
-    )
-    parser.add_argument("--loop", action="store_true", help="Loop the input video.")
-    parser.add_argument(
-        "--no-display",
+        "--preview",
         action="store_true",
-        help="Do not open an OpenCV window. Useful for quick smoke tests.",
-    )
-    parser.add_argument(
-        "--save-output",
-        default=None,
-        help="Optional path to save an annotated video.",
-    )
-    parser.add_argument(
-        "--display-scale",
-        type=float,
-        default=DEFAULT_DISPLAY_SCALE,
-        help="Scale factor for the preview window. This does not change inference or saved video size.",
-    )
-    parser.add_argument(
-        "--bottom-connect-ratio",
-        type=float,
-        default=DEFAULT_BOTTOM_CONNECT_RATIO,
-        help="Bottom frame-height ratio used to keep only ground-connected segmentation.",
-    )
-    parser.add_argument(
-        "--bottom-seed-x-ratio",
-        type=float,
-        default=DEFAULT_BOTTOM_SEED_X_RATIO,
-        help="Horizontal frame ratio used as the bottom seed. 0.5 means bottom center.",
+        help="Show the OpenCV video window. Without this, the script runs terminal-only.",
     )
     return parser.parse_args()
 
+ARUCO_ACTIONS = {
+    22: ("h / Hello", {"api_id": SPORT_CMD["Hello"]}, True),
+    23: ("x / Stretch", {"api_id": SPORT_CMD["Stretch"], "parameter": {"data": False}}, True),
+    24: ("y / Sit", {"api_id": 1009, "parameter": {"data": False}}, False),
+    25: ("t / Rize sit", {"api_id": 1010, "parameter": {"data": False}}, True),
+    26: ("toggle light", None, False),
+    27: ("g / Front Jump", {"api_id": 1031, "parameter": {"data": False}}, True),
+}
 
-def parse_scan_heights(value: str) -> list[float]:
-    heights = []
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        height = float(part)
-        if not 0.0 < height < 1.0:
-            raise ValueError(f"Scan height must be between 0 and 1: {height}")
-        heights.append(height)
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
 
-    if not heights:
-        raise ValueError("At least one scan height is required.")
-    return heights
-
-
-def class_name(names, class_id: int) -> str:
-    if isinstance(names, dict):
-        return str(names.get(class_id, class_id))
-    if isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
-        return str(names[class_id])
-    return str(class_id)
-
-
-def draw_text_block(frame: np.ndarray, lines: list[str], origin=(12, 28)) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.65
-    thickness = 2
-    line_gap = 8
-    padding = 8
-
-    sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in lines]
-    box_width = max(width for width, _ in sizes) + padding * 2
-    box_height = sum(height for _, height in sizes) + line_gap * (len(lines) - 1) + padding * 2
-
-    x, y = origin
-    cv2.rectangle(
-        frame,
-        (x - padding, y - sizes[0][1] - padding),
-        (x - padding + box_width, y - sizes[0][1] - padding + box_height),
-        (0, 0, 0),
-        -1,
-    )
-
-    cursor_y = y
-    for index, line in enumerate(lines):
-        cv2.putText(
-            frame,
-            line,
-            (x, cursor_y),
-            font,
-            scale,
-            (255, 255, 255),
-            thickness,
-            cv2.LINE_AA,
+def create_aruco_detector(dictionary_name):
+    if not hasattr(cv2, "aruco"):
+        raise RuntimeError(
+            "This OpenCV install has no cv2.aruco module. Install opencv-contrib-python."
         )
-        if index + 1 < len(lines):
-            cursor_y += sizes[index][1] + line_gap
 
+    dictionary_id = getattr(cv2.aruco, dictionary_name, None)
+    if dictionary_id is None:
+        raise RuntimeError(f"Unknown ArUco dictionary: {dictionary_name}")
 
-def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tuple[int, int, int]) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.55
-    thickness = 2
-    padding = 5
-
-    text_size, baseline = cv2.getTextSize(text, font, scale, thickness)
-    x = max(0, anchor[0])
-    y = max(text_size[1] + padding * 2, anchor[1])
-
-    cv2.rectangle(
-        frame,
-        (x, y - text_size[1] - padding * 2),
-        (x + text_size[0] + padding * 2, y + baseline),
-        color,
-        -1,
-    )
-    cv2.putText(
-        frame,
-        text,
-        (x + padding, y - padding),
-        font,
-        scale,
-        (0, 0, 0),
-        thickness,
-        cv2.LINE_AA,
-    )
-
-
-def result_arrays(result):
-    boxes = getattr(result, "boxes", None)
-    if boxes is None:
-        return [], []
-
-    classes = []
-    confidences = []
-    if boxes.cls is not None:
-        classes = boxes.cls.detach().cpu().numpy().astype(int).tolist()
-    if boxes.conf is not None:
-        confidences = boxes.conf.detach().cpu().numpy().tolist()
-    return classes, confidences
-
-
-def draw_segmentation_polygons(
-    frame: np.ndarray,
-    result,
-    alpha: float,
-    line_width: int,
-) -> int:
-    masks = getattr(result, "masks", None)
-    if masks is None or masks.xy is None:
-        return 0
-
-    height, width = frame.shape[:2]
-    overlay = frame.copy()
-    detections = []
-    classes, confidences = result_arrays(result)
-    names = getattr(result, "names", {})
-
-    for index, polygon in enumerate(masks.xy):
-        if polygon is None or len(polygon) < 3:
-            continue
-
-        points = np.round(polygon).astype(np.int32).reshape((-1, 1, 2))
-        points[:, 0, 0] = np.clip(points[:, 0, 0], 0, width - 1)
-        points[:, 0, 1] = np.clip(points[:, 0, 1], 0, height - 1)
-
-        class_id = classes[index] if index < len(classes) else index
-        confidence = confidences[index] if index < len(confidences) else None
-        color = COLORS[class_id % len(COLORS)]
-
-        cv2.fillPoly(overlay, [points], color)
-        detections.append((points, class_id, confidence, color))
-
-    alpha = min(1.0, max(0.0, alpha))
-    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, dst=frame)
-
-    for points, class_id, confidence, color in detections:
-        cv2.polylines(frame, [points], True, color, line_width, cv2.LINE_AA)
-        min_x = int(points[:, 0, 0].min())
-        min_y = int(points[:, 0, 1].min())
-        label = class_name(names, class_id)
-        if confidence is not None:
-            label = f"{label} {confidence:.2f}"
-        draw_label(frame, label, (min_x, min_y), color)
-
-    return len(detections)
-
-
-def keep_bottom_connected_components(
-    mask: np.ndarray,
-    bottom_connect_ratio: float = DEFAULT_BOTTOM_CONNECT_RATIO,
-    bottom_seed_x_ratio: float = DEFAULT_BOTTOM_SEED_X_RATIO,
-) -> np.ndarray | None:
-    binary_mask = (mask > 0).astype(np.uint8)
-    if cv2.countNonZero(binary_mask) == 0:
-        return None
-
-    height, width = binary_mask.shape[:2]
-    bottom_rows = max(1, int(height * max(bottom_connect_ratio, 0.001)))
-    bottom_start = max(0, height - bottom_rows)
-    seed_x = int(np.clip(bottom_seed_x_ratio, 0.0, 1.0) * (width - 1))
-
-    label_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
-        binary_mask,
-        connectivity=8,
-    )
-    if label_count <= 1:
-        return None
-
-    bottom_labels = np.unique(labels[bottom_start:, :][binary_mask[bottom_start:, :] > 0])
-    bottom_labels = bottom_labels[bottom_labels != 0]
-    if len(bottom_labels) == 0:
-        return None
-
-    best_label = None
-    best_score = None
-    for label in bottom_labels:
-        bottom_y, bottom_x = np.where(labels[bottom_start:, :] == label)
-        if len(bottom_x) == 0:
-            continue
-
-        x_distance = int(np.min(np.abs(bottom_x - seed_x)))
-        area = int(stats[label, cv2.CC_STAT_AREA])
-        score = (x_distance, -area)
-        if best_score is None or score < best_score:
-            best_label = label
-            best_score = score
-
-    if best_label is None:
-        return None
-
-    connected_mask = (labels == best_label).astype(np.uint8) * 255
-    return connected_mask
-
-
-def segmentation_mask_from_result(
-    result,
-    frame_size: tuple[int, int],
-    bottom_connect_ratio: float = DEFAULT_BOTTOM_CONNECT_RATIO,
-    bottom_seed_x_ratio: float = DEFAULT_BOTTOM_SEED_X_RATIO,
-) -> np.ndarray | None:
-    masks = getattr(result, "masks", None)
-    if masks is None or masks.data is None or len(masks.data) == 0:
-        return None
-
-    height, width = frame_size
-    mask_data = masks.data.detach().cpu().numpy()
-    merged_mask = np.any(mask_data > 0.5, axis=0).astype(np.uint8) * 255
-    resized_mask = cv2.resize(merged_mask, (width, height), interpolation=cv2.INTER_NEAREST)
-    return keep_bottom_connected_components(
-        resized_mask,
-        bottom_connect_ratio,
-        bottom_seed_x_ratio,
-    )
-
-
-def contours_from_mask(mask: np.ndarray | None) -> list[np.ndarray]:
-    if mask is None:
-        return []
-    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return [contour for contour in contours if cv2.contourArea(contour) > 10.0]
-
-
-def count_mask_contours(mask: np.ndarray | None) -> int:
-    return len(contours_from_mask(mask))
-
-
-def draw_connected_mask_contours(
-    frame: np.ndarray,
-    mask: np.ndarray | None,
-    alpha: float,
-    line_width: int,
-) -> int:
-    contours = contours_from_mask(mask)
-    if not contours:
-        return 0
-
-    overlay = frame.copy()
-    color = (0, 255, 255)
-    cv2.drawContours(overlay, contours, -1, color, cv2.FILLED)
-    alpha = min(1.0, max(0.0, alpha))
-    cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, dst=frame)
-    cv2.drawContours(frame, contours, -1, color, line_width, cv2.LINE_AA)
-    return len(contours)
-
-
-def extract_rowwise_midpoints(mask: np.ndarray, scan_heights: list[float]) -> list[tuple[int, int]]:
-    height = mask.shape[0]
-    midpoints = []
-
-    for row_ratio in scan_heights:
-        y = int(height * row_ratio)
-        if y >= height:
-            continue
-
-        filled_x = np.where(mask[y, :] > 0)[0]
-        if len(filled_x) == 0:
-            continue
-
-        midpoints.append((int(np.mean(filled_x)), y))
-
-    return midpoints
-
-
-def calculate_heading(
-    midpoints: list[tuple[int, int]],
-    frame_size: tuple[int, int],
-    row_weight_power: float,
-) -> tuple[float | None, tuple[int, int] | None, tuple[int, int]]:
-    height, width = frame_size
-    start = (width // 2, height - 1)
-    if not midpoints:
-        return None, None, start
-
-    y_positions = np.array([point[1] for point in midpoints], dtype=np.float32)
-    x_positions = np.array([point[0] for point in midpoints], dtype=np.float32)
-    if row_weight_power <= 0:
-        weights = np.ones_like(y_positions)
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
     else:
-        weights = np.power(np.maximum(y_positions / max(height - 1, 1), 0.001), row_weight_power)
+        dictionary = cv2.aruco.Dictionary_get(dictionary_id)
 
-    target = (
-        int(np.average(x_positions, weights=weights)),
-        min(point[1] for point in midpoints),
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        parameters = cv2.aruco.DetectorParameters()
+    else:
+        parameters = cv2.aruco.DetectorParameters_create()
+
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        return lambda frame: detector.detectMarkers(frame)
+
+    return lambda frame: cv2.aruco.detectMarkers(
+        frame,
+        dictionary,
+        parameters=parameters,
     )
-    dx = target[0] - start[0]
-    dy = start[1] - target[1]
-    angle = float(np.degrees(np.arctan2(dy, dx)))
-    return angle, target, start
 
+def detect_and_draw_aruco(img, detect_markers):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, ids, _rejected = detect_markers(gray)
 
-def order_midpoints_near_to_far(midpoints: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    return sorted(midpoints, key=lambda point: point[1], reverse=True)
+    if ids is None:
+        return [], {}
 
+    cv2.aruco.drawDetectedMarkers(img, corners, ids)
+    marker_ids = [int(marker_id[0]) for marker_id in ids]
+    marker_info = {}
 
-def first_near_midpoint(midpoints: list[tuple[int, int]]) -> tuple[int, int] | None:
-    ordered_points = order_midpoints_near_to_far(midpoints)
-    if not ordered_points:
-        return None
-    return ordered_points[0]
-
-
-def lateral_step_pixels(frame_width: int, lateral_step_ratio: float) -> float:
-    return max(1.0, frame_width * max(lateral_step_ratio, 0.001))
-
-
-def segment_angle_degrees(start: tuple[int, int], end: tuple[int, int]) -> float:
-    dx = end[0] - start[0]
-    dy = start[1] - end[1]
-    return float(np.degrees(np.arctan2(dy, dx)))
-
-
-def create_row_angle_plan(
-    midpoints: list[tuple[int, int]],
-    start_point: tuple[int, int] | None = None,
-) -> tuple[str, list[float]]:
-    ordered_points = order_midpoints_near_to_far(midpoints)
-    if start_point is not None:
-        ordered_points = [start_point, *ordered_points]
-
-    if len(ordered_points) < 2:
-        return "Rows: n/a", []
-
-    angles = [
-        segment_angle_degrees(start, end)
-        for start, end in zip(ordered_points, ordered_points[1:])
-    ]
-    angle_text = ", ".join(
-        f"{index}={angle:.1f}"
-        for index, angle in enumerate(angles, start=1)
-    )
-    return f"Rows: {angle_text} deg", angles
-
-
-def draw_row_transition_arrows(
-    frame: np.ndarray,
-    midpoints: list[tuple[int, int]],
-    lateral_step_ratio: float,
-) -> None:
-    ordered_points = order_midpoints_near_to_far(midpoints)
-    if len(ordered_points) < 2:
-        return
-
-    step_px = lateral_step_pixels(frame.shape[1], lateral_step_ratio)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    for index, (start, end) in enumerate(zip(ordered_points, ordered_points[1:]), start=1):
-        dx = end[0] - start[0]
-        if dx > step_px * 0.5:
-            color = (0, 165, 255)
-        elif dx < -step_px * 0.5:
-            color = (255, 180, 0)
-        else:
-            color = (0, 255, 255)
-
-        cv2.arrowedLine(frame, start, end, color, 3, cv2.LINE_AA, tipLength=0.28)
-
-        label_x = int((start[0] + end[0]) / 2)
-        label_y = int((start[1] + end[1]) / 2)
-        label = str(index)
-        text_size, baseline = cv2.getTextSize(label, font, 0.5, 2)
-        cv2.rectangle(
-            frame,
-            (label_x - 6, label_y - text_size[1] - 6),
-            (label_x + text_size[0] + 6, label_y + baseline + 4),
-            color,
-            -1,
-        )
+    for marker_id, marker_corners in zip(marker_ids, corners):
+        points = marker_corners.reshape((4, 2)).astype(int)
+        center_x = int(points[:, 0].mean())
+        center_y = int(points[:, 1].mean())
+        side_lengths = [
+            np.linalg.norm(points[0] - points[1]),
+            np.linalg.norm(points[1] - points[2]),
+            np.linalg.norm(points[2] - points[3]),
+            np.linalg.norm(points[3] - points[0]),
+        ]
+        marker_info[marker_id] = {
+            "center_x": center_x,
+            "center_y": center_y,
+            "side_px": float(np.mean(side_lengths)),
+        }
         cv2.putText(
-            frame,
-            label,
-            (label_x, label_y),
-            font,
-            0.5,
-            (0, 0, 0),
+            img,
+            f"ID {marker_id}",
+            (center_x - 30, center_y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
             2,
             cv2.LINE_AA,
         )
+        if marker_id in ARUCO_ACTIONS:
+            action_name, _payload, _needs_recovery = ARUCO_ACTIONS[marker_id]
+            cv2.putText(
+                img,
+                action_name,
+                (center_x - 55, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        if marker_id == FOLLOW_MARKER_ID:
+            cv2.putText(
+                img,
+                "follow",
+                (center_x - 35, center_y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
+    return marker_ids, marker_info
 
-def draw_rowwise_midpoints(frame: np.ndarray, midpoints: list[tuple[int, int]]) -> None:
-    if not midpoints:
-        return
-
-    height, width = frame.shape[:2]
-    ordered_points = order_midpoints_near_to_far(midpoints)
-
-    for x, y in ordered_points:
-        cv2.line(frame, (0, y), (width - 1, y), (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.circle(frame, (x, y), 6, (0, 0, 255), -1, cv2.LINE_AA)
-        cv2.circle(frame, (x, y), 8, (255, 255, 255), 2, cv2.LINE_AA)
-
-
-def draw_start_to_first_midpoint_arrow(
-    frame: np.ndarray,
-    start: tuple[int, int],
-    target: tuple[int, int] | None,
-) -> None:
-    if target is None:
-        return
-
-    cv2.arrowedLine(frame, start, target, (0, 255, 0), 4, cv2.LINE_AA, tipLength=0.25)
-    cv2.circle(frame, start, 7, (0, 255, 0), -1, cv2.LINE_AA)
-
-
-def create_video_writer(
-    output_path: Path,
-    fps: float,
-    frame_size: tuple[int, int],
-) -> cv2.VideoWriter:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    suffix = output_path.suffix.lower()
-    fourcc = cv2.VideoWriter_fourcc(*("mp4v" if suffix != ".avi" else "XVID"))
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps, frame_size)
-    if not writer.isOpened():
-        raise RuntimeError(f"Could not open output video for writing: {output_path}")
-    return writer
-
-
-def resize_for_display(frame: np.ndarray, display_scale: float) -> np.ndarray:
-    if abs(display_scale - 1.0) < 0.001:
-        return frame
-    return cv2.resize(
-        frame,
-        None,
-        fx=display_scale,
-        fy=display_scale,
-        interpolation=cv2.INTER_LINEAR,
+async def send_move(conn, x=0, y=0, z=0):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {
+            "api_id": SPORT_CMD["Move"],
+            "parameter": {"x": x, "y": y, "z": z},
+        },
     )
 
+async def send_light(conn, brightness):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["VUI"],
+        {
+            "api_id": 1005,
+            "parameter": {"brightness": brightness},
+        },
+    )
 
-def main() -> int:
+async def send_action(conn, payload, needs_recovery):
+    action_error = None
+
+    try:
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            payload,
+        )
+    except Exception as exc:
+        action_error = exc
+
+    if needs_recovery:
+        await asyncio.sleep(RECOVERY_DELAY_SECONDS)
+
+        recovery_payload = {
+            "api_id": SPORT_CMD["RecoveryStand"],
+            "parameter": {"data": False},
+        }
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"],
+            recovery_payload,
+        )
+
+    if action_error is not None:
+        raise action_error
+
+def report_action_result(future, marker_id, action_name, needs_recovery, action_state):
+    try:
+        future.result()
+        recovery_text = " + RecoveryStand" if needs_recovery else ""
+        print(f"Action completed: marker {marker_id} ({action_name}){recovery_text}", flush=True)
+    except Exception as exc:
+        print(
+            f"Action failed for marker {marker_id} ({action_name}): {exc}",
+            flush=True,
+        )
+    finally:
+        action_state["in_progress"] = False
+
+def report_move_result(future):
+    try:
+        future.result()
+    except Exception as exc:
+        print(f"Follow move failed: {exc}", flush=True)
+
+def report_light_result(future, brightness, light_state, action_state):
+    try:
+        future.result()
+        light_state["on"] = brightness > 0
+        status = "on" if light_state["on"] else "off"
+        print(f"Light toggled {status}", flush=True)
+    except Exception as exc:
+        print(f"Light toggle failed: {exc}", flush=True)
+    finally:
+        action_state["in_progress"] = False
+
+def stop_follow_marker(conn, loop, follow_state):
+    if follow_state["active"]:
+        asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+        follow_state["active"] = False
+        follow_state["target_side_px"] = None
+        print("Follow marker paused: stop", flush=True)
+
+def update_follow_marker(conn, loop, img, marker_info, follow_state):
+    marker = marker_info.get(FOLLOW_MARKER_ID)
+    now = time.time()
+
+    if marker is None:
+        if follow_state["active"] and now - follow_state["last_seen_at"] >= FOLLOW_LOST_STOP_SECONDS:
+            asyncio.run_coroutine_threadsafe(send_move(conn), loop).add_done_callback(report_move_result)
+            follow_state["active"] = False
+            follow_state["target_side_px"] = None
+            print("Follow marker lost: stop", flush=True)
+        return
+
+    follow_state["active"] = True
+    follow_state["last_seen_at"] = now
+
+    if follow_state["target_side_px"] is None:
+        follow_state["target_side_px"] = marker["side_px"]
+        print(
+            f"Follow marker {FOLLOW_MARKER_ID}: target size set to "
+            f"{follow_state['target_side_px']:.1f}px",
+            flush=True,
+        )
+
+    if now - follow_state["last_command_at"] < FOLLOW_COMMAND_INTERVAL_SECONDS:
+        return
+
+    target_side = follow_state["target_side_px"]
+    current_side = marker["side_px"]
+    size_error = (target_side - current_side) / max(target_side, 1.0)
+    center_error = (marker["center_x"] - (img.shape[1] / 2)) / (img.shape[1] / 2)
+
+    x_speed = 0 if abs(size_error) < FOLLOW_SIZE_DEADBAND else size_error * FOLLOW_FORWARD_GAIN
+    z_speed = 0 if abs(center_error) < FOLLOW_CENTER_DEADBAND else -center_error * FOLLOW_TURN_GAIN
+
+    x_speed = clamp(x_speed, -FOLLOW_MAX_FORWARD_SPEED, FOLLOW_MAX_FORWARD_SPEED)
+    z_speed = clamp(z_speed, -FOLLOW_MAX_TURN_SPEED, FOLLOW_MAX_TURN_SPEED)
+
+    future = asyncio.run_coroutine_threadsafe(send_move(conn, x=x_speed, z=z_speed), loop)
+    future.add_done_callback(report_move_result)
+    follow_state["last_command_at"] = now
+
+def main():
     args = parse_args()
-    scan_heights = parse_scan_heights(args.scan_heights)
-    display_scale = max(args.display_scale, 0.1)
-
-    model_path = Path(args.model).expanduser()
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model not found: {model_path}")
-
     frame_queue = Queue()
-
-    logging.basicConfig(level=logging.FATAL)
-    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
-    writer = None
-
-    height, width = 720, 1280
-    img = np.zeros((height, width, 3), dtype=np.uint8)
-    cv2.imshow(WINDOW_NAME, img)
-    cv2.waitKey(1)
-
-    if not args.no_display:
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-
-    predict_kwargs = {
-        "conf": args.conf,
-        "imgsz": args.imgsz,
-        "verbose": False,
+    detect_markers = create_aruco_detector(ARUCO_DICTIONARY)
+    last_printed_ids = None
+    executed_marker_ids = set()
+    action_state = {"in_progress": False}
+    light_state = {"on": False}
+    previous_marker_ids = set()
+    follow_state = {
+        "active": False,
+        "target_side_px": None,
+        "last_seen_at": 0,
+        "last_command_at": 0,
     }
-    if args.device:
-        predict_kwargs["device"] = args.device
 
+    # Choose a connection method (uncomment the correct one)
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
+
+    # Async function to receive video frames and put them in the queue
     async def recv_camera_stream(track: MediaStreamTrack):
         while True:
             frame = await track.recv()
+            # Convert the frame to a NumPy array
             img = frame.to_ndarray(format="bgr24")
             frame_queue.put(img)
 
     def run_asyncio_loop(loop):
         asyncio.set_event_loop(loop)
-
         async def setup():
             try:
+                # Connect to the device
                 await conn.connect()
+
+                # Switch video channel on and start receiving video frames
                 conn.video.switchVideoChannel(True)
+
+                # Add callback to handle received video frames
                 conn.video.add_track_callback(recv_camera_stream)
             except Exception as e:
                 logging.error(f"Error in WebRTC connection: {e}")
 
+        # Run the setup coroutine and then start the event loop
         loop.run_until_complete(setup())
         loop.run_forever()
 
+    # Create a new event loop for the asyncio code
     loop = asyncio.new_event_loop()
+
+    # Start the asyncio event loop in a separate thread
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
 
-    model = None
-
-    frame_index = 0
-
     try:
         while True:
-            if frame_queue.empty():
-                time.sleep(0.01)
-                continue
+            if not frame_queue.empty():
+                img = frame_queue.get()
 
-            frame = frame_queue.get()
+                results = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)
 
-            if model is None:
-                model = YOLO(str(model_path), verbose=False)
 
-            if writer is None and args.save_output:
-                writer = create_video_writer(
-                    Path(args.save_output).expanduser(),
-                    30.0,
-                    (frame.shape[1], frame.shape[0]),
-                )
+                marker_ids, marker_info = detect_and_draw_aruco(img, detect_markers)
+                if marker_ids != last_printed_ids:
+                    print(f"ArUco markers: {marker_ids}", flush=True)
+                    last_printed_ids = marker_ids
 
-            start = time.perf_counter()
-            result = model.predict(frame, **predict_kwargs)[0]
-            total_ms = (time.perf_counter() - start) * 1000.0
-            inference_ms = result.speed.get("inference", total_ms) if result.speed else total_ms
+                current_marker_ids = set(marker_ids)
+                if (
+                    not action_state["in_progress"]
+                    and LIGHT_TOGGLE_MARKER_ID in current_marker_ids
+                    and LIGHT_TOGGLE_MARKER_ID not in previous_marker_ids
+                ):
+                    action_state["in_progress"] = True
+                    brightness = 0 if light_state["on"] else LIGHT_BRIGHTNESS
+                    future = asyncio.run_coroutine_threadsafe(
+                        send_light(conn, brightness),
+                        loop,
+                    )
+                    future.add_done_callback(
+                        lambda done, seen_brightness=brightness: report_light_result(
+                            done,
+                            seen_brightness,
+                            light_state,
+                            action_state,
+                        )
+                    )
+                    stop_follow_marker(conn, loop, follow_state)
+                    print("Action triggered: marker 26 -> toggle light", flush=True)
 
-            mask = segmentation_mask_from_result(
-                result,
-                frame.shape[:2],
-                args.bottom_connect_ratio,
-                args.bottom_seed_x_ratio,
-            )
-            contour_count = draw_connected_mask_contours(
-                frame,
-                mask,
-                alpha=args.alpha,
-                line_width=args.line_width,
-            )
-            midpoints = extract_rowwise_midpoints(mask, scan_heights) if mask is not None else []
-            heading_angle, _weighted_target, arrow_start = calculate_heading(
-                midpoints,
-                frame.shape[:2],
-                args.row_weight_power,
-            )
-            first_midpoint = first_near_midpoint(midpoints)
-            row_angle_plan, row_angles = create_row_angle_plan(midpoints, arrow_start)
+                if not action_state["in_progress"]:
+                    marker_id = next(
+                        (
+                            current_id for current_id in sorted(marker_ids)
+                            if current_id in ARUCO_ACTIONS
+                            and current_id != LIGHT_TOGGLE_MARKER_ID
+                            and current_id not in executed_marker_ids
+                        ),
+                        None,
+                    )
+                    if marker_id is not None:
+                        executed_marker_ids.add(marker_id)
+                        action_state["in_progress"] = True
+                        action_name, payload, needs_recovery = ARUCO_ACTIONS[marker_id]
+                        future = asyncio.run_coroutine_threadsafe(
+                            send_action(conn, payload.copy(), needs_recovery),
+                            loop,
+                        )
+                        future.add_done_callback(
+                            lambda done, seen_id=marker_id, seen_action=action_name, seen_recovery=needs_recovery: report_action_result(
+                                done,
+                                seen_id,
+                                seen_action,
+                                seen_recovery,
+                                action_state,
+                            )
+                        )
+                        print(
+                            f"Action triggered once: marker {marker_id} -> {action_name}",
+                            flush=True,
+                        )
+                        stop_follow_marker(conn, loop, follow_state)
 
-            draw_row_transition_arrows(frame, midpoints, args.lateral_step_ratio)
-            draw_rowwise_midpoints(frame, midpoints)
-            draw_start_to_first_midpoint_arrow(frame, arrow_start, first_midpoint)
-
-            heading_text = "Heading: n/a"
-            if heading_angle is not None:
-                heading_text = f"Heading: {heading_angle:.1f} deg"
-
-            draw_text_block(
-                frame,
-                [
-                    f"Inference: {inference_ms:.1f} ms",
-                    f"Total: {total_ms:.1f} ms | Ground contours: {contour_count}",
-                    f"{heading_text} | Midpoints: {len(midpoints)} | Weight: {args.row_weight_power:g}",
-                    row_angle_plan,
-                ],
-            )
-
-            if writer is not None:
-                writer.write(frame)
-
-            if args.no_display:
-                print(
-                    f"frame={frame_index} inference_ms={inference_ms:.1f} "
-                    f"total_ms={total_ms:.1f} ground_contours={contour_count} "
-                    f"heading={heading_angle if heading_angle is not None else 'n/a'} "
-                    f"midpoints={len(midpoints)} "
-                    f"row_angles={[round(angle, 1) for angle in row_angles]} "
-                    f"row_weight_power={args.row_weight_power:g}",
-                    flush=True,
-                )
+                if not action_state["in_progress"]:
+                    update_follow_marker(conn, loop, img, marker_info, follow_state)
+                previous_marker_ids = current_marker_ids
+                if args.preview:
+                    cv2.imshow('Video', img)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
             else:
-                cv2.imshow(WINDOW_NAME, resize_for_display(frame, display_scale))
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
-                    break
-
-            frame_index += 1
-            if args.max_frames > 0 and frame_index >= args.max_frames:
-                break
+                # Sleep briefly to prevent high CPU usage
+                time.sleep(0.01)
     finally:
-        if writer is not None:
-            writer.release()
-        if not args.no_display:
+        if args.preview:
             cv2.destroyAllWindows()
+        # Stop the asyncio event loop
         loop.call_soon_threadsafe(loop.stop)
         asyncio_thread.join()
 
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

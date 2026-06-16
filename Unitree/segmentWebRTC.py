@@ -146,6 +146,33 @@ def main():
         while True:
             if not frame_queue.empty():
                 img = frame_queue.get()
+                print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
+                # Display the frame
+                cv2.imshow('Video', img)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            else:
+                # Sleep briefly to prevent high CPU usage
+                time.sleep(0.01)
+
+
+
+    finally:
+        cv2.destroyAllWindows()
+        # Stop the asyncio event loop
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio_thread.join()
+
+
+if __name__ == "__main__":
+    main()
+
+
+"""
+    try:
+        while True:
+            if not frame_queue.empty():
+                img = frame_queue.get()
                 if model is None:
                     from ultralytics import YOLO
 
@@ -162,12 +189,4 @@ def main():
             else:
                 # Sleep briefly to prevent high CPU usage
                 time.sleep(0.01)
-    finally:
-        cv2.destroyAllWindows()
-        # Stop the asyncio event loop
-        loop.call_soon_threadsafe(loop.stop)
-        asyncio_thread.join()
-
-
-if __name__ == "__main__":
-    main()
+"""

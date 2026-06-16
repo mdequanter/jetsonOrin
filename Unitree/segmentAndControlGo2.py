@@ -34,6 +34,7 @@ SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 TARGET_HEADING = 90.0
 HEADING_DEADBAND = 2.0
+FORWARD_SPEED = 0.1
 TURN_SPEED = 0.3
 COMMAND_INTERVAL_SECONDS = 0.25
 
@@ -106,12 +107,21 @@ async def send_move(conn, x=0, y=0, z=0):
 
 
 def turn_speed_for_heading(heading):
+    if heading == TARGET_HEADING:
+        return 0.0
+
     error = heading - TARGET_HEADING
     if abs(error) <= HEADING_DEADBAND:
         return 0.0
     if heading < TARGET_HEADING:
         return -TURN_SPEED
     return TURN_SPEED
+
+
+def forward_speed_for_heading(heading):
+    if heading == TARGET_HEADING:
+        return 0.0
+    return FORWARD_SPEED
 
 
 def report_move_result(future):
@@ -122,7 +132,7 @@ def report_move_result(future):
 
 def main():
     frame_queue = Queue()
-    command_state = {"last_sent_at": 0.0, "last_z": None}
+    command_state = {"last_sent_at": 0.0, "last_command": None}
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
@@ -169,20 +179,25 @@ def main():
             if not frame_queue.empty():
                 img = frame_queue.get()
                 heading = compute_heading(img, model)
+                x_speed = forward_speed_for_heading(heading)
                 z_speed = turn_speed_for_heading(heading)
-                print(f"Heading: {heading:.2f} deg, turn_z={z_speed:.2f}")
+                print(
+                    f"Heading: {heading:.2f} deg, "
+                    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
+                )
 
                 now = time.monotonic()
                 command_due = now - command_state["last_sent_at"] >= COMMAND_INTERVAL_SECONDS
-                command_changed = z_speed != command_state["last_z"]
+                command = (x_speed, z_speed)
+                command_changed = command != command_state["last_command"]
                 if command_due or command_changed:
                     future = asyncio.run_coroutine_threadsafe(
-                        send_move(conn, z=z_speed),
+                        send_move(conn, x=x_speed, z=z_speed),
                         loop,
                     )
                     future.add_done_callback(report_move_result)
                     command_state["last_sent_at"] = now
-                    command_state["last_z"] = z_speed
+                    command_state["last_command"] = command
 
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

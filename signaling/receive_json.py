@@ -1,14 +1,12 @@
 import asyncio
 import websockets
 import json
-import ssl
 import argparse
 
-DEFAULT_SERVER = "wss://signaling.ehb.be"
+DEFAULT_SERVER = "ws://jetson-desktop:9000"
 DEFAULT_ROOM = "/ws/testroom"
-BEARER_TOKEN = "LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw"
 
-async def receive_messages(server, room, use_tls):
+async def receive_messages(server, room):
 
     uri = server.rstrip("/") + room
 
@@ -16,22 +14,9 @@ async def receive_messages(server, room, use_tls):
     print("Server :", server)
     print("Room   :", room)
 
-    #ssl_context = None
-    ssl_context = ssl.create_default_context()
-
     async with websockets.connect(
         uri,
-        ssl=ssl_context,
-        origin="http://localhost",
         compression=None,
-        extra_headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/121.0.0.0 Safari/537.36"
-            ),
-            "Authorization": f"Bearer {BEARER_TOKEN}",
-        },
     ) as websocket:
 
         print(f"✅ Connected to signaling server ({uri})")
@@ -72,16 +57,9 @@ def main():
         help=f"Room path (default: {DEFAULT_ROOM})"
     )
 
-
-    parser.add_argument(
-        "--tls",
-        action="store_true",
-        help="Enable TLS (for wss://)"
-    )
-
     args = parser.parse_args()
 
-    asyncio.run(receive_messages(args.server, args.room, args.tls))
+    asyncio.run(receive_messages(args.server, args.room))
 
 
 if __name__ == "__main__":

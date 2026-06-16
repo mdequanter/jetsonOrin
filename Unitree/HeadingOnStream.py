@@ -26,7 +26,7 @@ from HeadingOnVideo import (
     segmentation_mask_from_result,
 )
 
-MODEL_PATH = r"models/KaaiGang.pt"
+MODEL_PATH = r"/home/jetson/jetsonOrin/signaling/models/denham.pt"
 DETECTION_CONFIDENCE = 0.3
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 PREDICTION_COLOR = (0, 255, 255)

@@ -35,14 +35,6 @@ ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 model = YOLO("/home/jetson/jetsonOrin/signaling/models/laerbeekbos.pt", verbose=False)
 
 
-def resolve_model_path():
-    for model_path in MODEL_CANDIDATES:
-        if model_path.exists():
-            return model_path
-    searched = "\n".join(str(path) for path in MODEL_CANDIDATES)
-    raise FileNotFoundError(f"Could not find learbeekbos/laerbeekbos model. Searched:\n{searched}")
-
-
 def get_allowed_mask_indices(result, model_names):
     if result.boxes is None or result.boxes.cls is None:
         return []

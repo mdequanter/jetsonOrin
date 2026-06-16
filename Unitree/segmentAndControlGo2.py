@@ -32,7 +32,7 @@ FORWARD_SPEED = 0.5
 TURN_SPEED = 0.3
 COMMAND_INTERVAL_SECONDS = 0.25
 
-model = YOLO("/home/jetson/jetsonOrin/signaling/models/thuis.pt", verbose=False)
+model = YOLO("/home/jetson/jetsonOrin/signaling/models/denham.pt", verbose=False)
 
 
 def get_allowed_mask_indices(result, model_names):

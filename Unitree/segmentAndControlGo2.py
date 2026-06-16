@@ -36,7 +36,7 @@ TARGET_HEADING = 90.0
 HEADING_DEADBAND = 2.0
 FORWARD_SPEED = 0.5
 TURN_SPEED = 0.3
-COMMAND_INTERVAL_SECONDS = 0.5
+COMMAND_INTERVAL_SECONDS = 0.25
 
 model = YOLO("/home/jetson/jetsonOrin/signaling/models/thuis.pt", verbose=False)
 
@@ -181,10 +181,10 @@ def main():
                 heading = compute_heading(img, model)
                 x_speed = forward_speed_for_heading(heading)
                 z_speed = turn_speed_for_heading(heading)
-                print(
-                    f"Heading: {heading:.2f} deg, "
-                    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
-                )
+                #print(
+                #    f"Heading: {heading:.2f} deg, "
+                #    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
+                #)
 
                 now = time.monotonic()
                 command_due = now - command_state["last_sent_at"] >= COMMAND_INTERVAL_SECONDS

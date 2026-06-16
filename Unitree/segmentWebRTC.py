@@ -16,6 +16,14 @@ from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTC
 from aiortc import MediaStreamTrack
 from pathlib import Path
 
+try:
+    from ultralytics import YOLO
+except ImportError as exc:
+    raise SystemExit(
+        "Missing dependency: ultralytics. Install it with: pip install ultralytics"
+    ) from exc
+
+
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
@@ -23,12 +31,8 @@ logging.basicConfig(level=logging.FATAL)
 DETECTION_CONFIDENCE = 0.8
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
-MODEL_CANDIDATES = [
-    Path(__file__).resolve().parent.parent / "signaling" / "models" / "laerbeekbos.pt",
-    Path(__file__).resolve().parent.parent / "faceassist" / "models" / "laerbeekbos.pt",
-    Path("learbeekbos.pt"),
-    Path("laerbeekbos.pt"),
-]
+
+model = YOLO("signaling/models/laerbeekbos.pt", verbose=False)
 
 
 def resolve_model_path():
@@ -142,13 +146,6 @@ def main():
                 img = frame_queue.get()
                 print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
                 # Display the frame
-
-
-                if model is None:
-                    from ultralytics import YOLO
-
-                    model_path = resolve_model_path()
-                    model = YOLO(str(model_path), verbose=False)
 
                 heading = compute_heading(img, model)
                 print(f"Heading: {heading:.2f} deg")

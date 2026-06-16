@@ -98,8 +98,8 @@ def main():
     frame_queue = Queue(maxsize=1)
 
     height, width = 720, 1280
-    cv2.imshow(WINDOW_NAME, np.zeros((height, width, 3), dtype=np.uint8))
-    cv2.waitKey(1)
+    #cv2.imshow(WINDOW_NAME, np.zeros((height, width, 3), dtype=np.uint8))
+    #cv2.waitKey(1)
 
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
 

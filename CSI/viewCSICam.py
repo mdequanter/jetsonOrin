@@ -1,44 +1,58 @@
-#!/usr/bin/env python3
-import argparse
-import subprocess
-import sys
+import cv2
 
 
-def build_command(sensor_id=0, width=1280, height=720, framerate=30):
-    return [
-        "gst-launch-1.0",
-        "nvarguscamerasrc",
-        f"sensor-id={sensor_id}",
-        "!",
-        f"video/x-raw(memory:NVMM),width={width},height={height},framerate={framerate}/1",
-        "!",
-        "nvvidconv",
-        "!",
-        "nveglglessink",
-    ]
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Show the Jetson CSI camera preview.")
-    parser.add_argument("--sensor-id", type=int, default=0)
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--framerate", type=int, default=30)
-    args = parser.parse_args()
-
-    command = build_command(
-        sensor_id=args.sensor_id,
-        width=args.width,
-        height=args.height,
-        framerate=args.framerate,
+def build_pipeline(sensor_id=0, width=1280, height=720, framerate=30, flip_method=0):
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM),width={width},height={height},framerate={framerate}/1 ! "
+        f"nvvidconv flip-method={flip_method} ! "
+        "video/x-raw,format=BGRx ! "
+        "videoconvert ! "
+        "video/x-raw,format=BGR ! "
+        "appsink drop=true sync=false"
     )
 
+
+def show_camera():
+    window_title = "CSI Camera"
+
+    pipeline = build_pipeline(
+        sensor_id=0,
+        width=1280,
+        height=720,
+        framerate=30,
+        flip_method=0
+    )
+
+    print("Using pipeline:")
+    print(pipeline)
+
+    video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+    if not video_capture.isOpened():
+        print("Error: Unable to open camera")
+        return
+
+    cv2.namedWindow(window_title, cv2.WINDOW_AUTOSIZE)
+
     try:
-        return subprocess.run(command, check=False).returncode
-    except FileNotFoundError:
-        print("gst-launch-1.0 not found. Install/check GStreamer on the Jetson.", file=sys.stderr)
-        return 127
+        while True:
+            ret, frame = video_capture.read()
+
+            if not ret or frame is None:
+                print("Error: Could not read frame")
+                break
+
+            cv2.imshow(window_title, frame)
+
+            key = cv2.waitKey(10) & 0xFF
+            if key == 27 or key == ord("q"):
+                break
+
+    finally:
+        video_capture.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    show_camera()

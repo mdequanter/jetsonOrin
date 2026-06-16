@@ -10,3 +10,4 @@ authtokens.csv
 /faceassist/extracted_faces
 /faceassist/known
 /faceassist/detection_control.json
+/signaling/__pycache__

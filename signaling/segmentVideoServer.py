@@ -2,7 +2,6 @@ import asyncio
 import base64
 import csv
 import json
-import ssl
 import time
 from collections import deque
 from pathlib import Path
@@ -16,9 +15,7 @@ except ImportError:
 import websockets
 from ultralytics import YOLO
 
-#SIGNALING_SERVER = "ws://192.168.0.74:9000"
-SIGNALING_SERVER = "wss://signaling.ehb.be"
-BEARER_TOKEN = "LTddk_ptxQX-omdw5B5rfpniA2wB-19KBxFaKuODMzw"
+SIGNALING_SERVER = "ws://localhost:9000/ws/pathnavigation"
 MODELS_DIR = Path("models")
 DETECTION_CONFIDENCE = 0.8
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
@@ -431,7 +428,6 @@ def compute_heading(frame, model=None, return_masks=False):
 
 async def receive_and_infer():
     global DETECTION_CONFIDENCE
-    ssl_context = ssl.create_default_context()
     mqtt_client = create_mqtt_client()
     print(
         f"Loaded models: {', '.join(MODEL_ORDER)}. Default model: {DEFAULT_MODEL_NAME}"
@@ -450,18 +446,9 @@ async def receive_and_infer():
                 ]
             )
 
-    async with websockets.connect(SIGNALING_SERVER,
-        ssl=ssl_context,   # Uncomment if using wss://
-        origin="http://localhost",
+    async with websockets.connect(
+        SIGNALING_SERVER,
         compression=None,
-        additional_headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/121.0.0.0 Safari/537.36"
-            ),
-            "Authorization": f"Bearer {BEARER_TOKEN}"
-        },
     ) as ws:
         print(f"Verbonden met signaling server ({SIGNALING_SERVER})")
         pending_frame_meta = {}

@@ -11,93 +11,15 @@ import asyncio
 import logging
 import threading
 import time
-from pathlib import Path
 from queue import Queue
-
-from aiortc import MediaStreamTrack
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
+from aiortc import MediaStreamTrack
 
-
+# Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
-
-WINDOW_NAME = "Video"
-DETECTION_CONFIDENCE = 0.8
-SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-ALLOWED_PATH_LABELS = {"path", "path-oxod"}
-MODEL_CANDIDATES = [
-    Path(__file__).resolve().parent.parent / "signaling" / "models" / "laerbeekbos.pt",
-    Path(__file__).resolve().parent.parent / "faceassist" / "models" / "laerbeekbos.pt",
-    Path("learbeekbos.pt"),
-    Path("laerbeekbos.pt"),
-]
-
-
-def resolve_model_path():
-    for model_path in MODEL_CANDIDATES:
-        if model_path.exists():
-            return model_path
-    searched = "\n".join(str(path) for path in MODEL_CANDIDATES)
-    raise FileNotFoundError(f"Could not find learbeekbos/laerbeekbos model. Searched:\n{searched}")
-
-
-def get_allowed_mask_indices(result, model_names):
-    if result.boxes is None or result.boxes.cls is None:
-        return []
-
-    allowed_indices = []
-    class_ids = result.boxes.cls.cpu().numpy().astype(int).tolist()
-    for index, class_id in enumerate(class_ids):
-        label = str(model_names.get(class_id, "")).strip().lower()
-        if label in ALLOWED_PATH_LABELS:
-            allowed_indices.append(index)
-    return allowed_indices
-
-
-def compute_heading_to_point(frame, target_x, target_y):
-    h, w = frame.shape[:2]
-    start_x = w // 2
-    start_y = h
-    dx = target_x - start_x
-    dy = start_y - target_y
-    return float(np.degrees(np.arctan2(dy, dx)))
-
-
-def compute_heading(frame, model):
-    h, w = frame.shape[:2]
-    result = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)[0]
-    model_names = getattr(model, "names", {})
-    midpoints = []
-
-    if result.masks is None or len(result.masks.data) == 0:
-        return 90.0
-
-    for mask_index in get_allowed_mask_indices(result, model_names):
-        if mask_index >= len(result.masks.data):
-            continue
-
-        mask = result.masks.data[mask_index].cpu().numpy()
-        mask = (mask * 255).astype(np.uint8)
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-
-        for row_ratio in SCAN_HEIGHTS:
-            y = int(h * row_ratio)
-            if y >= h:
-                continue
-            filled_x = np.where(mask[y, :] > 0)[0]
-            if len(filled_x) > 0:
-                midpoints.append((int(np.mean(filled_x)), y))
-
-    if not midpoints:
-        return 90.0
-
-    avg_x = int(np.mean([point[0] for point in midpoints]))
-    target_y = min(point[1] for point in midpoints)
-    return compute_heading_to_point(frame, avg_x, target_y)
-
 
 def main():
     frame_queue = Queue()
-    model = None
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
@@ -151,39 +73,11 @@ def main():
             else:
                 # Sleep briefly to prevent high CPU usage
                 time.sleep(0.01)
-
-
-
     finally:
         cv2.destroyAllWindows()
         # Stop the asyncio event loop
         loop.call_soon_threadsafe(loop.stop)
         asyncio_thread.join()
 
-
 if __name__ == "__main__":
     main()
-
-
-"""
-    try:
-        while True:
-            if not frame_queue.empty():
-                img = frame_queue.get()
-                if model is None:
-                    from ultralytics import YOLO
-
-                    model_path = resolve_model_path()
-                    model = YOLO(str(model_path), verbose=False)
-
-                heading = compute_heading(img, model)
-                print(f"Heading: {heading:.2f} deg")
-
-                # Display the frame
-                cv2.imshow('Video', img)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-            else:
-                # Sleep briefly to prevent high CPU usage
-                time.sleep(0.01)
-"""

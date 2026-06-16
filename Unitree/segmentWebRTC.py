@@ -136,13 +136,9 @@ def main():
         while True:
             if not frame_queue.empty():
                 img = frame_queue.get()
-                print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
-                # Display the frame
-
                 heading = compute_heading(img, model)
-                print(f"Heading: {heading:.2f} deg")
-
-
+                if (heading != 90.0):
+                    print(f"Heading: {heading:.2f} deg")
 
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

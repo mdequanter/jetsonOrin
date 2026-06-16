@@ -1,12 +1,6 @@
 import cv2
 import numpy as np
 
-# Create an OpenCV window and display a blank image
-height, width = 720, 1280  # Adjust the size as needed
-img = np.zeros((height, width, 3), dtype=np.uint8)
-cv2.imshow('Video', img)
-cv2.waitKey(1)  # Ensure the window is created
-
 import asyncio
 import logging
 import threading
@@ -199,14 +193,10 @@ def main():
                     command_state["last_sent_at"] = now
                     command_state["last_command"] = command
 
-                cv2.imshow('Video', img)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
             else:
                 # Sleep briefly to prevent high CPU usage
                 time.sleep(0.01)
     finally:
-        cv2.destroyAllWindows()
         try:
             asyncio.run_coroutine_threadsafe(send_move(conn), loop).result(timeout=2)
         except Exception as exc:

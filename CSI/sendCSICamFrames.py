@@ -17,15 +17,17 @@ DEFAULT_SEND_HEIGHT = 480
 
 
 def build_gstreamer_pipeline(sensor_id=0, width=1280, height=720, framerate=30):
-    return (
-        "nvarguscamerasrc sensor-id={sensor_id} ! "
-        "video/x-raw(memory:NVMM),width={width},height={height},framerate={framerate}/1 ! "
-        "nvvidconv ! "
-        "video/x-raw,format=(string)BGRx ! "
-        "videoconvert ! "
-        "video/x-raw,format=(string)BGR ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    ).format(sensor_id=sensor_id, width=width, height=height, framerate=framerate)
+    return [
+        "gst-launch-1.0",
+        "nvarguscamerasrc",
+        f"sensor-id={sensor_id}",
+        "!",
+        f"video/x-raw(memory:NVMM),width={width},height={height},framerate={framerate}/1",
+        "!",
+        "nvvidconv",
+        "!",
+        "nveglglessink",
+    ]
 
 
 def open_camera(sensor_id, width, height, framerate):

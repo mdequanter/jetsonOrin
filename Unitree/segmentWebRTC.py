@@ -142,6 +142,19 @@ def main():
                 img = frame_queue.get()
                 print(f"Shape: {img.shape}, Dimensions: {img.ndim}, Type: {img.dtype}, Size: {img.size}")
                 # Display the frame
+
+
+                if model is None:
+                    from ultralytics import YOLO
+
+                    model_path = resolve_model_path()
+                    model = YOLO(str(model_path), verbose=False)
+
+                heading = compute_heading(img, model)
+                print(f"Heading: {heading:.2f} deg")
+
+
+
                 cv2.imshow('Video', img)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break

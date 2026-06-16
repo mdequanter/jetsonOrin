@@ -29,7 +29,7 @@ except ImportError as exc:
 logging.basicConfig(level=logging.FATAL)
 
 
-DETECTION_CONFIDENCE = 0.5
+DETECTION_CONFIDENCE = 0.6
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 TARGET_HEADING = 90.0

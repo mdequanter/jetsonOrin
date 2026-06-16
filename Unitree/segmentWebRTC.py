@@ -15,10 +15,7 @@ from pathlib import Path
 from queue import Queue
 
 from aiortc import MediaStreamTrack
-from unitree_webrtc_connect.webrtc_driver import (
-    UnitreeWebRTCConnection,
-    WebRTCConnectionMethod,
-)
+from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
 
 
 logging.basicConfig(level=logging.FATAL)

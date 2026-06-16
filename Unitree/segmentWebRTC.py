@@ -32,7 +32,7 @@ DETECTION_CONFIDENCE = 0.8
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 
-model = YOLO("signaling/models/laerbeekbos.pt", verbose=False)
+model = YOLO("/home/jetson/jetsonOrin/signaling/models/laerbeekbos.pt", verbose=False)
 
 
 def resolve_model_path():

@@ -29,14 +29,14 @@ except ImportError as exc:
 logging.basicConfig(level=logging.FATAL)
 
 
-DETECTION_CONFIDENCE = 0.8
+DETECTION_CONFIDENCE = 0.5
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 TARGET_HEADING = 90.0
 HEADING_DEADBAND = 2.0
-FORWARD_SPEED = 0.1
+FORWARD_SPEED = 0.5
 TURN_SPEED = 0.3
-COMMAND_INTERVAL_SECONDS = 0.25
+COMMAND_INTERVAL_SECONDS = 0.5
 
 model = YOLO("/home/jetson/jetsonOrin/signaling/models/thuis.pt", verbose=False)
 

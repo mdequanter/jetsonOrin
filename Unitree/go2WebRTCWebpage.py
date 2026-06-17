@@ -1,22 +1,23 @@
-import argparse
+import cv2
+
 import asyncio
-import inspect
 import logging
-import os
 import threading
 import time
-from queue import Empty, Queue
-
-import cv2
-import aiortc
-from aiortc import MediaStreamTrack
-from flask import Flask, Response, render_template_string, stream_with_context
+from queue import Queue
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
+from aiortc import MediaStreamTrack
+from flask import Flask, Response, render_template_string
 
 
 # Enable logging for debugging
 logging.basicConfig(level=logging.FATAL)
 
+
+ROBOT_IP = "unitree.local"
+WEB_HOST = "0.0.0.0"
+WEB_PORT = 8080
+JPEG_QUALITY = 85
 
 HTML_PAGE = """
 <!doctype html>
@@ -81,96 +82,49 @@ HTML_PAGE = """
 """
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(
-        description="Show the Unitree Go2 WebRTC camera stream on a webpage."
-    )
-    parser.add_argument(
-        "--ip",
-        default=os.environ.get("UNITREE_ROBOT_IP", "unitree.local"),
-        help="Unitree robot IP/host for LocalSTA mode. Can also use UNITREE_ROBOT_IP.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=("localsta", "localap"),
-        default="localsta",
-        help="Connection mode. Use localap when connected to the Go2 hotspot.",
-    )
-    parser.add_argument(
-        "--aes-key",
-        default=os.environ.get("UNITREE_AES_128_KEY"),
-        help="Optional 32-hex AES key for newer firmware. Can also use UNITREE_AES_128_KEY.",
-    )
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Web server bind address.",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Web server port.",
-    )
-    parser.add_argument(
-        "--jpeg-quality",
-        type=int,
-        default=85,
-        help="JPEG quality from 1 to 100.",
-    )
-    return parser
+def create_app(frame_queue):
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return render_template_string(HTML_PAGE, robot_ip=ROBOT_IP)
+
+    @app.route("/video_feed")
+    def video_feed():
+        return Response(
+            gen_frames(frame_queue),
+            mimetype="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    return app
 
 
-def make_connection(mode, robot_ip, aes_key):
-    connection_method = (
-        WebRTCConnectionMethod.LocalAP
-        if mode == "localap"
-        else WebRTCConnectionMethod.LocalSTA
-    )
-    kwargs = {}
-    signature = inspect.signature(UnitreeWebRTCConnection)
+def gen_frames(frame_queue):
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
 
-    if mode == "localsta":
-        kwargs["ip"] = robot_ip
+    while True:
+        if not frame_queue.empty():
+            img = frame_queue.get()
+            ok, jpeg = cv2.imencode(".jpg", img, encode_params)
+            if not ok:
+                continue
 
-    if aes_key and "aes_128_key" in signature.parameters:
-        kwargs["aes_128_key"] = aes_key
-
-    return UnitreeWebRTCConnection(connection_method, **kwargs)
-
-
-def put_latest_frame(frame_queue, img):
-    if not frame_queue.empty():
-        try:
-            frame_queue.get_nowait()
-        except Empty:
-            pass
-    frame_queue.put(img)
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + jpeg.tobytes()
+                + b"\r\n"
+            )
+        else:
+            # Sleep briefly to prevent high CPU usage
+            time.sleep(0.01)
 
 
-def print_connection_error(exc):
-    print(f"[ERROR] WebRTC connection failed: {exc}", flush=True)
-    print(
-        "[ERROR] If this says 'Data channel did not open in time', check these first:",
-        flush=True,
-    )
-    print("        1. Close the Unitree mobile app and stop other WebRTC scripts.", flush=True)
-    print("        2. Use the robot IP directly, for example: --ip 10.2.172.107", flush=True)
-    print("        3. If connected to the Go2 hotspot, run with: --mode localap", flush=True)
-    print(
-        "        4. On newer Go2 firmware, pass --aes-key or set UNITREE_AES_128_KEY.",
-        flush=True,
-    )
-    print(
-        "        5. If this started after package upgrades, use aiortc 1.9.0 "
-        "or update unitree_webrtc_connect.",
-        flush=True,
-    )
+def main():
+    frame_queue = Queue()
 
-
-def start_webrtc(frame_queue, mode, robot_ip, aes_key):
     # Choose a connection method (uncomment the correct one)
-    conn = make_connection(mode, robot_ip, aes_key)
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=ROBOT_IP)
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
@@ -181,19 +135,13 @@ def start_webrtc(frame_queue, mode, robot_ip, aes_key):
             frame = await track.recv()
             # Convert the frame to a NumPy array
             img = frame.to_ndarray(format="bgr24")
-            put_latest_frame(frame_queue, img)
+            frame_queue.put(img)
 
     def run_asyncio_loop(loop):
         asyncio.set_event_loop(loop)
 
         async def setup():
             try:
-                print(
-                    f"[INFO] Connecting with mode={mode}, ip={robot_ip}, "
-                    f"aiortc={getattr(aiortc, '__version__', 'unknown')}",
-                    flush=True,
-                )
-
                 # Connect to the device
                 await conn.connect()
 
@@ -204,7 +152,6 @@ def start_webrtc(frame_queue, mode, robot_ip, aes_key):
                 conn.video.add_track_callback(recv_camera_stream)
             except Exception as e:
                 logging.error(f"Error in WebRTC connection: {e}")
-                print_connection_error(e)
 
         # Run the setup coroutine and then start the event loop
         loop.run_until_complete(setup())
@@ -216,71 +163,16 @@ def start_webrtc(frame_queue, mode, robot_ip, aes_key):
     # Start the asyncio event loop in a separate thread
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
-    return loop, asyncio_thread
 
-
-def stop_webrtc(loop, asyncio_thread):
-    loop.call_soon_threadsafe(loop.stop)
-    asyncio_thread.join()
-
-
-def create_app(frame_queue, robot_ip, jpeg_quality):
-    app = Flask(__name__)
-    jpeg_quality = max(1, min(100, jpeg_quality))
-
-    @app.route("/")
-    def index():
-        return render_template_string(HTML_PAGE, robot_ip=robot_ip)
-
-    @app.route("/video_feed")
-    def video_feed():
-        return Response(
-            stream_with_context(generate_frames(frame_queue, jpeg_quality)),
-            mimetype="multipart/x-mixed-replace; boundary=frame",
-        )
-
-    return app
-
-
-def generate_frames(frame_queue, jpeg_quality):
-    encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
-    last_img = None
-
-    while True:
-        if not frame_queue.empty():
-            last_img = frame_queue.get()
-        elif last_img is None:
-            time.sleep(0.01)
-            continue
-
-        ok, jpeg = cv2.imencode(".jpg", last_img, encode_params)
-        if not ok:
-            time.sleep(0.01)
-            continue
-
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n"
-            + jpeg.tobytes()
-            + b"\r\n"
-        )
-        time.sleep(0.01)
-
-
-def main():
-    args = build_parser().parse_args()
-    frame_queue = Queue()
-
-    loop, asyncio_thread = start_webrtc(frame_queue, args.mode, args.ip, args.aes_key)
-    app = create_app(frame_queue, args.ip, args.jpeg_quality)
-
-    shown_host = "localhost" if args.host in ("0.0.0.0", "::") else args.host
-    print(f"Open http://{shown_host}:{args.port}/", flush=True)
+    app = create_app(frame_queue)
+    print(f"Open http://localhost:{WEB_PORT}/", flush=True)
 
     try:
-        app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
+        app.run(host=WEB_HOST, port=WEB_PORT, threaded=True, use_reloader=False)
     finally:
-        stop_webrtc(loop, asyncio_thread)
+        # Stop the asyncio event loop
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio_thread.join()
 
 
 if __name__ == "__main__":

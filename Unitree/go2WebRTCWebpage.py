@@ -13,13 +13,13 @@ from the Go2 WebRTC video frames.
 import argparse
 import asyncio
 import logging
-import sys
 import threading
-import time
-from queue import Empty, Full, Queue
+from queue import Empty, Queue
 
 import cv2
+from aiortc import MediaStreamTrack
 from flask import Flask, Response, render_template_string, stream_with_context
+from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
 
 
 logging.basicConfig(level=logging.FATAL)
@@ -120,72 +120,60 @@ def build_parser() -> argparse.ArgumentParser:
         default=85,
         help="JPEG quality from 1 to 100. Default: 85",
     )
-    parser.add_argument(
-        "--startup-timeout",
-        type=float,
-        default=30.0,
-        help="Seconds to wait for the first frame before reporting a timeout.",
-    )
     return parser
 
 
-def queue_error(error_queue: Queue, exc: Exception) -> None:
-    try:
-        error_queue.put_nowait(exc)
-    except Full:
-        pass
-
-
 def drop_and_put(frame_queue: Queue, frame) -> None:
-    if frame_queue.full():
+    if not frame_queue.empty():
         try:
             frame_queue.get_nowait()
         except Empty:
             pass
-    frame_queue.put_nowait(frame)
+    frame_queue.put(frame)
 
 
-def start_webrtc(frame_queue: Queue, error_queue: Queue, robot_host: str):
-    try:
-        from aiortc import MediaStreamTrack
-        from unitree_webrtc_connect.webrtc_driver import (
-            UnitreeWebRTCConnection,
-            WebRTCConnectionMethod,
-        )
-    except ImportError as exc:
-        print(
-            "[ERROR] Missing Unitree WebRTC dependencies. Run this in the same "
-            "environment where Unitree/viewVideoStream.py works.",
-            file=sys.stderr,
-            flush=True,
-        )
-        print(f"[ERROR] Import error: {exc}", file=sys.stderr, flush=True)
-        raise SystemExit(1)
-
+def start_webrtc(frame_queue: Queue, robot_host: str):
+    # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=robot_host)
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
+    # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
+    # Async function to receive video frames and put them in the queue
     async def recv_camera_stream(track: MediaStreamTrack):
         while True:
             frame = await track.recv()
+            # Convert the frame to a NumPy array
             img = frame.to_ndarray(format="bgr24")
             drop_and_put(frame_queue, img)
 
-    async def setup():
-        print(f"[INFO] Connecting to Unitree Go2 at {robot_host}", flush=True)
-        await conn.connect()
-        conn.video.switchVideoChannel(True)
-        conn.video.add_track_callback(recv_camera_stream)
-
-    def run_loop(loop):
+    def run_asyncio_loop(loop):
         asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(setup())
-            loop.run_forever()
-        except Exception as exc:
-            queue_error(error_queue, exc)
 
+        async def setup():
+            try:
+                print(f"[INFO] Connecting to Unitree Go2 at {robot_host}", flush=True)
+
+                # Connect to the device
+                await conn.connect()
+
+                # Switch video channel on and start receiving video frames
+                conn.video.switchVideoChannel(True)
+
+                # Add callback to handle received video frames
+                conn.video.add_track_callback(recv_camera_stream)
+            except Exception as e:
+                logging.error(f"Error in WebRTC connection: {e}")
+
+        # Run the setup coroutine and then start the event loop
+        loop.run_until_complete(setup())
+        loop.run_forever()
+
+    # Create a new event loop for the asyncio code
     loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=run_loop, args=(loop,), daemon=True)
+
+    # Start the asyncio event loop in a separate thread
+    thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     thread.start()
     return loop, thread
 
@@ -197,24 +185,7 @@ def stop_webrtc(loop, thread) -> None:
         thread.join(timeout=5.0)
 
 
-def wait_for_first_frame(frame_queue: Queue, error_queue: Queue, timeout: float):
-    deadline = time.time() + max(0.1, timeout)
-
-    while time.time() < deadline:
-        try:
-            return frame_queue.get(timeout=0.2), None
-        except Empty:
-            pass
-
-        try:
-            return None, error_queue.get_nowait()
-        except Empty:
-            pass
-
-    return None, TimeoutError("No video frame received before startup timeout.")
-
-
-def make_app(frame_queue: Queue, error_queue: Queue, robot_host: str, jpeg_quality: int):
+def make_app(frame_queue: Queue, robot_host: str, jpeg_quality: int):
     app = Flask(__name__)
     jpeg_quality = min(100, max(1, jpeg_quality))
 
@@ -229,26 +200,18 @@ def make_app(frame_queue: Queue, error_queue: Queue, robot_host: str, jpeg_quali
     @app.route("/stream.mjpg")
     def stream():
         return Response(
-            stream_with_context(generate_mjpeg(frame_queue, error_queue, jpeg_quality)),
+            stream_with_context(generate_mjpeg(frame_queue, jpeg_quality)),
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 
     return app
 
 
-def generate_mjpeg(frame_queue: Queue, error_queue: Queue, jpeg_quality: int):
+def generate_mjpeg(frame_queue: Queue, jpeg_quality: int):
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
     last_frame = None
 
     while True:
-        try:
-            stream_error = error_queue.get_nowait()
-        except Empty:
-            stream_error = None
-        if stream_error is not None:
-            print(f"[ERROR] Unitree video stream failed: {stream_error}", flush=True)
-            return
-
         try:
             last_frame = frame_queue.get(timeout=1.0)
         except Empty:
@@ -269,23 +232,10 @@ def generate_mjpeg(frame_queue: Queue, error_queue: Queue, jpeg_quality: int):
 
 def main() -> int:
     args = build_parser().parse_args()
-    frame_queue = Queue(maxsize=1)
-    error_queue = Queue(maxsize=1)
+    frame_queue = Queue()
 
-    loop, thread = start_webrtc(frame_queue, error_queue, args.ip)
-    first_frame, connect_error = wait_for_first_frame(
-        frame_queue,
-        error_queue,
-        args.startup_timeout,
-    )
-
-    if first_frame is None:
-        stop_webrtc(loop, thread)
-        print(f"[ERROR] Could not open the Go2 video stream: {connect_error}", flush=True)
-        return 1
-
-    drop_and_put(frame_queue, first_frame)
-    app = make_app(frame_queue, error_queue, args.ip, args.jpeg_quality)
+    loop, thread = start_webrtc(frame_queue, args.ip)
+    app = make_app(frame_queue, args.ip, args.jpeg_quality)
 
     shown_host = "localhost" if args.host in ("0.0.0.0", "::") else args.host
     print(f"[INFO] Open http://{shown_host}:{args.port}/", flush=True)

@@ -178,7 +178,7 @@ async def action_runner(conn):
                 continue
 
             # Optionele parameter als JSON (bv. {\"x\": 0.2} voor Move).
-            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x": 0.3, "y": 0, "z": 0}')
+            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x": 0.3, "y": 0, "z": 0} :')
             payload = {"api_id": api_id}
             if param_in:
                 try:

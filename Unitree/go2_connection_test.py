@@ -17,7 +17,10 @@ Gebruik:
     # Alleen verbinden + info afdrukken (VEILIG, robot beweegt niet):
     python go2_connection_test.py --ip 192.168.0.73 [--aes-key <32-hex>]
 
-    # Pas als 1-3 werken en de Go2 vrij staat, met bewegingstest:
+    # Interactief acties uit een tabel (SPORT_CMD, ...) kiezen en uitvoeren:
+    python go2_connection_test.py --ip 192.168.0.73 --actions
+
+    # Of één klein vooruit-commando (Go2 moet vrij staan):
     python go2_connection_test.py --ip 192.168.0.73 --move
 
 Op de meeste Go2-firmware is GEEN AES-sleutel nodig (--aes-key weglaten).
@@ -94,6 +97,112 @@ async def ensure_normal_mode(conn):
         print(f"     kon mode niet parsen: {e!r}")
 
 
+async def ask(prompt):
+    """Vraag invoer zonder de asyncio-loop (en dus de WebRTC-verbinding) te blokkeren."""
+    return (await asyncio.to_thread(input, prompt)).strip()
+
+
+def command_tables():
+    """Alle niet-lege dicts uit de constants-module (SPORT_CMD, RTC_TOPIC, ...)."""
+    tables = {}
+    for name in dir(C):
+        if name.startswith("_"):
+            continue
+        val = getattr(C, name)
+        if isinstance(val, dict) and val:
+            tables[name] = val
+    return tables
+
+
+async def action_runner(conn):
+    """Interactief acties uit een tabel (bv. SPORT_CMD) kiezen en uitvoeren.
+
+    Zo kun je op de Go2 uitproberen welke acties werken -- en later exact
+    hetzelfde doen op de G1 om te zien wat daar verschilt.
+    """
+    tables = command_tables()
+    topics = getattr(C, "RTC_TOPIC", {})
+    if not tables:
+        print("Geen commandotabellen gevonden in constants.")
+        return
+
+    # Standaard-topic: SPORT_MOD als het bestaat (Go2), anders de eerste.
+    default_topic = "SPORT_MOD" if "SPORT_MOD" in topics else (
+        next(iter(topics), None))
+
+    while True:
+        table_names = list(tables.keys())
+        print("\n===== TABELLEN =====")
+        for i, name in enumerate(table_names):
+            print(f"  {i:2}) {name}  ({len(tables[name])} entries)")
+        pick = await ask("Kies tabel (nummer), of 'q' om te stoppen: ")
+        if pick.lower() in ("q", "quit", "exit"):
+            return
+        if not pick.isdigit() or int(pick) >= len(table_names):
+            print("Ongeldige keuze.")
+            continue
+        table_name = table_names[int(pick)]
+        table = tables[table_name]
+
+        # Acties binnen de gekozen tabel.
+        while True:
+            entries = list(table.items())
+            print(f"\n----- {table_name} -----")
+            for i, (k, v) in enumerate(entries):
+                print(f"  {i:2}) {k:28} -> {v!r}")
+            sel = await ask("Kies actie (nummer of naam), 'b' terug, 'q' stop: ")
+            if sel.lower() in ("q", "quit", "exit"):
+                return
+            if sel.lower() in ("b", "back"):
+                break
+
+            # Resolven op index of op naam.
+            key = api_id = None
+            if sel.isdigit() and int(sel) < len(entries):
+                key, api_id = entries[int(sel)]
+            elif sel in table:
+                key, api_id = sel, table[sel]
+            else:
+                print("Ongeldige keuze.")
+                continue
+
+            if not isinstance(api_id, int):
+                print(f"Waarde van {key!r} is geen api_id (int): {api_id!r} -- overslaan.")
+                continue
+
+            # Doel-topic (met verstandige default).
+            topic_in = await ask(f"Topic [{default_topic}]: ")
+            topic_key = topic_in or default_topic
+            if topic_key not in topics:
+                print(f"Topic {topic_key!r} bestaat niet. Beschikbaar: {list(topics)}")
+                continue
+
+            # Optionele parameter als JSON (bv. {\"x\": 0.2} voor Move).
+            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x":0.2}: ')
+            payload = {"api_id": api_id}
+            if param_in:
+                try:
+                    payload["parameter"] = json.loads(param_in)
+                except json.JSONDecodeError as e:
+                    print(f"Ongeldige JSON: {e} -- actie geannuleerd.")
+                    continue
+
+            confirm = await ask(
+                f"!!! '{key}' sturen naar {topic_key}. Dit kan de robot laten "
+                f"BEWEGEN. Typ 'ja': ")
+            if confirm.lower() != "ja":
+                print("Geannuleerd.")
+                continue
+
+            print(f"  -> versturen: {payload}")
+            try:
+                resp = await conn.datachannel.pub_sub.publish_request_new(
+                    topics[topic_key], payload)
+                print(f"     antwoord: {resp}")
+            except Exception as e:  # noqa: BLE001
+                print(f"     FOUT: {e!r}")
+
+
 async def move_test(conn):
     """Eén klein, kort loopcommando voor de Go2 -- alleen na bevestiging."""
     topics = getattr(C, "RTC_TOPIC", {})
@@ -149,12 +258,15 @@ async def main(args):
     print("Motion-switcher:")
     await ensure_normal_mode(conn)
 
-    # 3) Optioneel: bewegingstest.
-    if args.move:
+    # 3) Optioneel: interactieve actie-runner of enkele bewegingstest.
+    if args.actions:
+        await action_runner(conn)
+    elif args.move:
         await move_test(conn)
     else:
-        print("\n(Geen bewegingstest. Voeg --move toe wanneer de Go2 rechtop")
-        print(" en vrij staat om één klein loopcommando te proberen.)")
+        print("\n(Geen actie uitgevoerd. Voeg --actions toe om acties uit een")
+        print(" tabel zoals SPORT_CMD interactief te kiezen en uit te voeren,")
+        print(" of --move voor één klein vooruit-commando.)")
 
     print("\nKlaar. Verbinding wordt afgesloten.")
 
@@ -168,6 +280,8 @@ if __name__ == "__main__":
                         help="Verbindingsmethode (LocalSTA / LocalAP / Remote)")
     parser.add_argument("--move", action="store_true",
                         help="Voer na bevestiging één klein loopcommando uit")
+    parser.add_argument("--actions", action="store_true",
+                        help="Interactief acties uit een tabel (bv. SPORT_CMD) kiezen en uitvoeren")
     args = parser.parse_args()
 
     try:

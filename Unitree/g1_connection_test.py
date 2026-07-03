@@ -96,6 +96,114 @@ async def query(conn, topic_key, api_id, label):
         return None
 
 
+async def ask(prompt):
+    """Vraag invoer zonder de asyncio-loop (en dus de WebRTC-verbinding) te blokkeren."""
+    return (await asyncio.to_thread(input, prompt)).strip()
+
+
+def command_tables():
+    """Alle niet-lege dicts uit de constants-module (SPORT_CMD, RTC_TOPIC, ...)."""
+    tables = {}
+    for name in dir(C):
+        if name.startswith("_"):
+            continue
+        val = getattr(C, name)
+        if isinstance(val, dict) and val:
+            tables[name] = val
+    return tables
+
+
+async def action_runner(conn):
+    """Interactief acties uit een tabel kiezen en uitvoeren op de G1.
+
+    De G1 kan andere tabellen/topics gebruiken dan de Go2 (bv. een loco-topic
+    i.p.v. SPORT_MOD). Deze runner toont wat DEZE robot aanbiedt, zodat je kunt
+    uitproberen welke acties werken.
+    """
+    tables = command_tables()
+    topics = getattr(C, "RTC_TOPIC", {})
+    if not tables:
+        print("Geen commandotabellen gevonden in constants.")
+        return
+
+    # Standaard-topic: loco als het bestaat (G1), anders SPORT_MOD, anders eerste.
+    default_topic = None
+    for candidate in ("LOCO", "SPORT_MOD"):
+        if candidate in topics:
+            default_topic = candidate
+            break
+    if default_topic is None:
+        default_topic = next(iter(topics), None)
+
+    while True:
+        table_names = list(tables.keys())
+        print("\n===== TABELLEN =====")
+        for i, name in enumerate(table_names):
+            print(f"  {i:2}) {name}  ({len(tables[name])} entries)")
+        pick = await ask("Kies tabel (nummer), of 'q' om te stoppen: ")
+        if pick.lower() in ("q", "quit", "exit"):
+            return
+        if not pick.isdigit() or int(pick) >= len(table_names):
+            print("Ongeldige keuze.")
+            continue
+        table_name = table_names[int(pick)]
+        table = tables[table_name]
+
+        while True:
+            entries = list(table.items())
+            print(f"\n----- {table_name} -----")
+            for i, (k, v) in enumerate(entries):
+                print(f"  {i:2}) {k:28} -> {v!r}")
+            sel = await ask("Kies actie (nummer of naam), 'b' terug, 'q' stop: ")
+            if sel.lower() in ("q", "quit", "exit"):
+                return
+            if sel.lower() in ("b", "back"):
+                break
+
+            key = api_id = None
+            if sel.isdigit() and int(sel) < len(entries):
+                key, api_id = entries[int(sel)]
+            elif sel in table:
+                key, api_id = sel, table[sel]
+            else:
+                print("Ongeldige keuze.")
+                continue
+
+            if not isinstance(api_id, int):
+                print(f"Waarde van {key!r} is geen api_id (int): {api_id!r} -- overslaan.")
+                continue
+
+            topic_in = await ask(f"Topic [{default_topic}]: ")
+            topic_key = topic_in or default_topic
+            if topic_key not in topics:
+                print(f"Topic {topic_key!r} bestaat niet. Beschikbaar: {list(topics)}")
+                continue
+
+            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x":0.1}: ')
+            payload = {"api_id": api_id}
+            if param_in:
+                try:
+                    payload["parameter"] = json.loads(param_in)
+                except json.JSONDecodeError as e:
+                    print(f"Ongeldige JSON: {e} -- actie geannuleerd.")
+                    continue
+
+            confirm = await ask(
+                f"!!! '{key}' sturen naar {topic_key}. Dit kan de robot laten "
+                f"BEWEGEN. Typ 'ja': ")
+            if confirm.lower() != "ja":
+                print("Geannuleerd.")
+                continue
+
+            print(f"  -> versturen: {payload}")
+            try:
+                resp = await conn.datachannel.pub_sub.publish_request_new(
+                    topics[topic_key], payload)
+                print(f"     antwoord: {resp}")
+            except Exception as e:  # noqa: BLE001
+                print(f"     FOUT: {e!r}")
+
+
 async def move_test(conn):
     """Eén klein, kort loopcommando -- alleen na expliciete bevestiging.
 
@@ -176,12 +284,15 @@ async def main(args):
         except Exception:  # noqa: BLE001
             pass
 
-    # 3) Optioneel: bewegingstest.
-    if args.move:
+    # 3) Optioneel: interactieve actie-runner of enkele bewegingstest.
+    if args.actions:
+        await action_runner(conn)
+    elif args.move:
         await move_test(conn)
     else:
-        print("\n(Geen bewegingstest uitgevoerd. Voeg --move toe wanneer de robot")
-        print(" rechtop en vrij staat om één klein loopcommando te proberen.)")
+        print("\n(Geen actie uitgevoerd. Voeg --actions toe om acties uit een")
+        print(" tabel interactief te kiezen en uit te voeren, of --move voor")
+        print(" één klein loopcommando wanneer de robot rechtop en vrij staat.)")
 
     print("\nKlaar. Verbinding wordt afgesloten.")
 
@@ -195,6 +306,8 @@ if __name__ == "__main__":
                         help="Verbindingsmethode (LocalSTA / LocalAP / Remote)")
     parser.add_argument("--move", action="store_true",
                         help="Voer na bevestiging één klein loopcommando uit")
+    parser.add_argument("--actions", action="store_true",
+                        help="Interactief acties uit een tabel (bv. SPORT_CMD) kiezen en uitvoeren")
     args = parser.parse_args()
 
     try:

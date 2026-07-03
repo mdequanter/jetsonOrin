@@ -19,8 +19,12 @@ Gebruik:
     pip install unitree_webrtc_connect
     unitree-fetch-aes-key            # firmware >= 1.5.1: haalt AES-sleutel op
 
-    # Alleen verbinden + info afdrukken (VEILIG, robot beweegt niet):
+    # Automatisch de G1 op het netwerk zoeken (geen IP nodig):
+    python g1_connection_test.py [--aes-key <32-hex>]
+
+    # Of expliciet op IP / serienummer:
     python g1_connection_test.py --ip 192.168.x.x [--aes-key <32-hex>]
+    python g1_connection_test.py --serial <serienummer>
 
     # Pas als 1-3 werken en de robot vrij staat, met bewegingstest:
     python g1_connection_test.py --ip 192.168.x.x --aes-key <32-hex> --move
@@ -253,23 +257,52 @@ async def move_test(conn):
     print("Bewegingstest klaar.")
 
 
+def report_ip(conn):
+    """Best-effort: druk het gevonden IP af als de library het beschikbaar stelt."""
+    for attr in ("ip", "robot_ip", "host", "_ip"):
+        val = getattr(conn, attr, None)
+        if val:
+            print(f"Gevonden robot-IP: {val}")
+            return
+
+
 async def main(args):
-    # Bouw de verbindingsargumenten op; AES-sleutel alleen meegeven indien opgegeven.
-    kwargs = {"ip": args.ip}
+    # Bouw de verbindingsargumenten op op basis van wat is opgegeven:
+    #   --ip     -> rechtstreeks op dat IP
+    #   --serial -> multicast-discovery op serienummer
+    #   niets    -> automatische multicast-discovery op het LAN (library zoekt zelf)
+    kwargs = {}
+    if args.ip:
+        kwargs["ip"] = args.ip
+        where = f"IP {args.ip}"
+    elif args.serial:
+        kwargs["serialNumber"] = args.serial
+        where = f"serienummer {args.serial} (multicast-discovery)"
+    else:
+        where = "automatische multicast-discovery op het LAN"
     if args.aes_key:
         kwargs["aes_128_key"] = args.aes_key
 
     method = getattr(WebRTCConnectionMethod, args.method)
-    print(f"Verbinden met G1 op {args.ip} via {args.method} ...")
+    print(f"Verbinden met G1 via {args.method} -- {where} ...")
+    if not args.ip and not args.serial:
+        print("(Geen IP/serienummer opgegeven -> de robot wordt op het netwerk gezocht.")
+        print(" Dit vereist dat je op HETZELFDE netwerk zit als de G1 en kan even duren.)")
     conn = UnitreeWebRTCConnection(method, **kwargs)
 
     try:
         await conn.connect()
     except Exception as e:  # noqa: BLE001
         print(f"\nVERBINDING MISLUKT: {e!r}")
-        print("Controleer: juist IP? zelfde netwerk? AES-sleutel nodig/juist?")
+        if not args.ip and not args.serial:
+            print("Discovery vond de robot niet. Probeer expliciet --ip <adres>")
+            print("of --serial <serienummer>, en check dat je op hetzelfde LAN zit.")
+        else:
+            print("Controleer: juist IP/serienummer? zelfde netwerk? AES-sleutel nodig/juist?")
         return
-    print("Verbinding OK.\n")
+    print("Verbinding OK.")
+    report_ip(conn)
+    print()
 
     # 1) Welke topics/commando's kent deze versie?
     dump_constants()
@@ -299,7 +332,10 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="G1 WebRTC verbindings-/diagnosetest")
-    parser.add_argument("--ip", required=True, help="IP-adres van de G1 (STA-mode)")
+    parser.add_argument("--ip", default=None,
+                        help="IP-adres van de G1. Weglaten = automatisch zoeken op het LAN")
+    parser.add_argument("--serial", default=None,
+                        help="Serienummer voor multicast-discovery")
     parser.add_argument("--aes-key", default=None,
                         help="Per-device AES-128-sleutel (firmware >= 1.5.1)")
     parser.add_argument("--method", default="LocalSTA",

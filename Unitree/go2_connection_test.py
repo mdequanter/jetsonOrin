@@ -178,7 +178,7 @@ async def action_runner(conn):
                 continue
 
             # Optionele parameter als JSON (bv. {\"x\": 0.2} voor Move).
-            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x":0.2}: ')
+            param_in = await ask('Parameter als JSON (leeg = geen), bv {"x": 0.3, "y": 0, "z": 0}')
             payload = {"api_id": api_id}
             if param_in:
                 try:
@@ -204,60 +204,33 @@ async def action_runner(conn):
 
 
 async def move_test(conn):
-    """Robuuste vooruit-loop voor de Go2.
-
-    Waarom niet één enkel bericht? 'Move' is een CONTINU snelheidscommando met
-    een veiligheids-watchdog: krijgt de robot niet snel een nieuw Move-bericht,
-    dan stopt hij vanzelf. Om zichtbaar te lopen streamen we Move op ~10 Hz.
-    We laten de robot ook eerst opstaan/balanceren, want liggend/zittend doet
-    Move niets.
-    """
+    """Eén klein, kort loopcommando voor de Go2 -- alleen na bevestiging."""
     topics = getattr(C, "RTC_TOPIC", {})
     sport_cmd = getattr(C, "SPORT_CMD", {})
     if "SPORT_MOD" not in topics or "Move" not in sport_cmd:
         print("SPORT_MOD-topic of Move-commando ontbreekt -- test afgebroken.")
         return
-    move_id = sport_cmd["Move"]
 
-    print("\n!!! De Go2 gaat zo ~2 s vooruit lopen. !!!")
+    print("\n!!! De Go2 gaat zo héél even proberen vooruit te bewegen. !!!")
     answer = input("Staat de Go2 rechtop, in vrije ruimte? Typ 'ja' om door te gaan: ")
     if answer.strip().lower() != "ja":
         print("Geannuleerd. Geen beweging verzonden.")
         return
 
-    # Eerst gaan staan/balanceren (indien beschikbaar), zodat Move effect heeft.
-    for stand_key in ("RecoveryStand", "BalanceStand", "StandUp"):
-        if stand_key in sport_cmd:
-            print(f"   -> {stand_key} ...")
-            await conn.datachannel.pub_sub.publish_request_new(
-                topics["SPORT_MOD"],
-                {"api_id": sport_cmd[stand_key], "parameter": {"data": False}},
-            )
-            await asyncio.sleep(2)
-            break
-
-    # Move streamen op ~10 Hz gedurende 2 s (anders stopt de watchdog de robot).
-    hz, duration, vx = 10, 2.0, 0.3
-    print(f"   -> Move streamen: vx={vx} m/s, {hz} Hz, {duration:.0f} s ...")
+    move_id = sport_cmd["Move"]
     try:
-        for _ in range(int(hz * duration)):
-            await conn.datachannel.pub_sub.publish_request_new(
-                topics["SPORT_MOD"],
-                {"api_id": move_id, "parameter": {"x": vx, "y": 0.0, "z": 0.0}},
-            )
-            await asyncio.sleep(1.0 / hz)
+        print("   -> klein vooruit-commando (x=0.2) ...")
+        await conn.datachannel.pub_sub.publish_request_new(
+            topics["SPORT_MOD"],
+            {"api_id": move_id, "parameter": {"x": 0.2, "y": 0.0, "z": 0.0}},
+        )
+        await asyncio.sleep(0.8)
     finally:
-        # Altijd stoppen: StopMove indien aanwezig, anders Move met snelheid 0.
-        if "StopMove" in sport_cmd:
-            print("   -> StopMove ...")
-            await conn.datachannel.pub_sub.publish_request_new(
-                topics["SPORT_MOD"], {"api_id": sport_cmd["StopMove"]})
-        else:
-            print("   -> STOP (Move x=0) ...")
-            await conn.datachannel.pub_sub.publish_request_new(
-                topics["SPORT_MOD"],
-                {"api_id": move_id, "parameter": {"x": 0.0, "y": 0.0, "z": 0.0}},
-            )
+        print("   -> STOP (x=0) ...")
+        await conn.datachannel.pub_sub.publish_request_new(
+            topics["SPORT_MOD"],
+            {"api_id": move_id, "parameter": {"x": 0.0, "y": 0.0, "z": 0.0}},
+        )
     print("Bewegingstest klaar.")
 
 

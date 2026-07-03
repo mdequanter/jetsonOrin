@@ -36,7 +36,9 @@ iemand klaarstaat om op te vangen voordat je --move gebruikt.
 import argparse
 import asyncio
 import json
+import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from unitree_webrtc_connect.webrtc_driver import (
@@ -49,6 +51,59 @@ except ImportError as e:
     print("      Installeer het eerst:  pip install unitree_webrtc_connect")
     print(f"      Detail: {e}")
     sys.exit(1)
+
+
+# Poorten waarop de robot zijn WebRTC-signaling aanbiedt (zelfde driver als Go2:
+# /offer op 8081 = oude methode, /con_notify op 9991 = nieuwe methode).
+SIGNALING_PORTS = (8081, 9991)
+
+
+def _local_ipv4():
+    """Bepaal het primaire IPv4-adres van deze machine (zonder pakketten te sturen)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))  # verbindt niet echt; kiest wel de juiste interface
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def _probe(ip, timeout=0.5):
+    """True als 'ip' een TCP-verbinding op een van de signaling-poorten accepteert."""
+    for port in SIGNALING_PORTS:
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def discover_ip():
+    """Scan het lokale /24-subnet naar een host die op de signaling-poorten luistert."""
+    local = _local_ipv4()
+    if not local:
+        print("Kon lokaal IP niet bepalen -- discovery afgebroken.")
+        return None
+    prefix = local.rsplit(".", 1)[0]
+    print(f"Scannen van {prefix}.0/24 op poorten {SIGNALING_PORTS} "
+          f"(vanaf {local}, duurt enkele seconden) ...")
+    candidates = [f"{prefix}.{i}" for i in range(1, 255)
+                  if f"{prefix}.{i}" != local]
+    found = []
+    with ThreadPoolExecutor(max_workers=128) as ex:
+        for ip, ok in zip(candidates, ex.map(_probe, candidates)):
+            if ok:
+                found.append(ip)
+    if not found:
+        print("Geen robot gevonden op de signaling-poorten in dit subnet.")
+        return None
+    if len(found) > 1:
+        print(f"Meerdere kandidaten gevonden: {found} -- de eerste wordt gebruikt.")
+    print(f"Robot gevonden op: {found[0]}")
+    return found[0]
 
 
 def dump_constants():
@@ -279,26 +334,27 @@ async def main(args):
         kwargs["serialNumber"] = args.serial
         where = f"serienummer {args.serial} (multicast-discovery)"
     else:
-        where = "automatische multicast-discovery op het LAN"
+        print("Geen IP/serienummer opgegeven -> zoeken naar de G1 op het LAN ...")
+        found_ip = await asyncio.to_thread(discover_ip)
+        if not found_ip:
+            print("\nKon de robot niet automatisch vinden.")
+            print("Geef expliciet --ip <adres> of --serial <serienummer> op,")
+            print("en controleer dat je op hetzelfde netwerk zit als de G1.")
+            return
+        kwargs["ip"] = found_ip
+        where = f"gevonden IP {found_ip}"
     if args.aes_key:
         kwargs["aes_128_key"] = args.aes_key
 
     method = getattr(WebRTCConnectionMethod, args.method)
     print(f"Verbinden met G1 via {args.method} -- {where} ...")
-    if not args.ip and not args.serial:
-        print("(Geen IP/serienummer opgegeven -> de robot wordt op het netwerk gezocht.")
-        print(" Dit vereist dat je op HETZELFDE netwerk zit als de G1 en kan even duren.)")
     conn = UnitreeWebRTCConnection(method, **kwargs)
 
     try:
         await conn.connect()
     except Exception as e:  # noqa: BLE001
         print(f"\nVERBINDING MISLUKT: {e!r}")
-        if not args.ip and not args.serial:
-            print("Discovery vond de robot niet. Probeer expliciet --ip <adres>")
-            print("of --serial <serienummer>, en check dat je op hetzelfde LAN zit.")
-        else:
-            print("Controleer: juist IP/serienummer? zelfde netwerk? AES-sleutel nodig/juist?")
+        print("Controleer: juist IP/serienummer? zelfde netwerk? AES-sleutel nodig/juist?")
         return
     print("Verbinding OK.")
     report_ip(conn)

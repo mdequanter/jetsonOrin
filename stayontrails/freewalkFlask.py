@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import socket
 import threading
 from pathlib import Path
 from typing import Any
@@ -689,9 +690,128 @@ def segment():
     return jsonify(response_payload)
 
 
+# --------------------------------------------------------------------------- #
+# HTTPS: browsers only expose getUserMedia (the camera) in a "secure context" —
+# https:// or localhost. Opening the page over plain http://<lan-ip> from another
+# device therefore blocks the camera. We serve over HTTPS with a self-signed
+# certificate that includes the LAN IP so the page works across the network.
+# Controls:
+#   FREEWALK_TLS=0            -> disable HTTPS (plain http; camera works only on localhost)
+#   FREEWALK_CERT / _KEY      -> use an existing certificate/key pair instead
+# --------------------------------------------------------------------------- #
+
+CERT_PATH = HERE / "freewalk-cert.pem"
+KEY_PATH = HERE / "freewalk-key.pem"
+
+
+def detect_lan_ip() -> str:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+        finally:
+            sock.close()
+    except OSError:
+        return "127.0.0.1"
+
+
+def _cert_covers_ip(cert_path: Path, lan_ip: str) -> bool:
+    import datetime
+
+    from cryptography import x509
+
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    if cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc):
+        return False
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return False
+    covered = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
+    return lan_ip in covered
+
+
+def _generate_self_signed_cert(cert_path: Path, key_path: Path, lan_ip: str) -> None:
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "freewalkFlask")])
+
+    san_entries: list[Any] = [x509.DNSName("localhost")]
+    for ip in {"127.0.0.1", lan_ip}:
+        try:
+            san_entries.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except ValueError:
+            continue
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=825))
+        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+def build_ssl_context(lan_ip: str):
+    """Return (ssl_context, description) for app.run, or (None, reason) for plain http."""
+    tls = os.environ.get("FREEWALK_TLS", "1").strip().lower()
+    if tls in ("0", "false", "no", "off"):
+        return None, "disabled via FREEWALK_TLS"
+
+    cert_env = os.environ.get("FREEWALK_CERT")
+    key_env = os.environ.get("FREEWALK_KEY")
+    if cert_env and key_env:
+        return (cert_env, key_env), "provided certificate"
+
+    try:
+        if not (CERT_PATH.exists() and KEY_PATH.exists() and _cert_covers_ip(CERT_PATH, lan_ip)):
+            _generate_self_signed_cert(CERT_PATH, KEY_PATH, lan_ip)
+        return (str(CERT_PATH), str(KEY_PATH)), "self-signed certificate"
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully rather than crash
+        print(f"Could not set up HTTPS ({exc}); serving over plain http instead.")
+        return None, "HTTPS setup failed"
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("FREEWALK_PORT", "5003"))
     host = os.environ.get("FREEWALK_HOST", "0.0.0.0")
-    print(f"freewalkFlask listening on http://{host}:{port}")
+    lan_ip = detect_lan_ip()
+    ssl_context, ssl_desc = build_ssl_context(lan_ip)
+    scheme = "https" if ssl_context is not None else "http"
+
+    print(f"freewalkFlask listening on {scheme}://{host}:{port} ({ssl_desc})")
+    print(f"  On this machine:     {scheme}://localhost:{port}")
+    print(f"  On the local network: {scheme}://{lan_ip}:{port}")
+    if scheme == "https":
+        print("  Note: it's a self-signed cert — the browser warns once; click Advanced → proceed.")
+    else:
+        print("  Note: over plain http the camera only works via localhost (secure-context rule).")
     print(f"Models found: {MODEL_ORDER or '(none — drop a .pt into the repo root or models/)'}")
-    app.run(host=host, port=port, debug=False, threaded=True)
+
+    run_kwargs: dict[str, Any] = dict(host=host, port=port, debug=False, threaded=True)
+    if ssl_context is not None:
+        run_kwargs["ssl_context"] = ssl_context
+    app.run(**run_kwargs)

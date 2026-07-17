@@ -12,3 +12,7 @@ authtokens.csv
 /faceassist/detection_control.json
 /signaling/__pycache__
 *.pyc
+
+# freewalkFlask self-signed TLS certificate (generated at runtime)
+/stayontrails/freewalk-cert.pem
+/stayontrails/freewalk-key.pem

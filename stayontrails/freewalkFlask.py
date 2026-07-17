@@ -411,7 +411,7 @@ def segment():
 
 if __name__ == "__main__":
     port = int(os.environ.get("FREEWALK_PORT", "5003"))
-    host = os.environ.get("FREEWALK_HOST", "127.0.0.1")
+    host = os.environ.get("FREEWALK_HOST", "0.0.0.0")
     print(f"freewalkFlask listening on http://{host}:{port}")
     print(f"Models found: {MODEL_ORDER or '(none — drop a .pt into the repo root or models/)'}")
     app.run(host=host, port=port, debug=False, threaded=True)

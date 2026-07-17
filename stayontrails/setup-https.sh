@@ -13,9 +13,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT="$HERE/freewalk-cert.pem"
 KEY="$HERE/freewalk-key.pem"
 
-if ! command -v mkcert >/dev/null 2>&1; then
+manual_install_help() {
   cat <<'EOF'
-mkcert is not installed. Install it, then re-run this script:
+Install mkcert manually, then re-run this script:
 
   # Debian / Ubuntu / Jetson (arm64):
   sudo apt-get install -y libnss3-tools
@@ -25,7 +25,59 @@ mkcert is not installed. Install it, then re-run this script:
 
   # On a regular Linux PC use  ...?for=linux/amd64  instead.
 EOF
-  exit 1
+}
+
+install_mkcert() {
+  local arch dl tmp
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64)  arch="amd64" ;;
+    armv7l|armhf)  arch="arm" ;;
+    *) echo "Unsupported CPU architecture: $(uname -m)"; return 1 ;;
+  esac
+
+  # NSS tools let 'mkcert -install' also register the CA with Firefox/Chromium.
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "==> Installing NSS tools (sudo)..."
+    sudo apt-get update -y >/dev/null 2>&1 || true
+    sudo apt-get install -y libnss3-tools >/dev/null 2>&1 || true
+  fi
+
+  dl="https://dl.filippo.io/mkcert/latest?for=linux/${arch}"
+  tmp="$(mktemp)"
+  echo "==> Downloading mkcert (linux/${arch})..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$dl" -o "$tmp" || { echo "Download failed."; rm -f "$tmp"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$dl" || { echo "Download failed."; rm -f "$tmp"; return 1; }
+  else
+    echo "Neither curl nor wget is available."; rm -f "$tmp"; return 1
+  fi
+
+  chmod +x "$tmp"
+  echo "==> Installing mkcert to /usr/local/bin (sudo)..."
+  sudo mv "$tmp" /usr/local/bin/mkcert || { echo "Could not install mkcert."; rm -f "$tmp"; return 1; }
+  command -v mkcert >/dev/null 2>&1 || { echo "mkcert still not on PATH."; return 1; }
+  echo "==> mkcert installed: $(command -v mkcert)"
+}
+
+if ! command -v mkcert >/dev/null 2>&1; then
+  echo "mkcert is not installed."
+  read -r -p "Download and install it now? (needs sudo + internet) [Y/n] " reply
+  case "${reply:-Y}" in
+    [Yy]*|"")
+      if ! install_mkcert; then
+        echo
+        manual_install_help
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Aborted."
+      manual_install_help
+      exit 1
+      ;;
+  esac
 fi
 
 # Detect the LAN IPv4 address this host is reachable at.

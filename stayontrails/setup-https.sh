@@ -43,19 +43,24 @@ echo "==> Generating certificate for: localhost 127.0.0.1 ${LAN_IP} ${HOST_SHORT
 mkcert -cert-file "$CERT" -key-file "$KEY" localhost 127.0.0.1 "$LAN_IP" "$HOST_SHORT" "$HOST_LOCAL"
 
 CAROOT="$(mkcert -CAROOT)"
+# Copy the (public) CA next to the project so it's easy to find and send to the phone.
+PHONE_CA="$HERE/phone-rootCA.pem"
+cp "$CAROOT/rootCA.pem" "$PHONE_CA"
+
 cat <<EOF
 
-Done. freewalkFlask.py will use these automatically:
-  cert: $CERT
-  key : $KEY
+Done. Three files — know which is which:
+  $CERT   (server cert  — stays here)
+  $KEY    (server key   — SECRET, stays here, never copy it)
+  $PHONE_CA   <-- INSTALL THIS ONE ON THE PHONE (the mkcert CA, safe to share)
 
-Trust the CA on your phone (one time):
-  Root CA file:  $CAROOT/rootCA.pem
+freewalkFlask.py uses the server cert/key automatically.
 
-  Android: copy rootCA.pem to the phone ->
+Trust the CA on your phone (one time) — install phone-rootCA.pem:
+  Android: copy phone-rootCA.pem to the phone ->
            Settings -> Security -> Encryption & credentials ->
-           Install a certificate -> CA certificate -> pick rootCA.pem
-  iOS:     AirDrop/email rootCA.pem to the phone -> install the profile ->
+           Install a certificate -> CA certificate -> pick the file
+  iOS:     AirDrop/email phone-rootCA.pem to the phone -> install the profile ->
            Settings -> General -> About -> Certificate Trust Settings ->
            enable full trust for the mkcert CA
 

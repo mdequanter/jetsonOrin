@@ -34,18 +34,23 @@ Write-Host "==> Generating certificate for: localhost 127.0.0.1 $lanip $hostShor
 mkcert -cert-file $cert -key-file $key localhost 127.0.0.1 $lanip $hostShort $hostLocal
 
 $caroot = (mkcert -CAROOT).Trim()
+# Copy the (public) CA next to the project so it's easy to find and send to the phone.
+$phoneCa = Join-Path $here "phone-rootCA.pem"
+Copy-Item (Join-Path $caroot "rootCA.pem") $phoneCa -Force
+
 Write-Host ""
-Write-Host "Done. freewalkFlask.py will use these automatically:"
-Write-Host "  cert: $cert"
-Write-Host "  key : $key"
+Write-Host "Done. Three files - know which is which:"
+Write-Host "  $cert   (server cert  - stays here)"
+Write-Host "  $key    (server key   - SECRET, stays here, never copy it)"
+Write-Host "  $phoneCa   <-- INSTALL THIS ONE ON THE PHONE (mkcert CA, safe to share)" -ForegroundColor Green
 Write-Host ""
-Write-Host "Trust the CA on your phone (one time):"
-Write-Host "  Root CA file:  $caroot\rootCA.pem"
+Write-Host "freewalkFlask.py uses the server cert/key automatically."
 Write-Host ""
-Write-Host "  Android: copy rootCA.pem to the phone ->"
+Write-Host "Trust the CA on your phone (one time) - install phone-rootCA.pem:"
+Write-Host "  Android: copy phone-rootCA.pem to the phone ->"
 Write-Host "           Settings -> Security -> Encryption & credentials ->"
-Write-Host "           Install a certificate -> CA certificate -> pick rootCA.pem"
-Write-Host "  iOS:     send rootCA.pem to the phone -> install the profile ->"
+Write-Host "           Install a certificate -> CA certificate -> pick the file"
+Write-Host "  iOS:     send phone-rootCA.pem to the phone -> install the profile ->"
 Write-Host "           Settings -> General -> About -> Certificate Trust Settings ->"
 Write-Host "           enable full trust for the mkcert CA"
 Write-Host ""

@@ -13,6 +13,7 @@ authtokens.csv
 /signaling/__pycache__
 *.pyc
 
-# freewalkFlask self-signed TLS certificate (generated at runtime)
+# freewalkFlask TLS certificate + key (generated at runtime / by setup-https)
 /stayontrails/freewalk-cert.pem
 /stayontrails/freewalk-key.pem
+/stayontrails/phone-rootCA.pem

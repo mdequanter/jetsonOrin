@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
@@ -17,6 +19,10 @@ MODELS_DIRS = []
 raw_models_dir = os.environ.get("MODELS_DIR")
 if raw_models_dir:
     MODELS_DIRS.append(Path(raw_models_dir).resolve())
+# The .pt models live in sibling projects, not in stayontrails/. Search those too
+# so the app is self-contained without copying files around.
+MODELS_DIRS.append(HERE.parent / "faceassist" / "models")
+MODELS_DIRS.append(HERE.parent / "signaling" / "models")
 MODELS_DIRS.append(HERE / "models")
 MODELS_DIRS.append(HERE)
 
@@ -61,13 +67,20 @@ _models: dict[str, YOLO] = {}
 
 
 def find_model_files() -> list[Path]:
+    # Aggregate models across every search dir, keeping the first occurrence of each
+    # name so the dropdown (unrealsim/laerbeekbos/kaai/denham) can be fully populated
+    # even when the models are split across sibling folders.
+    seen_names: set[str] = set()
+    model_paths: list[Path] = []
     for models_dir in MODELS_DIRS:
         if not models_dir.exists():
             continue
-        model_paths = sorted(models_dir.glob("*.pt"))
-        if model_paths:
-            return model_paths
-    return []
+        for model_path in sorted(models_dir.glob("*.pt")):
+            if model_path.stem in seen_names:
+                continue
+            seen_names.add(model_path.stem)
+            model_paths.append(model_path)
+    return model_paths
 
 
 MODEL_FILES = find_model_files()
@@ -349,18 +362,285 @@ def compute_heading(frame, model=None, return_masks=False, detection_confidence=
     return compute_heading_to_point(frame, avg_x, target_y), result_masks
 
 
+# --------------------------------------------------------------------------- #
+# Website: served from freewalk.php as the single source of truth.
+#
+# freewalk.php is a PHP page that (a) exposes ?action=list_paths / load_path
+# JSON endpoints and (b) renders an HTML+JS app that streams camera frames to an
+# external WebSocket signaling server for segmentation. Here we serve the same
+# page from Flask, transformed at request time:
+#   * the leading PHP block is dropped and the inline <?php echo ?> config values
+#     are replaced with concrete literals (anonymous defaults — Flask has no DB);
+#   * the WebSocket streaming loop is replaced by an appended script that POSTs
+#     frames to this app's own /api/freewalk/segment endpoint (self-contained).
+# The segment response format already matches what the frontend consumes.
+# --------------------------------------------------------------------------- #
+
+FREEWALK_PHP = HERE / "freewalk.php"
+
+# Anonymous-visitor defaults, mirroring the $userPreferences array in freewalk.php.
+DEFAULT_PREFERENCES = {
+    "guiding_beeps": True,
+    "vibration": False,
+    "mapview": True,
+    "cameraview": True,
+    "extra_details": True,
+    "preferred_model": "laerbeekbos",
+    "update_frequency": 2.0,
+    "model_confidence": 0.5,
+    "course_tolerance_deg": 5.0,
+}
+
+# Stand-in for the missing sot_render_menu() PHP helper.
+MENU_HTML = (
+    '<h1 class="brand">Stay On Trails</h1>'
+    '<nav aria-label="Hoofdmenu"><ul class="menu">'
+    '<li><a href="/" aria-current="page">Vrij wandelen</a></li>'
+    '</ul></nav>'
+)
+
+PHP_TAG_RE = re.compile(r"<\?php(.*?)\?>", re.S)
+
+SEGMENT_ENDPOINT = "/api/freewalk/segment"
+
+# Appended after the page's main <script>. Redefines the three transport
+# functions so segmentation runs over HTTP against this app instead of the
+# WebSocket signaling server. Function declarations here shadow the originals,
+# and reads/writes to the page's top-level let/const state resolve against the
+# shared global lexical environment. speak()'s ws.send is a no-op because `ws`
+# stays null.
+TRANSPORT_OVERRIDE_SCRIPT = r'''<script>
+  // --- freewalkFlask: local HTTP transport (replaces the WebSocket streaming) ---
+  const SEGMENT_ENDPOINT = "__SEGMENT_ENDPOINT__";
+  let segmentRequestInFlight = false;
+
+  function processSegmentationPayload(payload) {
+    if (!payload) return;
+    // Aruco speech is dormant during free walking (no path => no allowed markers),
+    // but call through so behavior matches the original when a path is present.
+    maybeSpeakArucoMarkers(payload, "instruction");
+
+    latestMarkerHeading = null;
+    latestMarkerId = null;
+
+    if (payload.resultMasks !== undefined || payload.returnMasks !== undefined) {
+      latestResultMasks = payload.resultMasks ?? payload.returnMasks ?? [];
+    } else {
+      latestResultMasks = [];
+    }
+
+    const normalized = normalizeHeading(payload.heading);
+    if (normalized !== null) {
+      latestHeading = normalized;
+      updateHeadingTrackingState();
+      updateDirectionSpeech();
+    }
+    renderTrailDirection();
+  }
+
+  async function startSegmentationGuidance(options = {}) {
+    if (timer) return;
+
+    const reuseExistingSession = options.reuseExistingSession === true && Boolean(currentSessionId);
+    trailCapEl.width = TARGET_W;
+    trailCapEl.height = TARGET_H;
+    currentSessionId = reuseExistingSession ? currentSessionId : createSessionId();
+    helperEnabled = false;
+    updateARSwitchLink();
+    renderSessionId();
+    isAuthenticated = false;
+    authStarted = false;
+    latestHeading = null;
+    latestMarkerHeading = null;
+    latestMarkerId = null;
+    lastArucoMarkerSpeechAtById.clear();
+    lastArucoMarkerSpeechTextById.clear();
+    lastArucoMarkerStateById.clear();
+    consecutiveNoTrackingHeadingUpdates = 0;
+    lastSpokenDirectionKey = null;
+    lastHapticDirectionKey = null;
+    lastHapticAtMs = 0;
+    lastTurnHapticDirectionKey = null;
+    lastTurnHapticCount = 0;
+    lastLatency = null;
+    latencyAboveThresholdSinceMs = 0;
+    lastLatencyWarningAtMs = 0;
+    renderLatency();
+    latestResultMasks = [];
+    sentFrames = 0;
+    framesSince = 0;
+    lastRateT = performance.now();
+    sentFramesValueEl.textContent = "0";
+    sendRateValueEl.textContent = "0.0 fps";
+    streamMetaEl.textContent = `Ingesteld interval: ${(sendIntervalMs / 1000).toFixed(2)} s per frame | ${headingFeedbackFps.toFixed(1)} fps doel.`;
+    renderTrailDirection();
+
+    try {
+      await startCamera(activeVideoDeviceId);
+    } catch (error) {
+      console.error("Camera error:", error);
+      mapTrailDirectionMetaEl.textContent = "Camera niet beschikbaar voor segmentatiebegeleiding.";
+      return;
+    }
+
+    segmentRequestInFlight = false;
+    isAuthenticated = true;
+    mapTrailDirectionMetaEl.textContent = "Live segmentatie verbonden.";
+    streamMetaEl.textContent = `Ingesteld interval: ${(sendIntervalMs / 1000).toFixed(2)} s per frame | ${headingFeedbackFps.toFixed(1)} fps doel.`;
+    timer = setInterval(captureAndSend, sendIntervalMs);
+  }
+
+  function captureAndSend() {
+    if (!timer) return;
+    if (segmentRequestInFlight) return; // skip if the previous frame is still processing
+    if (!trailVideoEl.videoWidth || !trailVideoEl.videoHeight) return;
+
+    trailCapCtx.drawImage(trailVideoEl, 0, 0, TARGET_W, TARGET_H);
+    const dataUrl = trailCapEl.toDataURL("image/jpeg", JPEG_QUALITY);
+    const sentAt = performance.now();
+    segmentRequestInFlight = true;
+
+    fetch(SEGMENT_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: dataUrl,
+        model: currentModel,
+        confidence: currentModelConfidence,
+        returnMasks: currentReturnMasks,
+        sessionId: currentSessionId,
+        latitude: latestLatitude,
+        longitude: latestLongitude,
+        gps_accuracy: latestAccuracy,
+        source: "live_camera"
+      })
+    })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+      .then((payload) => {
+        lastLatency = Math.max(0, performance.now() - sentAt);
+        renderLatency();
+        maybeSpeakLatencyWarning();
+        if (payload && payload.ok !== false) {
+          processSegmentationPayload(payload);
+        } else if (payload && payload.error) {
+          mapTrailDirectionMetaEl.textContent = `Segmentatiefout: ${payload.error}`;
+        }
+        sentFrames += 1;
+        sentFramesValueEl.textContent = String(sentFrames);
+        updateSendRate();
+      })
+      .catch((error) => {
+        console.error("Failed to send segmentation frame:", error);
+        mapTrailDirectionMetaEl.textContent = "Segmentatie-serververbinding mislukt.";
+      })
+      .finally(() => {
+        segmentRequestInFlight = false;
+      });
+  }
+
+  function stopSegmentationGuidance(resetUi = true) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+    }
+    stopTrailPreviewRender();
+
+    segmentRequestInFlight = false;
+    sentAtByFrameId.clear();
+    nextFrameId = 1;
+    currentSessionId = null;
+    helperEnabled = false;
+    renderSessionId();
+    isAuthenticated = false;
+    authStarted = false;
+    latestHeading = null;
+    latestMarkerHeading = null;
+    latestMarkerId = null;
+    lastArucoMarkerSpeechAtById.clear();
+    lastArucoMarkerSpeechTextById.clear();
+    lastArucoMarkerStateById.clear();
+    consecutiveNoTrackingHeadingUpdates = 0;
+    lastSpokenDirectionKey = null;
+    lastHapticDirectionKey = null;
+    lastHapticAtMs = 0;
+    lastTurnHapticDirectionKey = null;
+    lastTurnHapticCount = 0;
+    lastLatency = null;
+    latencyAboveThresholdSinceMs = 0;
+    lastLatencyWarningAtMs = 0;
+    renderLatency();
+    latestResultMasks = [];
+    framesSince = 0;
+    sendRateValueEl.textContent = "0.0 fps";
+    streamMetaEl.textContent = `Ingesteld interval: ${(sendIntervalMs / 1000).toFixed(2)} s per frame | ${headingFeedbackFps.toFixed(1)} fps doel.`;
+    if (resetUi) {
+      renderTrailDirection();
+    }
+  }
+</script>
+'''.replace("__SEGMENT_ENDPOINT__", SEGMENT_ENDPOINT)
+
+
+def _replace_php_tag(match: "re.Match[str]") -> str:
+    inner = match.group(1)
+    if "sot_render_menu" in inner:
+        return MENU_HTML
+    if "basename(__FILE__)" in inner:
+        return '""'  # API_URL: same-origin (?action=... resolves against "/")
+    if "$wsUrl" in inner:
+        return '""'  # SIGNALING_SERVER: unused with HTTP transport
+    if "$bearerToken" in inner:
+        return '""'
+    if "$room" in inner:
+        return '""'
+    if "course_tolerance_deg" in inner:
+        return json.dumps(DEFAULT_PREFERENCES["course_tolerance_deg"])
+    if "$userPreferences" in inner:
+        return json.dumps(DEFAULT_PREFERENCES)
+    return '""'
+
+
+def render_freewalk_page() -> str:
+    source = FREEWALK_PHP.read_text(encoding="utf-8")
+
+    # Drop the leading PHP block; keep everything from the doctype onward.
+    lower = source.lower()
+    doctype_index = lower.find("<!doctype")
+    if doctype_index != -1:
+        source = source[doctype_index:]
+
+    # Substitute the remaining inline <?php ... ?> tags (menu + config echoes).
+    source = PHP_TAG_RE.sub(_replace_php_tag, source)
+
+    # Append the HTTP transport override just before </body> so it shadows the
+    # WebSocket implementation defined in the page's main script.
+    if "</body>" in source:
+        source = source.replace("</body>", TRANSPORT_OVERRIDE_SCRIPT + "</body>", 1)
+    else:
+        source += TRANSPORT_OVERRIDE_SCRIPT
+    return source
+
+
 @app.get("/")
 def index():
-    return jsonify({
-        "ok": True,
-        "service": "freewalkFlask",
-        "models": MODEL_ORDER,
-        "default_model": DEFAULT_MODEL_NAME,
-        "endpoints": {
-            "health": "/health",
-            "segment": "/api/freewalk/segment",
-        },
-    })
+    action = request.args.get("action")
+    if action == "list_paths":
+        # No route database in this standalone app; free walking needs no saved paths.
+        return jsonify({"ok": True, "paths": []})
+    if action == "load_path":
+        return jsonify({"ok": False, "error": "Path not found."}), 404
+    if action:
+        return jsonify({"ok": False, "error": "Unknown action."}), 404
+
+    try:
+        html = render_freewalk_page()
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": f"source page not found: {FREEWALK_PHP.name}"}), 500
+    return Response(html, mimetype="text/html; charset=utf-8")
 
 
 @app.get("/health")

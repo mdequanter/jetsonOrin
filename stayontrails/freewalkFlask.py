@@ -716,7 +716,22 @@ def detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
-def _cert_covers_ip(cert_path: Path, lan_ip: str) -> bool:
+def detect_hostnames() -> list[str]:
+    """DNS names to embed in the cert: localhost plus this host's name and its
+    mDNS (.local) alias, e.g. jetson-desktop / jetson-desktop.local.
+    Override with FREEWALK_HOSTNAME."""
+    names = ["localhost"]
+    host = (os.environ.get("FREEWALK_HOSTNAME") or socket.gethostname() or "").strip()
+    if host:
+        base = host.split(".")[0]
+        for candidate in (host, base, f"{base}.local"):
+            if candidate and candidate not in names:
+                names.append(candidate)
+    return names
+
+
+def _cert_is_current(cert_path: Path, lan_ip: str, hostnames: list[str]) -> bool:
+    """True if the cert is unexpired and covers the LAN IP and every hostname."""
     import datetime
 
     from cryptography import x509
@@ -728,11 +743,25 @@ def _cert_covers_ip(cert_path: Path, lan_ip: str) -> bool:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
         return False
-    covered = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
-    return lan_ip in covered
+    covered_ips = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
+    covered_dns = {name.lower() for name in san.get_values_for_type(x509.DNSName)}
+    if lan_ip not in covered_ips:
+        return False
+    return all(name.lower() in covered_dns for name in hostnames)
 
 
-def _generate_self_signed_cert(cert_path: Path, key_path: Path, lan_ip: str) -> None:
+def _cert_is_ca_signed(cert_path: Path) -> bool:
+    """True if the cert was issued by a separate CA (e.g. mkcert) rather than self-signed."""
+    try:
+        from cryptography import x509
+
+        cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+        return cert.issuer != cert.subject
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _generate_self_signed_cert(cert_path: Path, key_path: Path, lan_ip: str, hostnames: list[str]) -> None:
     import datetime
     import ipaddress
 
@@ -744,7 +773,13 @@ def _generate_self_signed_cert(cert_path: Path, key_path: Path, lan_ip: str) -> 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "freewalkFlask")])
 
-    san_entries: list[Any] = [x509.DNSName("localhost")]
+    san_entries: list[Any] = []
+    seen_dns: set[str] = set()
+    for dns_name in hostnames:
+        low = dns_name.lower()
+        if dns_name and low not in seen_dns:
+            seen_dns.add(low)
+            san_entries.append(x509.DNSName(dns_name))
     for ip in {"127.0.0.1", lan_ip}:
         try:
             san_entries.append(x509.IPAddress(ipaddress.ip_address(ip)))
@@ -784,11 +819,19 @@ def build_ssl_context(lan_ip: str):
     cert_env = os.environ.get("FREEWALK_CERT")
     key_env = os.environ.get("FREEWALK_KEY")
     if cert_env and key_env:
-        return (cert_env, key_env), "provided certificate"
+        kind = "trusted (CA-signed) certificate" if _cert_is_ca_signed(Path(cert_env)) else "provided certificate"
+        return (cert_env, key_env), kind
 
+    hostnames = detect_hostnames()
     try:
-        if not (CERT_PATH.exists() and KEY_PATH.exists() and _cert_covers_ip(CERT_PATH, lan_ip)):
-            _generate_self_signed_cert(CERT_PATH, KEY_PATH, lan_ip)
+        have_certs = CERT_PATH.exists() and KEY_PATH.exists()
+        # A mkcert/CA-signed cert (from setup-https) is trusted by phones that have
+        # the CA installed — use it as-is and never clobber it with a self-signed one,
+        # even if the detected LAN IP differs.
+        if have_certs and _cert_is_ca_signed(CERT_PATH):
+            return (str(CERT_PATH), str(KEY_PATH)), "trusted (mkcert/CA) certificate — no browser warning once the CA is installed"
+        if not (have_certs and _cert_is_current(CERT_PATH, lan_ip, hostnames)):
+            _generate_self_signed_cert(CERT_PATH, KEY_PATH, lan_ip, hostnames)
         return (str(CERT_PATH), str(KEY_PATH)), "self-signed certificate"
     except Exception as exc:  # noqa: BLE001 — degrade gracefully rather than crash
         print(f"Could not set up HTTPS ({exc}); serving over plain http instead.")
@@ -802,12 +845,19 @@ if __name__ == "__main__":
     ssl_context, ssl_desc = build_ssl_context(lan_ip)
     scheme = "https" if ssl_context is not None else "http"
 
+    # Prefer the mDNS (.local) hostname alias for the network URL — it survives IP changes.
+    host_alias = next((h for h in detect_hostnames() if h.endswith(".local")), None)
+
     print(f"freewalkFlask listening on {scheme}://{host}:{port} ({ssl_desc})")
-    print(f"  On this machine:     {scheme}://localhost:{port}")
-    print(f"  On the local network: {scheme}://{lan_ip}:{port}")
-    if scheme == "https":
-        print("  Note: it's a self-signed cert — the browser warns once; click Advanced → proceed.")
+    print(f"  On this machine:      {scheme}://localhost:{port}")
+    if host_alias:
+        print(f"  On the local network: {scheme}://{host_alias}:{port}  (or {scheme}://{lan_ip}:{port})")
     else:
+        print(f"  On the local network: {scheme}://{lan_ip}:{port}")
+    if scheme == "https" and "self-signed" in ssl_desc:
+        print("  Note: self-signed cert — the browser warns once; click Advanced → proceed.")
+        print("        Run ./setup-https.sh (mkcert) for a no-warning trusted cert.")
+    elif scheme != "https":
         print("  Note: over plain http the camera only works via localhost (secure-context rule).")
     print(f"Models found: {MODEL_ORDER or '(none — drop a .pt into the repo root or models/)'}")
 

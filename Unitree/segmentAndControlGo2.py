@@ -290,10 +290,10 @@ def main():
             heading = compute_heading(img, model)
             x_speed = forward_speed_for_heading(heading)
             z_speed = turn_speed_for_heading(heading)
-            #print(
-            #    f"Heading: {heading:.2f} deg, "
-            #    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
-            #)
+            print(
+                f"Heading: {heading:.2f} deg, "
+                f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
+            )
 
             # Toestand kan tijdens de (trage) segmentatie veranderd zijn
             if not robot_state["standing"] or robot_state["paused"]:

@@ -14,7 +14,7 @@ from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
 from pathlib import Path
 
-UNITREE_IP_ADDRESS = "192.168.1.12"
+UNITREE_IP_ADDRESS = "192.168.12.1"
 
 
 try:

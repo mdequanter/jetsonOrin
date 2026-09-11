@@ -58,6 +58,10 @@ ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
 SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
+
+# Het pad volgen zolang de vooruitknop ingedrukt blijft
+FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
+FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -102,6 +106,24 @@ class RobotController:
 
     def move(self, x=0, y=0, z=0):
         return self.sport(SPORT_CMD["Move"], {"x": x, "y": y, "z": z})
+
+    def follow_path(self):
+        """Vooruit stappen en meteen bijsturen naar de heading die de camera
+        ziet, zodat de robot het pad volgt zolang dit commando binnenkomt.
+
+        Ziet de camera niets bruikbaars, dan stappen we gewoon rechtdoor."""
+        heading = segmentation.current_heading()
+        if heading is None:
+            return self.move(x=MOVE_SPEED)
+
+        error = heading - HEADING_FORWARD
+        if abs(error) < FOLLOW_DEADBAND:
+            z = 0.0
+        else:
+            # Hoe verder van 90, hoe harder we draaien; positieve z is links
+            z = -clamp(error / FOLLOW_FULL_TURN, -1.0, 1.0) * TURN_SPEED
+
+        return self.move(x=MOVE_SPEED, z=z)
 
     # -- heading -------------------------------------------------------------
 
@@ -323,13 +345,18 @@ class Segmentation:
 
     # -- uitlezen ------------------------------------------------------------
 
+    def current_heading(self):
+        """De laatste heading, of None als er nog geen of enkel een verouderde is."""
+        if self.heading is None or not self.updated_at:
+            return None
+        if time.monotonic() - self.updated_at > HEADING_MAX_AGE:
+            return None
+        return self.heading
+
     def snapshot(self):
         """Toestand voor de webpagina."""
-        heading = self.heading
+        heading = self.current_heading()
         age = time.monotonic() - self.updated_at if self.updated_at else None
-
-        if heading is not None and age is not None and age > HEADING_MAX_AGE:
-            heading = None
 
         return {
             "status": self.status,
@@ -347,6 +374,7 @@ segmentation = Segmentation()
 COMMANDS = {
     # de basis
     "forward":      lambda: robot.move(x=MOVE_SPEED),
+    "follow":       lambda: robot.follow_path(),
     "backward":     lambda: robot.move(x=-MOVE_SPEED),
     "turn_left":    lambda: robot.move(z=TURN_SPEED),
     "turn_right":   lambda: robot.move(z=-TURN_SPEED),
@@ -551,7 +579,7 @@ HTML_PAGE = """
   <h2>Bewegen — houd ingedrukt</h2>
   <div class="dpad">
     <button data-cmd="strafe_left" data-hold><span class="ico">⬅️</span><span class="lbl">zijwaarts</span></button>
-    <button data-cmd="forward" data-hold><span class="ico">⬆️</span><span class="lbl">vooruit</span></button>
+    <button data-cmd="forward" data-follow data-hold><span class="ico">⬆️</span><span class="lbl">vooruit</span></button>
     <button data-cmd="strafe_right" data-hold><span class="ico">➡️</span><span class="lbl">zijwaarts</span></button>
 
     <button data-cmd="turn_left" data-hold><span class="ico">↩️</span><span class="lbl">draai links</span></button>
@@ -562,7 +590,8 @@ HTML_PAGE = """
     <button data-cmd="backward" data-hold><span class="ico">⬇️</span><span class="lbl">achteruit</span></button>
     <div></div>
   </div>
-  <p class="hint">De robot beweegt zolang je de knop ingedrukt houdt.</p>
+  <p class="hint">De robot beweegt zolang je de knop ingedrukt houdt. Staat
+     "volg de camera" aan, dan blijft hij tijdens het vooruit stappen het pad volgen.</p>
 </section>
 
 <section>
@@ -577,7 +606,9 @@ HTML_PAGE = """
   </label>
   <p class="hint">90 = één seconde rechtdoor stappen. Meer draait naar rechts,
      minder naar links, telkens traag vooruit al draaiend.
-     Werkt ook via de URL: <code>/heading/?heading=101</code></p>
+     Werkt ook via de URL: <code>/heading/?heading=101</code><br>
+     Met "volg de camera" aan wordt dit veld bijgewerkt met wat de camera ziet
+     en stuurt de vooruitknop zelf bij naar 90.</p>
 </section>
 
 <section>
@@ -668,6 +699,12 @@ document.querySelectorAll('button[data-cmd]:not([data-hold])').forEach(btn => {
   btn.addEventListener('click', () => send(btn.dataset.cmd));
 });
 
+// Staat "volg de camera" aan, dan stuurt de vooruitknop het pad achterna
+function commandFor(btn) {
+  if (btn.dataset.follow !== undefined && autoHeading.checked) return 'follow';
+  return btn.dataset.cmd;
+}
+
 // houd-knoppen: herhaal het commando tot je loslaat, daarna stoppen
 document.querySelectorAll('button[data-hold]').forEach(btn => {
   let timer = null;
@@ -675,8 +712,8 @@ document.querySelectorAll('button[data-hold]').forEach(btn => {
   const start = (ev) => {
     ev.preventDefault();
     if (timer) return;
-    send(btn.dataset.cmd);
-    timer = setInterval(() => send(btn.dataset.cmd), HOLD_INTERVAL);
+    send(commandFor(btn));
+    timer = setInterval(() => send(commandFor(btn)), HOLD_INTERVAL);
   };
 
   const end = () => {
@@ -703,6 +740,15 @@ window.addEventListener('pagehide', () => send('stop'));
 const headingInput = document.getElementById('heading');
 const autoHeading = document.getElementById('auto-heading');
 const cameraHeading = document.getElementById('camera-heading');
+const followButton = document.querySelector('button[data-follow]');
+
+// Toon op de knop zelf of hij gewoon vooruit gaat of het pad volgt
+function showForwardMode() {
+  followButton.querySelector('.lbl').textContent =
+    autoHeading.checked ? 'volg pad' : 'vooruit';
+}
+autoHeading.addEventListener('change', showForwardMode);
+showForwardMode();
 
 function showCamera(cam) {
   if (!cam) return;

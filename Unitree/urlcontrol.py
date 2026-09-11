@@ -31,18 +31,12 @@ WEB_PORT = 8080
 
 MOVE_SPEED = 0.5
 TURN_SPEED = 1
-EULER_STEP = 0.1
-EULER_LIMIT = 0.4
 BRIGHTNESS_LVL = 1
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
 
 # ---------------------------------------------------------------- robot state
-
-def clamp(value, minimum, maximum):
-    return max(minimum, min(maximum, value))
-
 
 class RobotController:
     """Stuurt commando's naar de Go2 vanuit de Flask threads."""
@@ -51,10 +45,6 @@ class RobotController:
         self.conn = None
         self.loop = None
         self.connected = False
-        self.euler_roll = 0.0
-        self.euler_pitch = 0.0
-        self.euler_yaw = 0.0
-        self._lock = threading.Lock()
         self._disco_thread = None
 
     # -- laag niveau ---------------------------------------------------------
@@ -82,27 +72,6 @@ class RobotController:
     def move(self, x=0, y=0, z=0):
         return self.sport(SPORT_CMD["Move"], {"x": x, "y": y, "z": z})
 
-    def send_euler(self):
-        return self.sport(SPORT_CMD["Euler"], {
-            "x": self.euler_roll,
-            "y": self.euler_pitch,
-            "z": self.euler_yaw,
-        })
-
-    def nudge_euler(self, roll=0.0, pitch=0.0, yaw=0.0):
-        with self._lock:
-            self.euler_roll = clamp(self.euler_roll + roll, -EULER_LIMIT, EULER_LIMIT)
-            self.euler_pitch = clamp(self.euler_pitch + pitch, -EULER_LIMIT, EULER_LIMIT)
-            self.euler_yaw = clamp(self.euler_yaw + yaw, -EULER_LIMIT, EULER_LIMIT)
-        return self.send_euler()
-
-    def reset_euler(self):
-        with self._lock:
-            self.euler_roll = 0.0
-            self.euler_pitch = 0.0
-            self.euler_yaw = 0.0
-        return self.send_euler()
-
     # -- licht ---------------------------------------------------------------
 
     def colour(self, colour):
@@ -129,7 +98,6 @@ class RobotController:
 
     def emergency_stop(self):
         self.move(x=0, y=0, z=0)
-        self.reset_euler()
 
 
 robot = RobotController()
@@ -150,22 +118,12 @@ COMMANDS = {
     "stand_up":     lambda: robot.sport(SPORT_CMD["RecoveryStand"], {"data": False}),
     "stand_down":   lambda: robot.sport(SPORT_CMD["StandDown"]),
 
-    # pose / euler
-    "roll_left":    lambda: robot.nudge_euler(roll=EULER_STEP),
-    "roll_right":   lambda: robot.nudge_euler(roll=-EULER_STEP),
-    "pitch_front":  lambda: robot.nudge_euler(pitch=EULER_STEP),
-    "pitch_back":   lambda: robot.nudge_euler(pitch=-EULER_STEP),
-    "yaw_left":     lambda: robot.nudge_euler(yaw=EULER_STEP),
-    "yaw_right":    lambda: robot.nudge_euler(yaw=-EULER_STEP),
-    "pose_reset":   lambda: robot.reset_euler(),
-
     # extra bewegingen
     "hello":        lambda: robot.sport(SPORT_CMD["Hello"]),
     "stretch":      lambda: robot.sport(SPORT_CMD["Stretch"], {"data": False}),
     "sit":          lambda: robot.sport(1009, {"data": False}),
     "rise_sit":     lambda: robot.sport(1010, {"data": False}),
     "scrape":       lambda: robot.sport(1029, {"data": False}),
-    "front_jump":   lambda: robot.sport(1031, {"data": False}),
 
     # licht
     "torch_on":     lambda: robot.vui(1005, {"brightness": BRIGHTNESS_LVL}),
@@ -348,30 +306,13 @@ HTML_PAGE = """
 </section>
 
 <section>
-  <h2>Pose (euler)</h2>
-  <div class="grid cols-3">
-    <button data-cmd="roll_left"><span class="ico">↺</span><span class="lbl">roll links</span></button>
-    <button data-cmd="pitch_front"><span class="ico">⤵️</span><span class="lbl">pitch voor</span></button>
-    <button data-cmd="yaw_left"><span class="ico">◀</span><span class="lbl">yaw links</span></button>
-
-    <button data-cmd="roll_right"><span class="ico">↻</span><span class="lbl">roll rechts</span></button>
-    <button data-cmd="pitch_back"><span class="ico">⤴️</span><span class="lbl">pitch achter</span></button>
-    <button data-cmd="yaw_right"><span class="ico">▶</span><span class="lbl">yaw rechts</span></button>
-  </div>
-  <div class="grid" style="margin-top:8px">
-    <button data-cmd="pose_reset"><span class="ico">🎯</span><span class="lbl">pose reset</span></button>
-  </div>
-</section>
-
-<section>
   <h2>Bewegingen</h2>
   <div class="grid cols-3">
     <button data-cmd="hello"><span class="ico">👋</span><span class="lbl">hello</span></button>
     <button data-cmd="stretch"><span class="ico">🤸</span><span class="lbl">stretch</span></button>
+    <button data-cmd="scrape"><span class="ico">🐾</span><span class="lbl">scrape</span></button>
     <button data-cmd="sit"><span class="ico">🪑</span><span class="lbl">zitten</span></button>
     <button data-cmd="rise_sit"><span class="ico">🚶</span><span class="lbl">rechtstaan</span></button>
-    <button data-cmd="scrape"><span class="ico">🐾</span><span class="lbl">scrape</span></button>
-    <button data-cmd="front_jump"><span class="ico">🤾</span><span class="lbl">front jump</span></button>
   </div>
 </section>
 
@@ -486,14 +427,7 @@ def index():
 
 @app.route("/status")
 def status():
-    return jsonify({
-        "connected": robot.connected,
-        "euler": {
-            "roll": round(robot.euler_roll, 2),
-            "pitch": round(robot.euler_pitch, 2),
-            "yaw": round(robot.euler_yaw, 2),
-        },
-    })
+    return jsonify({"connected": robot.connected})
 
 
 @app.route("/commands")

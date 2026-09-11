@@ -11,11 +11,12 @@ surf met je gsm naar http://<ip-van-de-jetson>:8080/
 import asyncio
 import json
 import logging
+import math
 import random
 import threading
 import time
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 from unitree_webrtc_connect.webrtc_driver import (
     UnitreeWebRTCConnection,
@@ -32,11 +33,22 @@ WEB_PORT = 8080
 MOVE_SPEED = 0.5
 TURN_SPEED = 1
 BRIGHTNESS_LVL = 1
+
+# Heading-bediening: 90 = recht vooruit, meer = naar rechts, minder = naar links
+HEADING_FORWARD = 90.0
+HEADING_DEADBAND = 2.0        # graden verschil die we negeren
+HEADING_MAX_TURN = 180.0      # nooit meer dan een halve draai in één commando
+TURN_INTERVAL = 0.1           # s tussen twee move-commando's tijdens het draaien
+TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag als te veel
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
 
 # ---------------------------------------------------------------- robot state
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
 
 class RobotController:
     """Stuurt commando's naar de Go2 vanuit de Flask threads."""
@@ -46,6 +58,7 @@ class RobotController:
         self.loop = None
         self.connected = False
         self._disco_thread = None
+        self._turn_lock = threading.Lock()
 
     # -- laag niveau ---------------------------------------------------------
 
@@ -71,6 +84,38 @@ class RobotController:
 
     def move(self, x=0, y=0, z=0):
         return self.sport(SPORT_CMD["Move"], {"x": x, "y": y, "z": z})
+
+    # -- heading -------------------------------------------------------------
+
+    def turn_degrees(self, degrees):
+        """Draai een aantal graden ter plaatse: positief = rechts, negatief =
+        links. De Go2 draait zolang hij move-commando's krijgt, dus we blijven
+        herhalen tot de berekende tijd voorbij is en sturen daarna een stop.
+
+        Geeft de gedraaide hoek en de duur terug, of None als er al een draai
+        bezig is."""
+        if not self._turn_lock.acquire(blocking=False):
+            return None
+
+        try:
+            if abs(degrees) < HEADING_DEADBAND:
+                return {"degrees": 0.0, "duration": 0.0}
+
+            degrees = clamp(degrees, -HEADING_MAX_TURN, HEADING_MAX_TURN)
+            duration = math.radians(abs(degrees)) / TURN_SPEED * TURN_CALIBRATION
+
+            # In de Go2 is een positieve z een draai naar links
+            z = -TURN_SPEED if degrees > 0 else TURN_SPEED
+
+            deadline = time.monotonic() + duration
+            while time.monotonic() < deadline:
+                self.move(z=z)
+                time.sleep(TURN_INTERVAL)
+            self.move(x=0, y=0, z=0)
+
+            return {"degrees": round(degrees, 1), "duration": round(duration, 2)}
+        finally:
+            self._turn_lock.release()
 
     # -- licht ---------------------------------------------------------------
 
@@ -263,7 +308,25 @@ HTML_PAGE = """
     .swatch { min-height: 52px; }
     .swatch .ico { font-size: 22px; }
 
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: stretch; }
+    .row button { width: auto; padding: 12px 22px; }
+    input[type=number] {
+      font: inherit;
+      user-select: text;
+      -webkit-user-select: text;
+      font-size: 20px;
+      text-align: center;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 58px;
+      width: 100%;
+    }
+
     .hint { font-size: 11px; color: var(--muted); margin: 8px 2px 0; }
+    .hint code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
     footer { text-align: center; color: var(--muted); font-size: 11px; padding: 4px 0 8px; }
   </style>
 </head>
@@ -295,6 +358,16 @@ HTML_PAGE = """
     <div></div>
   </div>
   <p class="hint">De robot beweegt zolang je de knop ingedrukt houdt.</p>
+</section>
+
+<section>
+  <h2>Heading</h2>
+  <div class="row">
+    <input id="heading" type="number" inputmode="decimal" step="1" value="90">
+    <button id="heading-go"><span class="ico">🧭</span><span class="lbl">draai</span></button>
+  </div>
+  <p class="hint">90 = recht vooruit, meer draait naar rechts, minder naar links.
+     Werkt ook via de URL: <code>/heading/?heading=101</code></p>
 </section>
 
 <section>
@@ -363,6 +436,23 @@ async function send(cmd) {
   }
 }
 
+// heading: draai naar een hoek (90 = vooruit)
+document.getElementById('heading-go').addEventListener('click', async () => {
+  const value = document.getElementById('heading').value;
+  setStatus('draaien naar ' + value + '...');
+  try {
+    const res = await fetch('/heading/?heading=' + encodeURIComponent(value), { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      setStatus(data.turned + '° ' + data.direction, 'ok');
+    } else {
+      setStatus(data.error || 'fout', 'err');
+    }
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+});
+
 // gewone knoppen: één commando per tik
 document.querySelectorAll('button[data-cmd]:not([data-hold])').forEach(btn => {
   btn.addEventListener('click', () => send(btn.dataset.cmd));
@@ -428,6 +518,44 @@ def index():
 @app.route("/status")
 def status():
     return jsonify({"connected": robot.connected})
+
+
+@app.route("/heading/", methods=["GET", "POST"])
+@app.route("/heading", methods=["GET", "POST"])
+def heading():
+    """Draai de robot naar een heading, bv. http://<ip>:8080/heading/?heading=101
+
+    90 is recht vooruit, meer dan 90 draait naar rechts, minder naar links.
+    Het verschil met 90 is dus de hoek die de robot draait."""
+    raw = request.args.get("heading")
+    if raw is None:
+        return jsonify({"ok": False, "error": "parameter 'heading' ontbreekt"}), 400
+
+    try:
+        value = float(raw)
+    except ValueError:
+        return jsonify({"ok": False, "error": "heading moet een getal zijn: " + raw}), 400
+
+    if not robot.connected:
+        return jsonify({"ok": False, "error": "geen verbinding met de robot"}), 503
+
+    error = value - HEADING_FORWARD
+
+    try:
+        result = robot.turn_degrees(error)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if result is None:
+        return jsonify({"ok": False, "error": "er is al een draai bezig"}), 409
+
+    return jsonify({
+        "ok": True,
+        "heading": value,
+        "turned": result["degrees"],
+        "direction": "rechts" if result["degrees"] > 0 else ("links" if result["degrees"] < 0 else "geen"),
+        "duration": result["duration"],
+    })
 
 
 @app.route("/commands")

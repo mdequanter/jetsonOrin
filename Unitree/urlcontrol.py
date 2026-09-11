@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import random
+import subprocess
 import threading
 import time
 
@@ -36,6 +37,11 @@ logging.basicConfig(level=logging.FATAL)
 ROBOT_IP = "192.168.12.1"
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8080
+
+# De Jetson afsluiten vanaf de webpagina. Dit vraagt rootrechten: draai het
+# script als root, of geef de gebruiker een sudoregel zonder wachtwoord:
+#   jetson ALL=(ALL) NOPASSWD: /sbin/shutdown
+SHUTDOWN_COMMAND = ["sudo", "-n", "shutdown", "-h", "now"]
 
 MOVE_SPEED = 0.5
 TURN_SPEED = 1
@@ -527,6 +533,15 @@ HTML_PAGE = """
     .estop .lbl { color: #ffe9ea; font-size: 15px; font-weight: 700; }
     .estop:active { background: #ff5a5f; }
 
+    .danger {
+      background: #3a2224;
+      border-color: #6b2f33;
+      color: #ff9ea1;
+    }
+    .danger .lbl { color: #ff9ea1; }
+    .danger:active { background: var(--danger); }
+    .danger:active .ico, .danger:active .lbl { color: #fff; }
+
     .swatch { min-height: 52px; }
     .swatch .ico { font-size: 22px; }
 
@@ -655,6 +670,13 @@ HTML_PAGE = """
   </div>
 </section>
 
+<section>
+  <h2>Systeem</h2>
+  <button class="danger" id="shutdown"><span class="ico">⏻</span><span class="lbl">Jetson-Orin afsluiten</span></button>
+  <p class="hint">Zet de Jetson uit. Daarna is deze pagina niet meer bereikbaar
+     en moet je de Jetson met de hand opstarten.</p>
+</section>
+
 <footer>Robot: {{ robot_ip }}</footer>
 
 <script>
@@ -697,6 +719,21 @@ document.getElementById('heading-go').addEventListener('click', async () => {
 // gewone knoppen: één commando per tik
 document.querySelectorAll('button[data-cmd]:not([data-hold])').forEach(btn => {
   btn.addEventListener('click', () => send(btn.dataset.cmd));
+});
+
+// Jetson afsluiten, met bevestiging want dit legt alles stil
+document.getElementById('shutdown').addEventListener('click', async () => {
+  if (!confirm('De Jetson-Orin nu afsluiten?\n\nDe robot stopt en deze pagina valt weg.')) return;
+
+  setStatus('afsluiten...');
+  try {
+    const res = await fetch('/shutdown', { method: 'POST' });
+    const data = await res.json();
+    setStatus(data.ok ? 'Jetson wordt afgesloten' : (data.error || 'fout'), data.ok ? 'ok' : 'err');
+  } catch (err) {
+    // Bij een snelle shutdown kan het antwoord wegvallen, dat is normaal
+    setStatus('Jetson wordt afgesloten', 'ok');
+  }
 });
 
 // Staat "volg de camera" aan, dan stuurt de vooruitknop het pad achterna
@@ -838,6 +875,32 @@ def heading():
         "forward": result["forward"],
         "duration": result["duration"],
     })
+
+
+@app.route("/shutdown", methods=["POST"])
+def shutdown():
+    """Zet de Jetson uit. Daarna is de bediening uiteraard weg."""
+    try:
+        # De robot niet laten doorlopen terwijl de besturing verdwijnt
+        robot.move(x=0, y=0, z=0)
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(SHUTDOWN_COMMAND, capture_output=True,
+                                text=True, timeout=10)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if result.returncode != 0:
+        melding = (result.stderr or result.stdout or "").strip()
+        return jsonify({
+            "ok": False,
+            "error": melding or ("afsluiten gaf foutcode %d" % result.returncode),
+        }), 500
+
+    print("Jetson wordt afgesloten", flush=True)
+    return jsonify({"ok": True, "message": "Jetson wordt afgesloten"})
 
 
 @app.route("/commands")

@@ -3,8 +3,11 @@ import numpy as np
 
 import asyncio
 import logging
+import sys
+import termios
 import threading
 import time
+import tty
 from queue import Queue
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
@@ -36,6 +39,18 @@ TURN_SPEED = 0.3
 COMMAND_INTERVAL_SECONDS = 0.25
 
 model = YOLO("/home/jetson/jetsonOrin/signaling/models/denham.pt", verbose=False)
+
+
+def print_controls():
+    print("""
+================= CONTROLS =================
+o : opstaan (segmentatie start)
+l : neerliggen (segmentatie stopt)
+spatie : pauze aan/uit (robot beweegt niet)
+p : print controls
+(ctrl + c) : exit
+============================================
+""", flush=True)
 
 
 def get_allowed_mask_indices(result, model_names):
@@ -103,6 +118,20 @@ async def send_move(conn, x=0, y=0, z=0):
     )
 
 
+async def send_stand_up(conn):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {"api_id": SPORT_CMD["RecoveryStand"], "parameter": {"data": False}},
+    )
+
+
+async def send_stand_down(conn):
+    await conn.datachannel.pub_sub.publish_request_new(
+        RTC_TOPIC["SPORT_MOD"],
+        {"api_id": SPORT_CMD["StandDown"]},
+    )
+
+
 def turn_speed_for_heading(heading):
     if heading == TARGET_HEADING:
         return 0.0
@@ -127,9 +156,73 @@ def report_move_result(future):
     except Exception as exc:
         print(f"Move command failed: {exc}", flush=True)
 
+
+def get_key():
+    """Read a single keypress from stdin (works over SSH)."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
+
+def keyboard_listener(conn, loop, robot_state, stop_event):
+    """Blocking keyboard loop running in a separate thread."""
+    while not stop_event.is_set():
+        try:
+            k = get_key().lower()
+        except Exception:
+            break
+
+        # Ctrl+C
+        if k == "\x03":
+            print("\nExit requested", flush=True)
+            stop_event.set()
+            break
+
+        # Opstaan -> segmentatie mag draaien
+        elif k == "o":
+            asyncio.run_coroutine_threadsafe(send_stand_up(conn), loop)
+            robot_state["paused"] = False
+            robot_state["standing"] = True
+            robot_state["last_command"] = None
+            print("Opstaan: segmentatie actief", flush=True)
+
+        # Neerliggen -> segmentatie stopt
+        elif k == "l":
+            robot_state["standing"] = False
+            robot_state["last_command"] = None
+            asyncio.run_coroutine_threadsafe(send_move(conn), loop)
+            asyncio.run_coroutine_threadsafe(send_stand_down(conn), loop)
+            print("Neerliggen: segmentatie gestopt", flush=True)
+
+        # Pauze aan/uit
+        elif k == " ":
+            robot_state["paused"] = not robot_state["paused"]
+            robot_state["last_command"] = None
+            if robot_state["paused"]:
+                asyncio.run_coroutine_threadsafe(send_move(conn), loop)
+                print("PAUZE: robot beweegt niet", flush=True)
+            else:
+                print("Pauze opgeheven", flush=True)
+
+        # Print controls
+        elif k == "p":
+            print_controls()
+
+
 def main():
     frame_queue = Queue()
-    command_state = {"last_sent_at": 0.0, "last_command": None}
+    robot_state = {
+        "standing": False,
+        "paused": False,
+        "last_sent_at": 0.0,
+        "last_command": None,
+    }
+    stop_event = threading.Event()
 
     # Choose a connection method (uncomment the correct one)
     conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=UNITREE_IP_ADDRESS)
@@ -171,35 +264,57 @@ def main():
     asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
     asyncio_thread.start()
 
+    print_controls()
+
+    # Run keyboard listener in a background thread so it doesn't block the main loop
+    kb_thread = threading.Thread(
+        target=keyboard_listener,
+        args=(conn, loop, robot_state, stop_event),
+        daemon=True,
+    )
+    kb_thread.start()
+
     try:
-        while True:
-            if not frame_queue.empty():
-                img = frame_queue.get()
-                heading = compute_heading(img, model)
-                x_speed = forward_speed_for_heading(heading)
-                z_speed = turn_speed_for_heading(heading)
-                #print(
-                #    f"Heading: {heading:.2f} deg, "
-                #    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
-                #)
-
-                now = time.monotonic()
-                command_due = now - command_state["last_sent_at"] >= COMMAND_INTERVAL_SECONDS
-                command = (x_speed, z_speed)
-                command_changed = command != command_state["last_command"]
-                if command_due or command_changed:
-                    future = asyncio.run_coroutine_threadsafe(
-                        send_move(conn, x=x_speed, z=z_speed),
-                        loop,
-                    )
-                    future.add_done_callback(report_move_result)
-                    command_state["last_sent_at"] = now
-                    command_state["last_command"] = command
-
-            else:
+        while not stop_event.is_set():
+            if frame_queue.empty():
                 # Sleep briefly to prevent high CPU usage
                 time.sleep(0.01)
+                continue
+
+            img = frame_queue.get()
+
+            # Segmentatie draait enkel wanneer de robot rechtstaat en niet gepauzeerd is
+            if not robot_state["standing"] or robot_state["paused"]:
+                continue
+
+            heading = compute_heading(img, model)
+            x_speed = forward_speed_for_heading(heading)
+            z_speed = turn_speed_for_heading(heading)
+            #print(
+            #    f"Heading: {heading:.2f} deg, "
+            #    f"forward_x={x_speed:.2f}, turn_z={z_speed:.2f}"
+            #)
+
+            # Toestand kan tijdens de (trage) segmentatie veranderd zijn
+            if not robot_state["standing"] or robot_state["paused"]:
+                continue
+
+            now = time.monotonic()
+            command_due = now - robot_state["last_sent_at"] >= COMMAND_INTERVAL_SECONDS
+            command = (x_speed, z_speed)
+            command_changed = command != robot_state["last_command"]
+            if command_due or command_changed:
+                future = asyncio.run_coroutine_threadsafe(
+                    send_move(conn, x=x_speed, z=z_speed),
+                    loop,
+                )
+                future.add_done_callback(report_move_result)
+                robot_state["last_sent_at"] = now
+                robot_state["last_command"] = command
+    except KeyboardInterrupt:
+        print("\nProgram interrupted", flush=True)
     finally:
+        stop_event.set()
         try:
             asyncio.run_coroutine_threadsafe(send_move(conn), loop).result(timeout=2)
         except Exception as exc:

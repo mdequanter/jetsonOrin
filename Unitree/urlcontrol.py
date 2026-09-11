@@ -18,6 +18,13 @@ import time
 
 from flask import Flask, jsonify, render_template_string, request
 
+try:
+    import cv2
+    import numpy as np
+except ImportError:           # zonder opencv/numpy werkt enkel de handbediening
+    cv2 = None
+    np = None
+
 from unitree_webrtc_connect.webrtc_driver import (
     UnitreeWebRTCConnection,
     WebRTCConnectionMethod
@@ -42,15 +49,15 @@ HEADING_MAX_TURN = 180.0      # nooit meer dan een halve draai in één commando
 TURN_INTERVAL = 0.1           # s tussen twee move-commando's tijdens het draaien
 TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag als te veel
 
-# Camera + segmentatie: de heading wordt berekend met compute_heading() uit
-# segmentAndControlGo2.py, zodat er maar één plaats is waar het pad herkend wordt
+# Camera + segmentatie
 USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
+MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/thuis.pt"
+DETECTION_CONFIDENCE = 0.3
+SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
 SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
-# segmentAndControlGo2.py rekent met "kleiner dan 90 = pad naar rechts", hier is
-# het omgekeerd afgesproken (meer dan 90 = naar rechts), dus spiegelen we rond 90
-MIRROR_SEGMENTATION_HEADING = True
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -171,11 +178,79 @@ robot = RobotController()
 
 # ---------------------------------------------------------- camera + segmentatie
 
+def get_allowed_mask_indices(result, model_names):
+    """Houd enkel de maskers over die een pad voorstellen."""
+    if result.boxes is None or result.boxes.cls is None:
+        return []
+
+    allowed_indices = []
+    class_ids = result.boxes.cls.cpu().numpy().astype(int).tolist()
+    for index, class_id in enumerate(class_ids):
+        label = str(model_names.get(class_id, "")).strip().lower()
+        if label in ALLOWED_PATH_LABELS:
+            allowed_indices.append(index)
+    return allowed_indices
+
+
+def compute_heading_to_point(frame, target_x, target_y):
+    """Hoek van het midden onderaan het beeld naar een punt, in de conventie van
+    deze pagina: 90 is recht vooruit, meer dan 90 is naar rechts.
+
+    arctan2 telt tegen de klok in, dus een punt rechts van het midden geeft daar
+    minder dan 90 graden (zo staat het ook in segmentAndControlGo2.py). Daarom
+    spiegelen we het resultaat rond 90."""
+    h, w = frame.shape[:2]
+    start_x = w // 2
+    start_y = h
+    dx = target_x - start_x
+    dy = start_y - target_y
+    angle = float(np.degrees(np.arctan2(dy, dx)))
+    return 2 * HEADING_FORWARD - angle
+
+
+def compute_heading(frame, model):
+    """Zoek het pad in het beeld en geef de heading ernaartoe.
+
+    Per masker van een pad kijken we op een aantal hoogtes waar het pad zit, en
+    we mikken op het gemiddelde van die punten. Wordt er niets gevonden, dan
+    geven we recht vooruit terug."""
+    h, w = frame.shape[:2]
+    result = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)[0]
+    model_names = getattr(model, "names", {})
+    midpoints = []
+
+    if result.masks is None or len(result.masks.data) == 0:
+        return HEADING_FORWARD
+
+    for mask_index in get_allowed_mask_indices(result, model_names):
+        if mask_index >= len(result.masks.data):
+            continue
+
+        mask = result.masks.data[mask_index].cpu().numpy()
+        mask = (mask * 255).astype(np.uint8)
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        for row_ratio in SCAN_HEIGHTS:
+            y = int(h * row_ratio)
+            if y >= h:
+                continue
+            filled_x = np.where(mask[y, :] > 0)[0]
+            if len(filled_x) > 0:
+                midpoints.append((int(np.mean(filled_x)), y))
+
+    if not midpoints:
+        return HEADING_FORWARD
+
+    avg_x = int(np.mean([point[0] for point in midpoints]))
+    target_y = min(point[1] for point in midpoints)
+    return compute_heading_to_point(frame, avg_x, target_y)
+
+
 class Segmentation:
     """Berekent voortdurend de heading uit de camerabeelden van de robot.
 
-    De herkenning zelf komt uit segmentAndControlGo2.py; dat script blijft dus
-    de enige plaats waar het model en de padherkenning staan."""
+    Het model wordt in een achtergrondthread geladen, zodat de webpagina meteen
+    bruikbaar is en niet op YOLO moet wachten."""
 
     def __init__(self):
         self._frame = None
@@ -212,16 +287,19 @@ class Segmentation:
     def _run(self):
         self.status = "model laden"
         try:
-            # Het model wordt bij het importeren geladen, dat duurt even
-            from segmentAndControlGo2 import compute_heading, model
-        except BaseException as exc:      # ook SystemExit bij ontbrekende ultralytics
+            if cv2 is None or np is None:
+                raise RuntimeError("opencv of numpy ontbreekt")
+            # Ultralytics importeren en het model laden duurt een tiental seconden
+            from ultralytics import YOLO
+            model = YOLO(MODEL_PATH, verbose=False)
+        except Exception as exc:
             self.status = "fout"
             self.error = str(exc)
             print("Segmentatie niet beschikbaar: " + str(exc), flush=True)
             return
 
         self.status = "wachten op beeld"
-        print("Segmentatie klaar", flush=True)
+        print("Model geladen: " + MODEL_PATH, flush=True)
 
         while True:
             image = self.take_frame()
@@ -230,17 +308,14 @@ class Segmentation:
                 continue
 
             try:
-                raw = compute_heading(image, model)
+                heading = compute_heading(image, model)
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)
                 time.sleep(SEGMENTATION_INTERVAL)
                 continue
 
-            if MIRROR_SEGMENTATION_HEADING:
-                raw = 2 * HEADING_FORWARD - raw
-
-            self.heading = clamp(float(raw), 0.0, 180.0)
+            self.heading = clamp(float(heading), 0.0, 180.0)
             self.updated_at = time.monotonic()
             self.status = "actief"
             self.error = None

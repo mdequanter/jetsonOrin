@@ -36,7 +36,7 @@ BRIGHTNESS_LVL = 1
 
 # Heading-bediening: 90 = recht vooruit, meer = naar rechts, minder = naar links
 HEADING_FORWARD = 90.0
-HEADING_DEADBAND = 2.0        # graden verschil die we negeren
+HEADING_MOVE_SPEED = 0.2      # traag vooruit terwijl de robot draait
 HEADING_MAX_TURN = 180.0      # nooit meer dan een halve draai in één commando
 TURN_INTERVAL = 0.1           # s tussen twee move-commando's tijdens het draaien
 TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag als te veel
@@ -88,8 +88,11 @@ class RobotController:
     # -- heading -------------------------------------------------------------
 
     def turn_degrees(self, degrees):
-        """Draai een aantal graden ter plaatse: positief = rechts, negatief =
-        links. De Go2 draait zolang hij move-commando's krijgt, dus we blijven
+        """Draai een aantal graden terwijl de robot traag vooruit gaat:
+        positief = rechts, negatief = links. Bij 0 graden (heading precies
+        recht vooruit) gebeurt er niets.
+
+        De Go2 beweegt zolang hij move-commando's krijgt, dus we blijven
         herhalen tot de berekende tijd voorbij is en sturen daarna een stop.
 
         Geeft de gedraaide hoek en de duur terug, of None als er al een draai
@@ -98,8 +101,8 @@ class RobotController:
             return None
 
         try:
-            if abs(degrees) < HEADING_DEADBAND:
-                return {"degrees": 0.0, "duration": 0.0}
+            if degrees == 0:
+                return {"degrees": 0.0, "forward": 0.0, "duration": 0.0}
 
             degrees = clamp(degrees, -HEADING_MAX_TURN, HEADING_MAX_TURN)
             duration = math.radians(abs(degrees)) / TURN_SPEED * TURN_CALIBRATION
@@ -109,11 +112,15 @@ class RobotController:
 
             deadline = time.monotonic() + duration
             while time.monotonic() < deadline:
-                self.move(z=z)
+                self.move(x=HEADING_MOVE_SPEED, z=z)
                 time.sleep(TURN_INTERVAL)
             self.move(x=0, y=0, z=0)
 
-            return {"degrees": round(degrees, 1), "duration": round(duration, 2)}
+            return {
+                "degrees": round(degrees, 1),
+                "forward": HEADING_MOVE_SPEED,
+                "duration": round(duration, 2),
+            }
         finally:
             self._turn_lock.release()
 
@@ -367,6 +374,7 @@ HTML_PAGE = """
     <button id="heading-go"><span class="ico">🧭</span><span class="lbl">draai</span></button>
   </div>
   <p class="hint">90 = recht vooruit, meer draait naar rechts, minder naar links.
+     Bij alles behalve exact 90 gaat de robot tijdens het draaien traag vooruit.
      Werkt ook via de URL: <code>/heading/?heading=101</code></p>
 </section>
 
@@ -526,7 +534,8 @@ def heading():
     """Draai de robot naar een heading, bv. http://<ip>:8080/heading/?heading=101
 
     90 is recht vooruit, meer dan 90 draait naar rechts, minder naar links.
-    Het verschil met 90 is dus de hoek die de robot draait."""
+    Het verschil met 90 is de hoek die de robot draait. Zolang de heading niet
+    precies 90 is, gaat de robot tijdens het draaien ook traag vooruit."""
     raw = request.args.get("heading")
     if raw is None:
         return jsonify({"ok": False, "error": "parameter 'heading' ontbreekt"}), 400
@@ -554,6 +563,7 @@ def heading():
         "heading": value,
         "turned": result["degrees"],
         "direction": "rechts" if result["degrees"] > 0 else ("links" if result["degrees"] < 0 else "geen"),
+        "forward": result["forward"],
         "duration": result["duration"],
     })
 

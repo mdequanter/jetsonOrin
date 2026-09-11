@@ -11,6 +11,9 @@ from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
 from aiortc import MediaStreamTrack
 from pathlib import Path
 
+UNITREE_IP_ADDRESS = "192.168.1.12"
+
+
 try:
     from ultralytics import YOLO
 except ImportError as exc:
@@ -129,7 +132,7 @@ def main():
     command_state = {"last_sent_at": 0.0, "last_command": None}
 
     # Choose a connection method (uncomment the correct one)
-    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="unitree.local")
+    conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=UNITREE_IP_ADDRESS)
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
     # conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)

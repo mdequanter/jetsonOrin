@@ -41,6 +41,16 @@ HEADING_FORWARD_TIME = 1.0    # s rechtdoor stappen als de heading precies 90 is
 HEADING_MAX_TURN = 180.0      # nooit meer dan een halve draai in één commando
 TURN_INTERVAL = 0.1           # s tussen twee move-commando's tijdens het draaien
 TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag als te veel
+
+# Camera + segmentatie: de heading wordt berekend met compute_heading() uit
+# segmentAndControlGo2.py, zodat er maar één plaats is waar het pad herkend wordt
+USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
+FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
+SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
+HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
+# segmentAndControlGo2.py rekent met "kleiner dan 90 = pad naar rechts", hier is
+# het omgekeerd afgesproken (meer dan 90 = naar rechts), dus spiegelen we rond 90
+MIRROR_SEGMENTATION_HEADING = True
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -157,6 +167,104 @@ class RobotController:
 
 
 robot = RobotController()
+
+
+# ---------------------------------------------------------- camera + segmentatie
+
+class Segmentation:
+    """Berekent voortdurend de heading uit de camerabeelden van de robot.
+
+    De herkenning zelf komt uit segmentAndControlGo2.py; dat script blijft dus
+    de enige plaats waar het model en de padherkenning staan."""
+
+    def __init__(self):
+        self._frame = None
+        self._frame_lock = threading.Lock()
+        self._last_frame_at = 0.0
+        self.heading = None
+        self.updated_at = 0.0
+        self.status = "uit" if not USE_CAMERA else "wachten op beeld"
+        self.error = None
+
+    # -- beelden binnenkrijgen ----------------------------------------------
+
+    def put_frame(self, image):
+        """Bewaar enkel het laatste beeld; oudere beelden zijn toch achterhaald."""
+        now = time.monotonic()
+        if now - self._last_frame_at < FRAME_INTERVAL:
+            return
+        self._last_frame_at = now
+        with self._frame_lock:
+            self._frame = image
+
+    def take_frame(self):
+        with self._frame_lock:
+            image, self._frame = self._frame, None
+        return image
+
+    # -- berekening ----------------------------------------------------------
+
+    def start(self):
+        if not USE_CAMERA:
+            return
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        self.status = "model laden"
+        try:
+            # Het model wordt bij het importeren geladen, dat duurt even
+            from segmentAndControlGo2 import compute_heading, model
+        except BaseException as exc:      # ook SystemExit bij ontbrekende ultralytics
+            self.status = "fout"
+            self.error = str(exc)
+            print("Segmentatie niet beschikbaar: " + str(exc), flush=True)
+            return
+
+        self.status = "wachten op beeld"
+        print("Segmentatie klaar", flush=True)
+
+        while True:
+            image = self.take_frame()
+            if image is None:
+                time.sleep(0.05)
+                continue
+
+            try:
+                raw = compute_heading(image, model)
+            except Exception as exc:
+                self.status = "fout"
+                self.error = str(exc)
+                time.sleep(SEGMENTATION_INTERVAL)
+                continue
+
+            if MIRROR_SEGMENTATION_HEADING:
+                raw = 2 * HEADING_FORWARD - raw
+
+            self.heading = clamp(float(raw), 0.0, 180.0)
+            self.updated_at = time.monotonic()
+            self.status = "actief"
+            self.error = None
+            time.sleep(SEGMENTATION_INTERVAL)
+
+    # -- uitlezen ------------------------------------------------------------
+
+    def snapshot(self):
+        """Toestand voor de webpagina."""
+        heading = self.heading
+        age = time.monotonic() - self.updated_at if self.updated_at else None
+
+        if heading is not None and age is not None and age > HEADING_MAX_AGE:
+            heading = None
+
+        return {
+            "status": self.status,
+            "error": self.error,
+            "heading": round(heading, 1) if heading is not None else None,
+            "age": round(age, 1) if age is not None else None,
+        }
+
+
+segmentation = Segmentation()
 
 
 # -------------------------------------------------------------- commandotabel
@@ -336,6 +444,17 @@ HTML_PAGE = """
       width: 100%;
     }
 
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .check input { width: 22px; height: 22px; accent-color: var(--accent); }
+    .check b { color: var(--text); font-variant-numeric: tabular-nums; }
+
     .hint { font-size: 11px; color: var(--muted); margin: 8px 2px 0; }
     .hint code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
     footer { text-align: center; color: var(--muted); font-size: 11px; padding: 4px 0 8px; }
@@ -377,6 +496,10 @@ HTML_PAGE = """
     <input id="heading" type="number" inputmode="decimal" step="1" value="90">
     <button id="heading-go"><span class="ico">🧭</span><span class="lbl">draai</span></button>
   </div>
+  <label class="check">
+    <input type="checkbox" id="auto-heading" checked>
+    <span>volg de camera <b id="camera-heading">—</b></span>
+  </label>
   <p class="hint">90 = één seconde rechtdoor stappen. Meer draait naar rechts,
      minder naar links, telkens traag vooruit al draaiend.
      Werkt ook via de URL: <code>/heading/?heading=101</code></p>
@@ -501,18 +624,39 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => send('stop'));
 
-// verbindingstoestand ophalen
+// verbindingstoestand + heading van de camera ophalen
+const headingInput = document.getElementById('heading');
+const autoHeading = document.getElementById('auto-heading');
+const cameraHeading = document.getElementById('camera-heading');
+
+function showCamera(cam) {
+  if (!cam) return;
+
+  if (cam.heading === null || cam.heading === undefined) {
+    cameraHeading.textContent = '(' + cam.status + ')';
+    return;
+  }
+
+  cameraHeading.textContent = cam.heading.toFixed(1) + '°';
+
+  // Niet overschrijven terwijl je zelf een waarde aan het typen bent
+  if (autoHeading.checked && document.activeElement !== headingInput) {
+    headingInput.value = cam.heading;
+  }
+}
+
 async function poll() {
   try {
     const res = await fetch('/status');
     const data = await res.json();
     if (!data.connected) setStatus('robot niet verbonden', 'err');
+    showCamera(data.camera);
   } catch (err) {
     setStatus('server onbereikbaar', 'err');
   }
 }
 poll();
-setInterval(poll, 5000);
+setInterval(poll, 1000);
 </script>
 </body>
 </html>
@@ -529,7 +673,10 @@ def index():
 
 @app.route("/status")
 def status():
-    return jsonify({"connected": robot.connected})
+    return jsonify({
+        "connected": robot.connected,
+        "camera": segmentation.snapshot(),
+    })
 
 
 @app.route("/heading/", methods=["GET", "POST"])
@@ -600,6 +747,11 @@ def cmd(command):
 def run_asyncio_loop(loop, ready):
     asyncio.set_event_loop(loop)
 
+    async def recv_camera_stream(track):
+        while True:
+            frame = await track.recv()
+            segmentation.put_frame(frame.to_ndarray(format="bgr24"))
+
     async def setup():
         conn = UnitreeWebRTCConnection(
             WebRTCConnectionMethod.LocalSTA,
@@ -625,6 +777,12 @@ def run_asyncio_loop(loop, ready):
         robot.connected = True
         print("Verbonden met de Go2", flush=True)
 
+        # Camerabeelden binnenhalen voor de segmentatie
+        if USE_CAMERA:
+            conn.video.switchVideoChannel(True)
+            conn.video.add_track_callback(recv_camera_stream)
+            print("Camerastream gestart", flush=True)
+
     try:
         loop.run_until_complete(setup())
     except Exception as exc:
@@ -642,6 +800,9 @@ def main():
     asyncio_thread = threading.Thread(
         target=run_asyncio_loop, args=(loop, ready), daemon=True)
     asyncio_thread.start()
+
+    # Het YOLO-model laden duurt even, dus dat gebeurt in de achtergrond
+    segmentation.start()
 
     # Wacht tot de verbindingspoging klaar is, zodat de eerste kliks werken
     ready.wait(timeout=30)

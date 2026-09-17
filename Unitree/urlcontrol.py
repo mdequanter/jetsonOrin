@@ -89,6 +89,7 @@ ARUCO_COMMANDS = {
     29: "stretch",
 }
 ARUCO_MIN_FRAMES = 3          # zoveel beelden na elkaar zichtbaar voor we reageren
+ARUCO_TURN_FRAMES = 2         # draairegels reageren sneller: 2 beelden op de juiste afstand
 ARUCO_COOLDOWN = 30.0         # s voor we hetzelfde commando opnieuw laten uitvoeren
 
 # Draairegels: markers die de robot laten draaien, in te stellen via /aruco
@@ -679,6 +680,7 @@ class Segmentation:
         # ArUco-commando's: tellen hoe lang dezelfde marker in beeld ligt
         self._seen_id = None
         self._seen_count = 0
+        self._range_count = 0
         self._triggered_at = {}
         self.last_command = None
         self.command_count = 0
@@ -712,22 +714,26 @@ class Segmentation:
     def marker_action(self, marker):
         """Geef de actie die bij de marker hoort, of None.
 
-        We reageren pas als dezelfde marker ARUCO_MIN_FRAMES beelden na elkaar
-        in beeld ligt; zo zet een marker die even voorbijflitst de robot niet
-        aan het werk. Daarna houden we hem ARUCO_COOLDOWN seconden tegen, zodat
-        een marker die blijft liggen niet telkens opnieuw afgaat.
+        Een marker uit ARUCO_COMMANDS geeft een vast commando, zodra hij
+        ARUCO_MIN_FRAMES beelden na elkaar in beeld ligt; zo zet een marker die
+        even voorbijflitst de robot niet aan het werk.
 
-        Een marker uit ARUCO_COMMANDS geeft een vast commando. Staat er een
-        draairegel op, dan moet de marker bovendien op de ingestelde afstand
-        liggen, marge inbegrepen."""
+        Bij een draairegel moet het sneller gaan: daar volstaan
+        ARUCO_TURN_FRAMES beelden na elkaar waarop de marker ook nog eens op de
+        ingestelde afstand ligt, marge inbegrepen. Een beeld buiten die afstand
+        zet die teller weer op nul.
+
+        In beide gevallen houden we de marker daarna ARUCO_COOLDOWN seconden
+        tegen, zodat hij niet telkens opnieuw afgaat."""
         marker_id = marker["id"] if marker else None
 
         if marker_id != self._seen_id:
             self._seen_id = marker_id
             self._seen_count = 0
+            self._range_count = 0
         self._seen_count += 1
 
-        if marker_id is None or self._seen_count < ARUCO_MIN_FRAMES:
+        if marker_id is None:
             return None
 
         # Zonder verbinding valt er niets uit te voeren; we wachten gewoon af
@@ -736,12 +742,22 @@ class Segmentation:
 
         command = ARUCO_COMMANDS.get(marker_id)
         if command is not None:
+            if self._seen_count < ARUCO_MIN_FRAMES:
+                return None
             action = {"kind": "command", "command": command, "label": command}
         else:
             rule = turn_rules.get(marker_id)
-            distance = marker_distance(marker["area"])
-            if rule is None or not rule_matches(rule, distance):
+            if rule is None:
                 return None
+
+            if rule_matches(rule, marker_distance(marker["area"])):
+                self._range_count += 1
+            else:
+                self._range_count = 0
+
+            if self._range_count < ARUCO_TURN_FRAMES:
+                return None
+
             action = {
                 "kind": "turn",
                 "rule": rule,
@@ -1247,8 +1263,9 @@ HTML_PAGE = """
      commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
      liggen. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
      later opnieuw af; wat vroeger komt wordt genegeerd.
-     Andere markers kunnen de robot laten draaien als ze op een ingestelde
-     afstand liggen: dat stel je in bij de <a class="terug" href="/aruco">draairegels</a>. Zet het beeld uit als de
+     Andere markers kunnen de robot laten draaien zodra ze {{ aruco_turn_frames }}
+     beelden na elkaar op een ingestelde afstand liggen: dat stel je in bij de
+     <a class="terug" href="/aruco">draairegels</a>. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1620,9 +1637,10 @@ ARUCO_PAGE = """
     <tbody id="rules"></tbody>
   </table>
   <p class="leeg" id="leeg">Nog geen regels ingesteld.</p>
-  <p class="hint">Een regel gaat af zodra de marker {{ min_frames }} beelden na
-     elkaar in beeld ligt <b>en</b> op de ingestelde afstand staat, marge
-     inbegrepen. Daarna wacht dezelfde marker {{ cooldown }} seconden.</p>
+  <p class="hint">Een regel gaat af zodra de marker {{ turn_frames }} beelden na
+     elkaar op de ingestelde afstand ligt, marge inbegrepen. Een beeld buiten die
+     afstand zet de teller weer op nul. Daarna wacht dezelfde marker
+     {{ cooldown }} seconden.</p>
 </section>
 
 <section>
@@ -1789,6 +1807,7 @@ def index():
                                 for area, distance in ARUCO_CALIBRATION),
         aruco_commands=ARUCO_COMMANDS,
         aruco_min_frames=ARUCO_MIN_FRAMES,
+        aruco_turn_frames=ARUCO_TURN_FRAMES,
         aruco_cooldown=int(ARUCO_COOLDOWN),
     )
 
@@ -1925,6 +1944,7 @@ def aruco():
         ARUCO_PAGE,
         fixed=sorted(ARUCO_COMMANDS.items()),
         min_frames=ARUCO_MIN_FRAMES,
+        turn_frames=ARUCO_TURN_FRAMES,
         cooldown=int(ARUCO_COOLDOWN),
         max_seconds=MAX_TURN_SECONDS,
         max_distance=MAX_RULE_DISTANCE,

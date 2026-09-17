@@ -95,6 +95,8 @@ ARUCO_COOLDOWN = 30.0         # s voor we hetzelfde commando opnieuw laten uitvo
 # Draairegels: markers die de robot laten draaien, in te stellen via /aruco
 ARUCO_RULES_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "aruco_turn_rules.json")
+ARUCO_MARKERS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "aruco_commands.json")
 TURN_DIRECTIONS = ("links", "rechts")
 MAX_TURN_SECONDS = 10.0       # grens op de duur van een draai
 MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
@@ -357,9 +359,10 @@ def validate_rule(marker_id, direction, seconds, distance, margin):
 
     if not 0 <= marker_id <= 999:
         raise ValueError("de marker moet tussen 0 en 999 liggen")
-    if marker_id in ARUCO_COMMANDS:
+    used_by = command_markers.get_command(marker_id)
+    if used_by is not None:
         raise ValueError("marker %d is al een vast commando (%s)"
-                         % (marker_id, ARUCO_COMMANDS[marker_id]))
+                         % (marker_id, used_by))
 
     direction = str(direction).strip().lower()
     if direction not in TURN_DIRECTIONS:
@@ -395,6 +398,120 @@ def rule_matches(rule, distance):
         return False
     low, high = rule_range(rule)
     return low <= distance <= high
+
+
+def validate_command_marker(command, marker_id):
+    """Controleer een koppeling tussen een marker en een vast commando."""
+    command = str(command).strip()
+    if command not in COMMANDS:
+        raise ValueError("onbekend commando: " + command)
+
+    try:
+        marker_id = int(marker_id)
+    except (TypeError, ValueError):
+        raise ValueError("de marker moet een geheel getal zijn")
+    if not 0 <= marker_id <= 999:
+        raise ValueError("de marker moet tussen 0 en 999 liggen")
+
+    return command, marker_id
+
+
+class CommandMarkers:
+    """Welke marker welk vast commando uitvoert.
+
+    Bij een eerste start gelden de koppelingen uit ARUCO_COMMANDS. Wat je via
+    /aruco wijzigt komt in een json-bestand naast dit script en heeft daarna
+    voorrang."""
+
+    def __init__(self, path, defaults):
+        self.path = path
+        self._lock = threading.Lock()
+
+        markers = {}
+        for marker_id, command in defaults.items():
+            # Een tikfout in ARUCO_COMMANDS moet meteen opvallen
+            command, marker_id = validate_command_marker(command, marker_id)
+            markers[command] = marker_id
+        self._markers = markers
+
+        self.load()
+
+    def load(self):
+        try:
+            with open(self.path) as bestand:
+                stored = json.load(bestand)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            print("Markercommando's lezen mislukt: " + str(exc), flush=True)
+            return
+
+        markers = {}
+        for command, marker_id in (stored.items() if isinstance(stored, dict) else []):
+            try:
+                command, marker_id = validate_command_marker(command, marker_id)
+            except ValueError as exc:
+                print("Markercommando overgeslagen: " + str(exc), flush=True)
+                continue
+            markers[command] = marker_id
+
+        with self._lock:
+            self._markers = markers
+        print("Markercommando's geladen: %d" % len(markers), flush=True)
+
+    def save(self):
+        with self._lock:
+            markers = dict(self._markers)
+        try:
+            with open(self.path, "w") as bestand:
+                json.dump(markers, bestand, indent=2)
+        except OSError as exc:
+            print("Markercommando's bewaren mislukt: " + str(exc), flush=True)
+
+    def all(self):
+        """Alle koppelingen, op markernummer gesorteerd."""
+        with self._lock:
+            items = list(self._markers.items())
+        return [{"command": command, "id": marker_id}
+                for command, marker_id in sorted(items, key=lambda item: item[1])]
+
+    def as_dict(self):
+        """De koppelingen als marker -> commando, zoals ARUCO_COMMANDS."""
+        with self._lock:
+            return dict((marker_id, command)
+                        for command, marker_id in self._markers.items())
+
+    def get_command(self, marker_id):
+        """Welk commando hoort bij deze marker? None als er geen is."""
+        with self._lock:
+            for command, other_id in self._markers.items():
+                if other_id == marker_id:
+                    return command
+        return None
+
+    def set(self, command, marker_id):
+        """Koppel een marker aan een commando, of verplaats een bestaande."""
+        command, marker_id = validate_command_marker(command, marker_id)
+
+        in_use = self.get_command(marker_id)
+        if in_use is not None and in_use != command:
+            raise ValueError("marker %d is al gekoppeld aan %s" % (marker_id, in_use))
+        if turn_rules.get(marker_id) is not None:
+            raise ValueError("marker %d heeft al een draairegel" % marker_id)
+
+        with self._lock:
+            self._markers[command] = marker_id
+        self.save()
+        return {"command": command, "id": marker_id}
+
+    def delete(self, command):
+        command = str(command).strip()
+        with self._lock:
+            removed = self._markers.pop(command, None)
+        if removed is None:
+            raise ValueError("er is geen marker gekoppeld aan " + command)
+        self.save()
+        return {"command": command, "id": removed}
 
 
 class TurnRules:
@@ -469,9 +586,6 @@ class TurnRules:
             raise ValueError("er is geen regel voor marker %d" % marker_id)
         self.save()
         return removed
-
-
-turn_rules = TurnRules(ARUCO_RULES_PATH)
 
 
 def draw_marker(frame, marker):
@@ -740,7 +854,7 @@ class Segmentation:
         if not robot.connected:
             return None
 
-        command = ARUCO_COMMANDS.get(marker_id)
+        command = command_markers.get_command(marker_id)
         if command is not None:
             if self._seen_count < ARUCO_MIN_FRAMES:
                 return None
@@ -1013,10 +1127,16 @@ COMMANDS = {
 }
 
 
-# Elke ArUco-actie moet naar een bestaand commando verwijzen
-for _marker_id, _command in sorted(ARUCO_COMMANDS.items()):
-    if _command not in COMMANDS:
-        raise RuntimeError("ARUCO_COMMANDS verwijst naar een onbekend commando: " + _command)
+# De koppelingen kennen COMMANDS, dus die maken we hier pas aan. De vaste
+# commando's eerst: de draairegels controleren erop of een marker al bezet is.
+command_markers = CommandMarkers(ARUCO_MARKERS_PATH, ARUCO_COMMANDS)
+turn_rules = TurnRules(ARUCO_RULES_PATH)
+
+for _rule in turn_rules.all():
+    _command = command_markers.get_command(_rule["id"])
+    if _command is not None:
+        print("Let op: marker %d heeft zowel een draairegel als het commando %s; "
+              "het commando gaat voor" % (_rule["id"], _command), flush=True)
 
 
 # ------------------------------------------------------------------ webpagina
@@ -1683,15 +1803,35 @@ ARUCO_PAGE = """
 <section>
   <h2>Vaste commando's</h2>
   <table>
-    <thead><tr><th>marker</th><th>commando</th></tr></thead>
-    <tbody>
-      {% for marker_id, command in fixed %}
-      <tr><td class="marker">{{ marker_id }}</td><td>{{ command }}</td></tr>
-      {% endfor %}
-    </tbody>
+    <thead><tr><th>marker</th><th>commando</th><th></th></tr></thead>
+    <tbody id="commands"></tbody>
   </table>
-  <p class="hint">Deze markers liggen vast in het script; ze kunnen hier niet
-     als draairegel gebruikt worden.</p>
+  <p class="leeg" id="leeg-commands">Nog geen markers gekoppeld.</p>
+
+  <div class="form">
+    <div>
+      <label for="command">commando</label>
+      <select id="command">
+        {% for name in commands %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="command-id">marker</label>
+      <input id="command-id" type="number" inputmode="numeric" min="0" max="999" step="1" value="22">
+    </div>
+    <div class="wide">
+      <button id="save-command"><span class="ico">&#128190;</span><span class="lbl">commando bewaren</span></button>
+    </div>
+  </div>
+
+  <p class="hint">Eén marker per commando: kies het commando en geef de marker
+     die het moet uitvoeren. Een bestaand commando verhuist zo naar een andere
+     marker. Deze markers gaan af na {{ min_frames }} beelden na elkaar, zonder
+     afstandsvoorwaarde, en kunnen niet ook een draairegel hebben.
+     Op de bedieningspagina staan de nummers op de knoppen; herlaad die pagina
+     na een wijziging.</p>
 </section>
 
 <footer><a class="terug" href="/">&#8592; terug naar de bediening</a></footer>
@@ -1783,8 +1923,72 @@ async function verwijder(markerId) {
   }
 }
 
+// ------------------------------------------------ de vaste commando's
+
+function commandoRij(koppeling) {
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td class="marker">' + koppeling.id + '</td>' +
+    '<td>' + koppeling.command + '</td>';
+
+  const cel = document.createElement('td');
+  cel.className = 'actie';
+  const knop = document.createElement('button');
+  knop.innerHTML = '<span class="ico">&#128465;&#65039;</span>';
+  knop.addEventListener('click', () => verwijderCommando(koppeling.command));
+  cel.appendChild(knop);
+  tr.appendChild(cel);
+  return tr;
+}
+
+function toonCommandos(koppelingen) {
+  const body = document.getElementById('commands');
+  body.innerHTML = '';
+  koppelingen.forEach(koppeling => body.appendChild(commandoRij(koppeling)));
+  document.getElementById('leeg-commands').style.display =
+    koppelingen.length ? 'none' : 'block';
+}
+
+async function ladenCommandos() {
+  try {
+    const res = await fetch('/aruco/commands');
+    toonCommandos(await res.json());
+  } catch (err) {
+    setStatus('server onbereikbaar', 'err');
+  }
+}
+
+async function bewaarCommando() {
+  const vraag = 'command=' + encodeURIComponent(waarde('command')) +
+                '&id=' + encodeURIComponent(waarde('command-id'));
+  try {
+    const res = await fetch('/aruco/commands?' + vraag, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) { setStatus(data.error || 'fout', 'err'); return; }
+    setStatus(data.marker.command + ' op marker ' + data.marker.id, 'ok');
+    toonCommandos(data.markers);
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+}
+
+async function verwijderCommando(command) {
+  try {
+    const res = await fetch('/aruco/commands/delete?command=' + encodeURIComponent(command),
+                            { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) { setStatus(data.error || 'fout', 'err'); return; }
+    setStatus(command + ' losgekoppeld', 'ok');
+    toonCommandos(data.markers);
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+}
+
 document.getElementById('save').addEventListener('click', bewaren);
+document.getElementById('save-command').addEventListener('click', bewaarCommando);
 laden();
+ladenCommandos();
 </script>
 </body>
 </html>
@@ -1805,7 +2009,7 @@ def index():
         model=segmentation.model_name,
         calibration=" en ".join("%d px² = %.2f m" % (area, distance)
                                 for area, distance in ARUCO_CALIBRATION),
-        aruco_commands=ARUCO_COMMANDS,
+        aruco_commands=command_markers.as_dict(),
         aruco_min_frames=ARUCO_MIN_FRAMES,
         aruco_turn_frames=ARUCO_TURN_FRAMES,
         aruco_cooldown=int(ARUCO_COOLDOWN),
@@ -1942,7 +2146,7 @@ def aruco():
     """Pagina om de draairegels van de markers in te stellen."""
     return render_template_string(
         ARUCO_PAGE,
-        fixed=sorted(ARUCO_COMMANDS.items()),
+        commands=sorted(COMMANDS),
         min_frames=ARUCO_MIN_FRAMES,
         turn_frames=ARUCO_TURN_FRAMES,
         cooldown=int(ARUCO_COOLDOWN),
@@ -1973,6 +2177,33 @@ def aruco_rules():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
     return jsonify({"ok": True, "rule": rule, "rules": rules_for_page()})
+
+
+@app.route("/aruco/commands", methods=["GET", "POST"])
+def aruco_commands():
+    """De vaste commando's lezen, of een commando aan een marker koppelen.
+
+    Koppelen gaat met beide waarden, bv. /aruco/commands?command=hello&id=22"""
+    if request.method == "GET":
+        return jsonify(command_markers.all())
+
+    try:
+        marker = command_markers.set(request.args.get("command"), request.args.get("id"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "marker": marker, "markers": command_markers.all()})
+
+
+@app.route("/aruco/commands/delete", methods=["POST"])
+def aruco_commands_delete():
+    """Haal de marker van een commando weg, bv. /aruco/commands/delete?command=hello"""
+    try:
+        removed = command_markers.delete(request.args.get("command"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "removed": removed, "markers": command_markers.all()})
 
 
 @app.route("/aruco/rules/delete", methods=["POST"])

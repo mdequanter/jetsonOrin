@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import random
 import threading
 import time
@@ -55,6 +56,7 @@ MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/unrealsim.pt"
 DETECTION_CONFIDENCE = 0.8    # startwaarde, op de webpagina aanpasbaar
 CONFIDENCE_CHOICES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+MODEL_DIR = os.path.dirname(MODEL_PATH)   # hier zoeken we de andere .pt-bestanden
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
 SEGMENTATION_INTERVAL = 0.3   # s tussen twee berekeningen
@@ -210,6 +212,16 @@ robot = RobotController()
 
 
 # ---------------------------------------------------------- camera + segmentatie
+
+def available_models():
+    """De .pt-bestanden die naast het ingestelde model staan."""
+    try:
+        names = [name for name in os.listdir(MODEL_DIR or ".")
+                 if name.lower().endswith(".pt")]
+    except OSError:
+        names = []
+    return sorted(names)
+
 
 def get_allowed_mask_indices(result, model_names):
     """Houd enkel de maskers over die een pad voorstellen."""
@@ -380,6 +392,7 @@ class Segmentation:
         self.status = "uit" if not USE_CAMERA else "wachten op beeld"
         self.error = None
         self.confidence = DETECTION_CONFIDENCE
+        self.model_name = os.path.basename(MODEL_PATH)
 
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
@@ -456,19 +469,39 @@ class Segmentation:
         try:
             if cv2 is None or np is None:
                 raise RuntimeError("opencv of numpy ontbreekt")
-            # Ultralytics importeren en het model laden duurt een tiental seconden
+            # Ultralytics importeren duurt een tiental seconden
             from ultralytics import YOLO
-            model = YOLO(MODEL_PATH, verbose=False)
         except Exception as exc:
             self.status = "fout"
             self.error = str(exc)
             print("Segmentatie niet beschikbaar: " + str(exc), flush=True)
             return
 
-        self.status = "wachten op beeld"
-        print("Model geladen: " + MODEL_PATH, flush=True)
+        model = None
+        loaded_name = None
 
         while True:
+            # Een ander model gekozen op de webpagina? Dan laden we dat nu
+            wanted = self.model_name
+            if wanted != loaded_name:
+                self.status = "model laden"
+                loaded_name = wanted
+                try:
+                    model = YOLO(os.path.join(MODEL_DIR, wanted), verbose=False)
+                    self.status = "wachten op beeld"
+                    self.error = None
+                    print("Model geladen: " + wanted, flush=True)
+                except Exception as exc:
+                    model = None
+                    self.status = "fout"
+                    self.error = str(exc)
+                    print("Model laden mislukt: " + str(exc), flush=True)
+
+            # Zonder model wachten we tot er een ander gekozen wordt
+            if model is None:
+                time.sleep(SEGMENTATION_INTERVAL)
+                continue
+
             image = self.take_frame()
             if image is None:
                 time.sleep(0.05)
@@ -490,6 +523,26 @@ class Segmentation:
             time.sleep(SEGMENTATION_INTERVAL)
 
     # -- uitlezen ------------------------------------------------------------
+
+    def model_choices(self):
+        """Alle modellen om uit te kiezen, met het huidige er zeker bij."""
+        return sorted(set(available_models()) | {self.model_name})
+
+    def set_model(self, name):
+        """Kies een ander .pt-bestand. De achtergrondthread laadt het daarna.
+
+        Enkel bestandsnamen uit MODEL_DIR zijn toegelaten, zo kan er via de URL
+        geen ander bestand van de Jetson geopend worden."""
+        name = os.path.basename(str(name))
+        if name not in available_models():
+            raise ValueError("onbekend model: " + name)
+
+        if name != self.model_name:
+            self.model_name = name
+            # De oude heading hoort bij het oude model, dus die gooien we weg
+            self.heading = None
+            self.updated_at = 0.0
+        return self.model_name
 
     def set_confidence(self, value):
         """Zet de drempel waarboven het model een masker meetelt."""
@@ -516,6 +569,7 @@ class Segmentation:
             "heading": round(heading, 1) if heading is not None else None,
             "age": round(age, 1) if age is not None else None,
             "confidence": round(self.confidence, 2),
+            "model": self.model_name,
         }
 
 
@@ -710,6 +764,7 @@ HTML_PAGE = """
     }
     .check input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
     .check select {
+      max-width: 60%;
       font: inherit;
       color: var(--text);
       background: var(--panel-2);
@@ -772,6 +827,14 @@ HTML_PAGE = """
     <span>toon het beeld</span>
   </label>
   <label class="check">
+    <span>model</span>
+    <select id="model">
+      {% for name in model_choices %}
+      <option value="{{ name }}"{% if name == model %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="check">
     <span>confidence</span>
     <select id="confidence">
       {% for value in confidence_choices %}
@@ -784,7 +847,10 @@ HTML_PAGE = """
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
-     Werkt ook via de URL: <code>/confidence/?value=0.4</code></p>
+     Werkt ook via de URL: <code>/confidence/?value=0.4</code><br>
+     De keuzelijst toont de <code>.pt</code>-bestanden uit de modelmap. Een ander
+     model laden duurt een tiental seconden, ondertussen staat de status op
+     "model laden". Werkt ook via <code>/model/?name=denham.pt</code></p>
 </section>
 
 <section>
@@ -986,6 +1052,20 @@ showCameraBox.addEventListener('change', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopStream(); else startStream();
 });
+// het model kiezen: de .pt-bestanden uit de modelmap
+const modelBox = document.getElementById('model');
+
+modelBox.addEventListener('change', async () => {
+  setStatus('model laden...');
+  try {
+    const res = await fetch('/model/?name=' + encodeURIComponent(modelBox.value), { method: 'POST' });
+    const data = await res.json();
+    setStatus(data.ok ? data.model : (data.error || 'fout'), data.ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+});
+
 // de drempel waarboven het model een masker meetelt
 const confidenceBox = document.getElementById('confidence');
 
@@ -1014,9 +1094,12 @@ function showCamera(cam) {
     ? cam.status
     : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
 
-  // De keuzelijst gelijk houden met de server, bv. na een herstart of een URL
+  // De keuzelijsten gelijk houden met de server, bv. na een herstart of een URL
   if (cam.confidence !== undefined && document.activeElement !== confidenceBox) {
     confidenceBox.value = cam.confidence.toFixed(1);
+  }
+  if (cam.model && document.activeElement !== modelBox && modelBox.value !== cam.model) {
+    modelBox.value = cam.model;
   }
 
   if (cam.heading === null || cam.heading === undefined) {
@@ -1060,6 +1143,8 @@ def index():
         robot_ip=ROBOT_IP,
         confidence_choices=CONFIDENCE_CHOICES,
         confidence=segmentation.confidence,
+        model_choices=segmentation.model_choices(),
+        model=segmentation.model_name,
     )
 
 
@@ -1150,6 +1235,29 @@ def confidence():
         return jsonify({"ok": False, "error": "confidence moet een getal zijn: " + raw}), 400
 
     return jsonify({"ok": True, "confidence": segmentation.set_confidence(value)})
+
+
+@app.route("/model/", methods=["GET", "POST"])
+@app.route("/model", methods=["GET", "POST"])
+def model():
+    """Lees of kies het model, bv. /model/?name=laerbeekbos.pt
+
+    De keuze gaat over de .pt-bestanden die in MODEL_DIR staan. Het laden
+    gebeurt in de achtergrondthread en duurt een tiental seconden; ondertussen
+    staat de status op "model laden"."""
+    raw = request.args.get("name")
+    if raw is None:
+        return jsonify({"ok": True, "model": segmentation.model_name,
+                        "choices": segmentation.model_choices(),
+                        "directory": MODEL_DIR})
+
+    try:
+        name = segmentation.set_model(raw)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc),
+                        "choices": segmentation.model_choices()}), 400
+
+    return jsonify({"ok": True, "model": name})
 
 
 @app.route("/commands")

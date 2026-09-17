@@ -52,7 +52,7 @@ TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag a
 # Camera + segmentatie
 USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
 MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/unrealsim.pt"
-DETECTION_CONFIDENCE = 0.7
+DETECTION_CONFIDENCE = 0.8
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)

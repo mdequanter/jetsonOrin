@@ -17,3 +17,6 @@ authtokens.csv
 /stayontrails/freewalk-cert.pem
 /stayontrails/freewalk-key.pem
 /stayontrails/phone-rootCA.pem
+
+# Foto's die urlcontrol.py van het camerabeeld bewaart
+/Unitree/fotos

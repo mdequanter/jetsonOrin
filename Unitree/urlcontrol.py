@@ -62,6 +62,22 @@ FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps vol
 SEGMENTATION_INTERVAL = 0.2  # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
 
+# Foto's van het ruwe camerabeeld: op vraag of om de zoveel tijd
+PHOTO_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fotos")
+PHOTO_QUALITY = 90            # JPEG-kwaliteit van een bewaarde foto
+PHOTO_TICK = 0.5              # s tussen twee controles of er een foto moet
+PHOTO_INTERVALS = [           # (seconden, wat er op de webpagina staat)
+    (0, "geen"),
+    (5, "5 seconden"),
+    (10, "10 seconden"),
+    (30, "30 seconden"),
+    (60, "1 minuut"),
+    (120, "2 minuten"),
+    (300, "5 minuten"),
+    (600, "10 minuten"),
+]
+
 # Live beeld op de webpagina (/video)
 STREAM_SIZE = (640, 480)      # het beeld wordt hierin gepast, met zwarte randen
 STREAM_QUALITY = 70           # JPEG-kwaliteit van de stream
@@ -901,6 +917,8 @@ class Segmentation:
         self._frame = None
         self._frame_lock = threading.Lock()
         self._last_frame_at = 0.0
+        self._raw_frame = None            # het laatste beeld zoals het binnenkwam
+        self._raw_lock = threading.Lock()
         self.heading = None
         self.updated_at = 0.0
         self.status = "uit" if not USE_CAMERA else "wachten op beeld"
@@ -934,6 +952,10 @@ class Segmentation:
 
     def put_frame(self, image):
         """Bewaar enkel het laatste beeld; oudere beelden zijn toch achterhaald."""
+        # Het kale beeld apart bijhouden: daar maken de foto's gebruik van
+        with self._raw_lock:
+            self._raw_frame = image
+
         self._publish_stream(image, annotated=False)
 
         # De noodstopthread krijgt elk beeld, die mag niet wachten
@@ -953,6 +975,14 @@ class Segmentation:
         with self._frame_lock:
             image, self._frame = self._frame, None
         return image
+
+    def raw_frame(self):
+        """Het laatste camerabeeld zonder masker, kaders of tekst, of None.
+
+        Niemand tekent op een binnengekomen beeld: de segmentatie werkt op een
+        kopie. Dit blijft dus het beeld zoals de camera het aanleverde."""
+        with self._raw_lock:
+            return self._raw_frame
 
     # -- commando's van een marker -------------------------------------------
 
@@ -1291,6 +1321,108 @@ class Segmentation:
 
 
 segmentation = Segmentation()
+
+
+# ------------------------------------------------------------------- foto's
+
+class PhotoRecorder:
+    """Bewaart het ruwe camerabeeld als JPEG in PHOTO_DIR.
+
+    Op de webpagina staat er een knop om er meteen een te nemen, en een
+    keuzelijst om er vanzelf om de zoveel tijd een te laten bewaren. De map
+    wordt aangemaakt zodra er een eerste foto in moet."""
+
+    def __init__(self):
+        self.interval = 0         # s tussen twee foto's; 0 = enkel op de knop
+        self.count = 0
+        self.last_name = None
+        self.error = None
+        self._due_at = 0.0
+        self._lock = threading.Lock()
+
+    def interval_choices(self):
+        """De keuzes voor de lijst op de webpagina."""
+        return [{"seconds": seconds, "label": label}
+                for seconds, label in PHOTO_INTERVALS]
+
+    def set_interval(self, value):
+        """Kies om de hoeveel seconden er vanzelf een foto bewaard wordt.
+
+        Enkel de waarden uit PHOTO_INTERVALS zijn toegelaten; 0 zet het af."""
+        try:
+            seconds = int(float(value))
+        except (TypeError, ValueError):
+            raise ValueError("interval moet een getal zijn: %s" % (value,))
+
+        if seconds not in [choice for choice, _ in PHOTO_INTERVALS]:
+            raise ValueError("onbekend interval: %s" % (value,))
+
+        with self._lock:
+            self.interval = seconds
+            # Het wachten begint nu opnieuw, ook als er net een foto genomen is
+            self._due_at = time.monotonic() + seconds
+        return seconds
+
+    def save_now(self):
+        """Bewaar het laatste ruwe beeld en geef de bestandsnaam terug."""
+        if cv2 is None:
+            raise RuntimeError("opencv ontbreekt")
+
+        image = segmentation.raw_frame()
+        if image is None:
+            raise RuntimeError("nog geen camerabeeld")
+
+        os.makedirs(PHOTO_DIR, exist_ok=True)
+        now = time.time()
+        name = "%s_%03d.jpg" % (time.strftime("%Y%m%d_%H%M%S", time.localtime(now)),
+                                int(now % 1 * 1000))
+        path = os.path.join(PHOTO_DIR, name)
+
+        if not cv2.imwrite(path, image, [int(cv2.IMWRITE_JPEG_QUALITY), PHOTO_QUALITY]):
+            raise RuntimeError("bewaren mislukt: " + path)
+
+        with self._lock:
+            self.count += 1
+            self.last_name = name
+            self.error = None
+            self._due_at = time.monotonic() + self.interval
+        return name
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        """Neem om de zoveel tijd een foto, zolang er een interval ingesteld is."""
+        while True:
+            time.sleep(PHOTO_TICK)
+
+            with self._lock:
+                due = self.interval and time.monotonic() >= self._due_at
+            if not due:
+                continue
+
+            try:
+                self.save_now()
+            except Exception as exc:
+                with self._lock:
+                    self.error = str(exc)
+                    # Niet blijven proberen: pas bij de volgende beurt opnieuw
+                    self._due_at = time.monotonic() + self.interval
+                print("Foto mislukt: " + str(exc), flush=True)
+
+    def snapshot(self):
+        """Toestand voor de webpagina."""
+        with self._lock:
+            return {
+                "interval": self.interval,
+                "count": self.count,
+                "last": self.last_name,
+                "error": self.error,
+                "directory": PHOTO_DIR,
+            }
+
+
+photos = PhotoRecorder()
 
 
 # ------------------------------------------------------------- het pad volgen
@@ -1678,6 +1810,18 @@ HTML_PAGE = """
       {% endfor %}
     </select>
   </label>
+  <label class="check">
+    <span>foto om de</span>
+    <select id="photo-interval">
+      {% for choice in photo_intervals %}
+      <option value="{{ choice.seconds }}"{% if choice.seconds == photo_interval %} selected{% endif %}>{{ choice.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <div class="row" style="margin-top:10px">
+    <span class="check" style="margin-top:0">opgenomen beelden <b id="photo-count">0</b></span>
+    <button id="photo-go"><span class="ico">&#128247;</span><span class="lbl">foto</span></button>
+  </div>
   <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
      de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
      beeld, dan krijgt de grootste een magenta kader met zijn nummer en de
@@ -1695,6 +1839,12 @@ HTML_PAGE = """
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
      Werkt ook via de URL: <code>/confidence/?value=0.4</code><br>
+     De knop foto bewaart het ruwe camerabeeld, zonder masker, kader of tekst,
+     als JPEG in <code>{{ photo_dir }}</code>; die map wordt aangemaakt als ze
+     nog niet bestaat. Staat de keuzelijst op iets anders dan "geen", dan
+     gebeurt dat vanzelf om de zoveel tijd, ook als je de pagina sluit. De
+     teller telt wat er sinds de start van dit script bewaard is.
+     Werkt ook via <code>/photo/</code> en <code>/photo/interval/?value=30</code><br>
      De keuzelijst toont de <code>.pt</code>-bestanden uit de modelmap. Een ander
      model laden duurt een tiental seconden, ondertussen staat de status op
      "model laden". Werkt ook via <code>/model/?name=denham.pt</code></p>
@@ -1975,6 +2125,50 @@ confidenceBox.addEventListener('change', async () => {
   }
 });
 
+// foto's van het ruwe beeld: meteen op de knop of vanzelf om de zoveel tijd
+const photoButton = document.getElementById('photo-go');
+const photoIntervalBox = document.getElementById('photo-interval');
+const photoCount = document.getElementById('photo-count');
+
+photoButton.addEventListener('click', async () => {
+  try {
+    const res = await fetch('/photo/', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      photoCount.textContent = data.count;
+      setStatus('foto ' + data.photo, 'ok');
+    } else {
+      setStatus(data.error || 'fout', 'err');
+    }
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+});
+
+photoIntervalBox.addEventListener('change', async () => {
+  const value = photoIntervalBox.value;
+  try {
+    const res = await fetch('/photo/interval/?value=' + encodeURIComponent(value),
+                            { method: 'POST' });
+    const data = await res.json();
+    setStatus(data.ok ? 'foto om de ' + data.label : (data.error || 'fout'),
+              data.ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+});
+
+function showPhotos(info) {
+  if (!info) return;
+  photoCount.textContent = info.count;
+
+  // De keuzelijst gelijk houden met de server, bv. na een herstart of een URL
+  if (document.activeElement !== photoIntervalBox &&
+      photoIntervalBox.value !== String(info.interval)) {
+    photoIntervalBox.value = info.interval;
+  }
+}
+
 camImg.addEventListener('error', () => {
   stopStream();
   setTimeout(startStream, 2000);        // opnieuw proberen, bv. na een herstart
@@ -2033,6 +2227,7 @@ async function poll() {
     if (!data.connected) setStatus('robot niet verbonden', 'err');
     showCamera(data.camera);
     showMarkerCommand(data.camera);
+    showPhotos(data.photos);
     showFollowing(data);
   } catch (err) {
     setStatus('server onbereikbaar', 'err');
@@ -2354,6 +2549,9 @@ def index():
         model=segmentation.model_name,
         calibration=" en ".join("%d px² = %.2f m" % (area, distance)
                                 for area, distance in ARUCO_CALIBRATION),
+        photo_intervals=photos.interval_choices(),
+        photo_interval=photos.interval,
+        photo_dir=PHOTO_DIR,
         aruco_commands=command_markers.as_dict(),
         aruco_min_frames=ARUCO_MIN_FRAMES,
         aruco_turn_frames=ARUCO_TURN_FRAMES,
@@ -2366,6 +2564,7 @@ def status():
     return jsonify({
         "connected": robot.connected,
         "camera": segmentation.snapshot(),
+        "photos": photos.snapshot(),
         "following": path_follower.active,
         "follow_reason": path_follower.reason,
         "follow_changes": path_follower.changes,
@@ -2474,6 +2673,45 @@ def model():
                         "choices": segmentation.model_choices()}), 400
 
     return jsonify({"ok": True, "model": name})
+
+
+@app.route("/photo/", methods=["GET", "POST"])
+@app.route("/photo", methods=["GET", "POST"])
+def photo():
+    """Bewaar meteen een foto van het ruwe camerabeeld, bv. /photo/
+
+    Dat is het beeld zoals het binnenkwam: zonder masker, zonder kader rond een
+    marker en zonder het commando in het midden."""
+    try:
+        name = photos.save_now()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+    return jsonify({"ok": True, "photo": name, "count": photos.count,
+                    "directory": PHOTO_DIR})
+
+
+@app.route("/photo/interval/", methods=["GET", "POST"])
+@app.route("/photo/interval", methods=["GET", "POST"])
+def photo_interval():
+    """Lees of zet om de hoeveel seconden er vanzelf een foto bewaard wordt,
+    bv. /photo/interval/?value=30. Met 0 gebeurt dat enkel nog op de knop."""
+    choices = photos.interval_choices()
+    raw = request.args.get("value")
+    if raw is None:
+        return jsonify({"ok": True, "interval": photos.interval,
+                        "count": photos.count, "choices": choices,
+                        "directory": PHOTO_DIR})
+
+    try:
+        seconds = photos.set_interval(raw)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "choices": choices}), 400
+
+    label = next(choice["label"] for choice in choices
+                 if choice["seconds"] == seconds)
+    return jsonify({"ok": True, "interval": seconds, "label": label,
+                    "count": photos.count})
 
 
 def rules_for_page():
@@ -2648,6 +2886,9 @@ def main():
 
     # Het YOLO-model laden duurt even, dus dat gebeurt in de achtergrond
     segmentation.start()
+
+    # Bewaart om de zoveel tijd een foto, zodra er een interval gekozen is
+    photos.start()
 
     # Wacht tot de verbindingspoging klaar is, zodat de eerste kliks werken
     ready.wait(timeout=30)

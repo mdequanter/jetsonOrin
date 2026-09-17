@@ -82,7 +82,9 @@ ARUCO_LABEL_THICKNESS = 3
 ARUCO_CALIBRATION = [(2100, 1.00), (25000, 0.30)]
 
 # Markers die een commando uitvoeren zodra ze lang genoeg in beeld liggen
+ARUCO_ESTOP = "estop"         # dit commando reageert meteen, zonder wachttijd
 ARUCO_COMMANDS = {
+    10: ARUCO_ESTOP,      # noodstop: breekt meteen af wat er bezig is
     25: "stand_down",     # neerliggen
     23: "stand_up",       # opstaan
     22: "hello",
@@ -124,6 +126,10 @@ class RobotController:
         self._disco_thread = None
         self._heading_lock = threading.Lock()
 
+        # Staat er een noodstop aan, dan breken lopende bewegingen af en
+        # blijven ze weg tot er een nieuw commando komt
+        self._abort = threading.Event()
+
     # -- laag niveau ---------------------------------------------------------
 
     def publish(self, topic, payload):
@@ -134,6 +140,24 @@ class RobotController:
             self.conn.datachannel.pub_sub.publish_request_new(topic, payload),
             self.loop
         )
+
+    @property
+    def stopped(self):
+        """Staat er een noodstop aan?"""
+        return self._abort.is_set()
+
+    def resume(self):
+        """Een nieuw commando heft de noodstop op."""
+        self._abort.clear()
+
+    def run_command(self, command):
+        """Voer een commando uit de tabel uit.
+
+        Elk commando behalve de noodstop zelf heft een lopende noodstop op; zo
+        blijft de robot stil tot je hem iets nieuws vraagt."""
+        if command != ARUCO_ESTOP:
+            self.resume()
+        return COMMANDS[command]()
 
     def sport(self, api_id, parameter=None):
         payload = {"api_id": api_id}
@@ -195,8 +219,11 @@ class RobotController:
                 # In de Go2 is een positieve z een draai naar links
                 z = -TURN_SPEED if degrees > 0 else TURN_SPEED
 
+            self.resume()
             deadline = time.monotonic() + duration
             while time.monotonic() < deadline:
+                if self._abort.is_set():      # noodstop: meteen afbreken
+                    break
                 self.move(x=HEADING_MOVE_SPEED, z=z)
                 time.sleep(TURN_INTERVAL)
             self.move(x=0, y=0, z=0)
@@ -224,6 +251,8 @@ class RobotController:
 
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
+                if self._abort.is_set():      # noodstop: meteen afbreken
+                    break
                 self.move(z=z)
                 time.sleep(TURN_INTERVAL)
             self.move(x=0, y=0, z=0)
@@ -257,6 +286,11 @@ class RobotController:
     # -- noodstop ------------------------------------------------------------
 
     def emergency_stop(self):
+        """Zet de robot meteen stil en breek af wat er bezig is.
+
+        De vlag blijft staan tot er een nieuw commando komt, zodat een draai of
+        een heading die nog aan het lopen was niet verder gaat."""
+        self._abort.set()
         self.move(x=0, y=0, z=0)
 
 
@@ -855,6 +889,13 @@ class Segmentation:
             return None
 
         command = command_markers.get_command(marker_id)
+        if command == ARUCO_ESTOP:
+            # De noodstop mag niet wachten: meteen, en zonder cooldown. Staat
+            # de robot al stil, dan valt er niets meer te doen.
+            if robot.stopped:
+                return None
+            return {"kind": "command", "command": command, "label": "noodstop"}
+
         if command is not None:
             if self._seen_count < ARUCO_MIN_FRAMES:
                 return None
@@ -898,9 +939,10 @@ class Segmentation:
 
         try:
             if action["kind"] == "command":
-                COMMANDS[action["command"]]()
+                robot.run_command(action["command"])
             else:
                 # Draaien duurt seconden, dus dat gebeurt naast de segmentatie
+                robot.resume()
                 rule = action["rule"]
                 threading.Thread(
                     target=robot.turn_for,
@@ -1381,7 +1423,7 @@ HTML_PAGE = """
      ({{ calibration }}).<br>
      De markers met een magenta nummer op de knoppen hieronder voeren dat
      commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
-     liggen. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
+     liggen; de noodstop gaat al af bij het eerste beeld. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
      later opnieuw af; wat vroeger komt wordt genegeerd.
      Andere markers kunnen de robot laten draaien zodra ze {{ aruco_turn_frames }}
      beelden na elkaar op een ingestelde afstand liggen: dat stel je in bij de
@@ -1826,7 +1868,9 @@ ARUCO_PAGE = """
   </div>
 
   <p class="hint">Eén marker per commando: kies het commando en geef de marker
-     die het moet uitvoeren. Een bestaand commando verhuist zo naar een andere
+     die het moet uitvoeren. De noodstop (<code>estop</code>) is de uitzondering:
+     die gaat af bij het eerste beeld, breekt een lopende draai meteen af en
+     houdt de robot stil tot er een nieuw commando komt. Een bestaand commando verhuist zo naar een andere
      marker. Deze markers gaan af na {{ min_frames }} beelden na elkaar, zonder
      afstandsvoorwaarde, en kunnen niet ook een draairegel hebben.
      Op de bedieningspagina staan de nummers op de knoppen; herlaad die pagina
@@ -2224,15 +2268,14 @@ def commands():
 
 @app.route("/cmd/<command>", methods=["POST", "GET"])
 def cmd(command):
-    action = COMMANDS.get(command)
-    if action is None:
+    if command not in COMMANDS:
         return jsonify({"ok": False, "error": "onbekend commando: " + command}), 404
 
     if not robot.connected:
         return jsonify({"ok": False, "error": "geen verbinding met de robot"}), 503
 
     try:
-        action()
+        robot.run_command(command)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

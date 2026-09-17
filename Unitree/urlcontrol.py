@@ -52,11 +52,12 @@ TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag a
 # Camera + segmentatie
 USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
 MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/unrealsim.pt"
-DETECTION_CONFIDENCE = 0.8
+DETECTION_CONFIDENCE = 0.8    # startwaarde, op de webpagina aanpasbaar
+CONFIDENCE_CHOICES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
-SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
+SEGMENTATION_INTERVAL = 0.3   # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
 
 # Live beeld op de webpagina (/video)
@@ -279,15 +280,16 @@ def draw_path_overlay(frame, result, mask_indices, midpoints, heading):
                 HEADING_COLOR, 2, cv2.LINE_AA)
 
 
-def segment_frame(frame, model):
+def segment_frame(frame, model, confidence):
     """Zoek het pad in het beeld en geef de heading ernaartoe, samen met een
     kopie van het beeld waarop het masker getekend staat (voor de live stream).
 
     Per masker van een pad kijken we op een aantal hoogtes waar het pad zit, en
     we mikken op het gemiddelde van die punten. Wordt er niets gevonden, dan
-    geven we recht vooruit terug."""
+    geven we recht vooruit terug.  Hoe lager de confidence, hoe sneller het
+    model iets een pad noemt."""
     h, w = frame.shape[:2]
-    result = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)[0]
+    result = model(frame, conf=confidence, verbose=False)[0]
     model_names = getattr(model, "names", {})
     midpoints = []
     mask_indices = []
@@ -364,6 +366,7 @@ class Segmentation:
         self.updated_at = 0.0
         self.status = "uit" if not USE_CAMERA else "wachten op beeld"
         self.error = None
+        self.confidence = DETECTION_CONFIDENCE
 
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
@@ -459,7 +462,7 @@ class Segmentation:
                 continue
 
             try:
-                heading, overlay = segment_frame(image, model)
+                heading, overlay = segment_frame(image, model, self.confidence)
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)
@@ -474,6 +477,12 @@ class Segmentation:
             time.sleep(SEGMENTATION_INTERVAL)
 
     # -- uitlezen ------------------------------------------------------------
+
+    def set_confidence(self, value):
+        """Zet de drempel waarboven het model een masker meetelt."""
+        value = clamp(float(value), min(CONFIDENCE_CHOICES), max(CONFIDENCE_CHOICES))
+        self.confidence = round(value, 2)
+        return self.confidence
 
     def current_heading(self):
         """De laatste heading, of None als er nog geen of enkel een verouderde is."""
@@ -493,6 +502,7 @@ class Segmentation:
             "error": self.error,
             "heading": round(heading, 1) if heading is not None else None,
             "age": round(age, 1) if age is not None else None,
+            "confidence": round(self.confidence, 2),
         }
 
 
@@ -685,7 +695,17 @@ HTML_PAGE = """
       font-size: 13px;
       color: var(--muted);
     }
-    .check input { width: 22px; height: 22px; accent-color: var(--accent); }
+    .check input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+    .check select {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      min-height: 34px;
+      margin-left: auto;
+    }
     .check b { color: var(--text); font-variant-numeric: tabular-nums; }
 
     .camera {
@@ -738,9 +758,20 @@ HTML_PAGE = """
     <input type="checkbox" id="show-camera" checked>
     <span>toon het beeld</span>
   </label>
+  <label class="check">
+    <span>confidence</span>
+    <select id="confidence">
+      {% for value in confidence_choices %}
+      <option value="{{ value }}"{% if value == confidence %} selected{% endif %}>{{ "%.1f"|format(value) }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <p class="hint">Het groene vlak is het pad dat het model herkent, de stippen zijn
      de meetpunten en de pijl wijst naar de heading. Zet het beeld uit als de
-     verbinding traag wordt. Los te bekijken via <code>/video</code>.</p>
+     verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
+     Een lagere confidence laat het model sneller een pad zien (maar ook meer
+     verkeerde), een hogere enkel wat het zeker weet.
+     Werkt ook via de URL: <code>/confidence/?value=0.4</code></p>
 </section>
 
 <section>
@@ -942,6 +973,21 @@ showCameraBox.addEventListener('change', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopStream(); else startStream();
 });
+// de drempel waarboven het model een masker meetelt
+const confidenceBox = document.getElementById('confidence');
+
+confidenceBox.addEventListener('change', async () => {
+  const value = confidenceBox.value;
+  try {
+    const res = await fetch('/confidence/?value=' + encodeURIComponent(value), { method: 'POST' });
+    const data = await res.json();
+    setStatus(data.ok ? 'confidence ' + data.confidence : (data.error || 'fout'),
+              data.ok ? 'ok' : 'err');
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+});
+
 camImg.addEventListener('error', () => {
   stopStream();
   setTimeout(startStream, 2000);        // opnieuw proberen, bv. na een herstart
@@ -954,6 +1000,11 @@ function showCamera(cam) {
   camBadge.textContent = cam.heading === null || cam.heading === undefined
     ? cam.status
     : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
+
+  // De keuzelijst gelijk houden met de server, bv. na een herstart of een URL
+  if (cam.confidence !== undefined && document.activeElement !== confidenceBox) {
+    confidenceBox.value = cam.confidence.toFixed(1);
+  }
 
   if (cam.heading === null || cam.heading === undefined) {
     cameraHeading.textContent = '(' + cam.status + ')';
@@ -991,7 +1042,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_PAGE, robot_ip=ROBOT_IP)
+    return render_template_string(
+        HTML_PAGE,
+        robot_ip=ROBOT_IP,
+        confidence_choices=CONFIDENCE_CHOICES,
+        confidence=segmentation.confidence,
+    )
 
 
 @app.route("/status")
@@ -1062,6 +1118,25 @@ def heading():
         "forward": result["forward"],
         "duration": result["duration"],
     })
+
+
+@app.route("/confidence/", methods=["GET", "POST"])
+@app.route("/confidence", methods=["GET", "POST"])
+def confidence():
+    """Lees of zet de confidence van de segmentatie, bv. /confidence/?value=0.4
+
+    Zonder parameter geeft dit gewoon de huidige waarde terug."""
+    raw = request.args.get("value")
+    if raw is None:
+        return jsonify({"ok": True, "confidence": segmentation.confidence,
+                        "choices": CONFIDENCE_CHOICES})
+
+    try:
+        value = float(raw)
+    except ValueError:
+        return jsonify({"ok": False, "error": "confidence moet een getal zijn: " + raw}), 400
+
+    return jsonify({"ok": True, "confidence": segmentation.set_confidence(value)})
 
 
 @app.route("/commands")

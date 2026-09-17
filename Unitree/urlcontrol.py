@@ -78,6 +78,9 @@ ARUCO_COLOR = (255, 0, 255)   # BGR: magenta kader
 ARUCO_LABEL_SCALE = 2.1       # groot genoeg om van wat verder af te lezen
 ARUCO_LABEL_THICKNESS = 3
 
+# IJkpunten om de afstand te schatten: (oppervlakte in pixels, afstand in meter)
+ARUCO_CALIBRATION = [(2100, 1.00), (25000, 0.30)]
+
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
@@ -282,13 +285,35 @@ def detect_largest_marker(frame):
     return best
 
 
+def marker_distance(area):
+    """Schat de afstand tot de marker uit zijn oppervlakte in pixels.
+
+    Een marker die twee keer zo ver staat is half zo breed, en beslaat dus een
+    kwart van de oppervlakte. De zijde (de wortel van de oppervlakte) is met
+    andere woorden omgekeerd evenredig met de afstand, dus interpoleren we
+    rechtlijnig in 1/wortel(oppervlakte) door de twee ijkpunten.
+
+    Geeft meters terug, of None als er niets te rekenen valt."""
+    (area_a, distance_a), (area_b, distance_b) = ARUCO_CALIBRATION
+    if area <= 0 or area_a <= 0 or area_b <= 0 or area_a == area_b:
+        return None
+
+    x = 1.0 / math.sqrt(area)
+    x_a, x_b = 1.0 / math.sqrt(area_a), 1.0 / math.sqrt(area_b)
+    slope = (distance_a - distance_b) / (x_a - x_b)
+    return max(0.0, distance_b + slope * (x - x_b))
+
+
 def draw_marker(frame, marker):
     """Teken een kader rond de marker, met zijn nummer en oppervlakte erboven."""
     h, w = frame.shape[:2]
     points = marker["points"]
     cv2.polylines(frame, [points.reshape((-1, 1, 2))], True, ARUCO_COLOR, 3, cv2.LINE_AA)
 
-    label = "aruco %d - %d px2" % (marker["id"], round(marker["area"]))
+    distance = marker_distance(marker["area"])
+    label = "aruco %d" % marker["id"]
+    if distance is not None:
+        label += " - %.2f m" % distance
     (text_w, text_h), _baseline = cv2.getTextSize(
         label, cv2.FONT_HERSHEY_SIMPLEX, ARUCO_LABEL_SCALE, ARUCO_LABEL_THICKNESS)
 
@@ -602,13 +627,12 @@ class Segmentation:
                 marker = detect_largest_marker(image)
                 if marker is not None:
                     draw_marker(overlay, marker)
+                    distance = marker_distance(marker["area"])
                     self.marker = {
                         "id": marker["id"],
+                        "distance": round(distance, 2) if distance is not None else None,
                         "area": int(round(marker["area"])),
                         "size": int(round(math.sqrt(marker["area"]))),
-                        # deel van het beeld, handig om de afstand in te schatten
-                        "percent": round(100.0 * marker["area"] /
-                                         (image.shape[0] * image.shape[1]), 1),
                     }
                 else:
                     self.marker = None
@@ -948,9 +972,9 @@ HTML_PAGE = """
   </label>
   <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
      de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
-     beeld, dan krijgt de grootste een magenta kader met zijn nummer en
-     oppervlakte in pixels; het percentage erachter is het deel van het beeld
-     dat de marker inneemt. Zet het beeld uit als de
+     beeld, dan krijgt de grootste een magenta kader met zijn nummer en de
+     geschatte afstand, berekend uit zijn oppervlakte
+     ({{ calibration }}). Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1201,9 +1225,8 @@ function showCamera(cam) {
     ? cam.status
     : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
   if (cam.marker) {
-    badge += ' · aruco ' + cam.marker.id +
-             ' (' + cam.marker.area.toLocaleString('nl-BE') + ' px², ' +
-             cam.marker.percent + '%)';
+    badge += ' · aruco ' + cam.marker.id;
+    if (cam.marker.distance !== null) badge += ' op ' + cam.marker.distance.toFixed(2) + ' m';
   }
   camBadge.textContent = badge;
 
@@ -1258,6 +1281,8 @@ def index():
         confidence=segmentation.confidence,
         model_choices=segmentation.model_choices(),
         model=segmentation.model_name,
+        calibration=" en ".join("%d px² = %.2f m" % (area, distance)
+                                for area, distance in ARUCO_CALIBRATION),
     )
 
 

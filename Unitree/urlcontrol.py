@@ -72,6 +72,12 @@ MASK_ALPHA = 0.35             # hoe hard het masker het beeld inkleurt
 MIDPOINT_COLOR = (0, 200, 255)
 HEADING_COLOR = (0, 255, 255)
 
+# Het commando dat de robot nu uitvoert, groot in het midden van het beeld
+COMMAND_SECONDS = 3.0         # s dat een commando blijft staan
+COMMAND_WIDTH = 0.6           # deel van de beeldbreedte dat de tekst inneemt
+COMMAND_COLOR = (255, 255, 255)
+ESTOP_COLOR = (0, 0, 255)     # BGR: rood
+
 # ArUco: we tonen enkel de grootste marker in beeld
 ARUCO_DICTIONARY = "DICT_4X4_50"
 ARUCO_COLOR = (255, 0, 255)   # BGR: magenta kader
@@ -130,6 +136,10 @@ class RobotController:
         # blijven ze weg tot er een nieuw commando komt
         self._abort = threading.Event()
 
+        # Wat de robot nu doet, om op het beeld te zetten
+        self.command = None
+        self.command_at = 0.0
+
     # -- laag niveau ---------------------------------------------------------
 
     def publish(self, topic, payload):
@@ -150,6 +160,24 @@ class RobotController:
         """Een nieuw commando heft de noodstop op."""
         self._abort.clear()
 
+    def note_command(self, label):
+        """Onthoud wat de robot nu aan het doen is, voor op het beeld."""
+        self.command = label
+        self.command_at = time.monotonic()
+
+    def current_command(self):
+        """Wat er nu groot op het beeld hoort te staan, of None.
+
+        Een noodstop blijft staan zolang hij duurt; een gewoon commando dooft
+        na COMMAND_SECONDS uit."""
+        if self.stopped:
+            return "NOODSTOP"
+        if not self.command:
+            return None
+        if time.monotonic() - self.command_at > COMMAND_SECONDS:
+            return None
+        return self.command
+
     def run_command(self, command):
         """Voer een commando uit de tabel uit.
 
@@ -157,6 +185,7 @@ class RobotController:
         blijft de robot stil tot je hem iets nieuws vraagt."""
         if command != ARUCO_ESTOP:
             self.resume()
+        self.note_command(command)
         return COMMANDS[command]()
 
     def sport(self, api_id, parameter=None):
@@ -209,6 +238,7 @@ class RobotController:
 
         try:
             degrees = clamp(degrees, -HEADING_MAX_TURN, HEADING_MAX_TURN)
+            self.note_command("heading %+.0f" % degrees)
 
             if degrees == 0:
                 # Recht vooruit: gewoon een seconde stappen, niet draaien
@@ -246,6 +276,8 @@ class RobotController:
             return None
 
         try:
+            self.note_command("draai %s %g s" % (direction, seconds))
+
             # In de Go2 is een positieve z een draai naar links
             z = TURN_SPEED if direction == "links" else -TURN_SPEED
 
@@ -379,6 +411,28 @@ def marker_distance(area):
     x_a, x_b = 1.0 / math.sqrt(area_a), 1.0 / math.sqrt(area_b)
     slope = (distance_a - distance_b) / (x_a - x_b)
     return max(0.0, distance_b + slope * (x - x_b))
+
+
+def draw_command(frame, text, colour):
+    """Zet het commando groot in het midden van het beeld.
+
+    De tekst wordt zo geschaald dat ze COMMAND_WIDTH van de breedte inneemt,
+    zodat ze even groot oogt op elke resolutie."""
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text = str(text).upper()
+
+    (base_w, _base_h), _baseline = cv2.getTextSize(text, font, 1.0, 2)
+    scale = w * COMMAND_WIDTH / max(base_w, 1)
+    thickness = max(2, int(round(scale * 1.5)))
+
+    (text_w, text_h), _baseline = cv2.getTextSize(text, font, scale, thickness)
+    x = (w - text_w) // 2
+    y = (h + text_h) // 2
+
+    # Eerst een zwarte rand, zo blijft het leesbaar op eender welke achtergrond
+    cv2.putText(frame, text, (x, y), font, scale, (0, 0, 0), thickness + 4, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), font, scale, colour, thickness, cv2.LINE_AA)
 
 
 def validate_rule(marker_id, direction, seconds, distance, margin):
@@ -1058,6 +1112,12 @@ class Segmentation:
                     self.marker = None
 
                 self.run_marker_command(marker)
+
+                # Wat de robot nu doet, groot in het midden
+                command = robot.current_command()
+                if command:
+                    draw_command(overlay, command,
+                                 ESTOP_COLOR if robot.stopped else COMMAND_COLOR)
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)

@@ -51,8 +51,8 @@ TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag a
 
 # Camera + segmentatie
 USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
-MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/denham.pt"
-DETECTION_CONFIDENCE = 0.5
+MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/laerbeekbos.pt"
+DETECTION_CONFIDENCE = 0.1
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
@@ -60,6 +60,7 @@ SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
 
 # Live beeld op de webpagina (/video)
+STREAM_SIZE = (640, 480)      # het beeld wordt hierin gepast, met zwarte randen
 STREAM_QUALITY = 70           # JPEG-kwaliteit van de stream
 OVERLAY_MAX_AGE = 2.0         # s dat we het getekende beeld blijven tonen
 STREAM_IDLE_TIMEOUT = 1.0     # s wachten op een nieuw beeld voor we iets sturen
@@ -322,10 +323,29 @@ def segment_frame(frame, model):
     return heading, overlay
 
 
+def fit_to_stream_size(image):
+    """Schaal het beeld naar STREAM_SIZE en vul de rest zwart op, zodat de
+    stream altijd even groot is en de verhoudingen kloppen."""
+    width, height = STREAM_SIZE
+    h, w = image.shape[:2]
+    if (w, h) == STREAM_SIZE:
+        return image
+
+    scale = min(width / w, height / h)
+    new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    x, y = (width - new_w) // 2, (height - new_h) // 2
+    canvas[y:y + new_h, x:x + new_w] = resized
+    return canvas
+
+
 def placeholder_frame(text):
     """Zwart beeld met een boodschap, zolang er geen camerabeeld binnenkomt."""
-    image = np.zeros((360, 480, 3), dtype=np.uint8)
-    cv2.putText(image, str(text)[:40], (20, 180), cv2.FONT_HERSHEY_SIMPLEX,
+    width, height = STREAM_SIZE
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.putText(image, str(text)[:40], (20, height // 2), cv2.FONT_HERSHEY_SIMPLEX,
                 0.7, (160, 160, 160), 2, cv2.LINE_AA)
     return image
 
@@ -403,7 +423,8 @@ class Segmentation:
                 image = placeholder_frame(self.error or self.status)
 
             ok, buffer = cv2.imencode(
-                ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY])
+                ".jpg", fit_to_stream_size(image),
+                [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY])
             if ok:
                 yield buffer.tobytes()
 
@@ -670,7 +691,9 @@ HTML_PAGE = """
     .camera {
       position: relative;
       width: 100%;
+      max-width: 640px;        /* 640x480, op een gsm schaalt het mee naar beneden */
       aspect-ratio: 4 / 3;
+      margin: 0 auto;
       background: #000;
       border: 1px solid var(--line);
       border-radius: 10px;

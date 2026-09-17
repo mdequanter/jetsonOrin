@@ -225,6 +225,31 @@ def get_allowed_mask_indices(result, model_names):
     return allowed_indices
 
 
+def largest_allowed_mask(result, model_names, shape):
+    """Zoek van alle maskers die een pad voorstellen het grootste.
+
+    We werken bewust met één vlak: een tweede pad, een zijweggetje of een
+    los stukje berm zou de heading anders doen verspringen.
+
+    Geeft de index en het masker op beeldformaat terug, of (None, None)."""
+    h, w = shape
+    best_index, best_mask, best_area = None, None, 0
+
+    for index in get_allowed_mask_indices(result, model_names):
+        if index >= len(result.masks.data):
+            continue
+
+        mask = result.masks.data[index].cpu().numpy()
+        mask = (mask * 255).astype(np.uint8)
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        area = int(np.count_nonzero(mask))
+        if area > best_area:
+            best_index, best_mask, best_area = index, mask, area
+
+    return best_index, best_mask
+
+
 def compute_heading_to_point(frame, target_x, target_y):
     """Hoek van het midden onderaan het beeld naar een punt, in de conventie van
     deze pagina: 90 is recht vooruit, meer dan 90 is naar rechts.
@@ -241,30 +266,24 @@ def compute_heading_to_point(frame, target_x, target_y):
     return 2 * HEADING_FORWARD - angle
 
 
-def draw_path_overlay(frame, result, mask_indices, midpoints, heading):
-    """Teken de maskers van het pad, de meetpunten en de heading op het beeld."""
+def draw_path_overlay(frame, result, mask_index, midpoints, heading):
+    """Teken het grootste pad, de meetpunten en de heading op het beeld."""
     h, w = frame.shape[:2]
     masks_xy = getattr(result.masks, "xy", None) if result.masks is not None else None
-    polygons = []
+    polygon = None
 
-    if masks_xy is not None:
-        for mask_index in mask_indices:
-            if mask_index >= len(masks_xy):
-                continue
-            polygon = masks_xy[mask_index]
-            if polygon is None or len(polygon) < 3:
-                continue
-            points = np.round(polygon).astype(np.int32).reshape((-1, 1, 2))
-            points[:, 0, 0] = np.clip(points[:, 0, 0], 0, w - 1)
-            points[:, 0, 1] = np.clip(points[:, 0, 1], 0, h - 1)
-            polygons.append(points)
+    if masks_xy is not None and mask_index is not None and mask_index < len(masks_xy):
+        polygon = masks_xy[mask_index]
 
-    if polygons:
+    if polygon is not None and len(polygon) >= 3:
+        points = np.round(polygon).astype(np.int32).reshape((-1, 1, 2))
+        points[:, 0, 0] = np.clip(points[:, 0, 0], 0, w - 1)
+        points[:, 0, 1] = np.clip(points[:, 0, 1], 0, h - 1)
+
         shaded = frame.copy()
-        cv2.fillPoly(shaded, polygons, MASK_COLOR)
+        cv2.fillPoly(shaded, [points], MASK_COLOR)
         cv2.addWeighted(shaded, MASK_ALPHA, frame, 1.0 - MASK_ALPHA, 0, dst=frame)
-        for points in polygons:
-            cv2.polylines(frame, [points], True, MASK_COLOR, 2, cv2.LINE_AA)
+        cv2.polylines(frame, [points], True, MASK_COLOR, 2, cv2.LINE_AA)
 
     for x, y in midpoints:
         cv2.circle(frame, (x, y), 4, MIDPOINT_COLOR, -1, cv2.LINE_AA)
@@ -284,33 +303,27 @@ def segment_frame(frame, model, confidence):
     """Zoek het pad in het beeld en geef de heading ernaartoe, samen met een
     kopie van het beeld waarop het masker getekend staat (voor de live stream).
 
-    Per masker van een pad kijken we op een aantal hoogtes waar het pad zit, en
-    we mikken op het gemiddelde van die punten. Wordt er niets gevonden, dan
-    geven we recht vooruit terug.  Hoe lager de confidence, hoe sneller het
-    model iets een pad noemt."""
+    We houden enkel het grootste pad over.  Daarvan kijken we op een aantal
+    hoogtes waar het zit, en we mikken op het gemiddelde van die punten. Wordt
+    er niets gevonden, dan geven we recht vooruit terug.  Hoe lager de
+    confidence, hoe sneller het model iets een pad noemt."""
     h, w = frame.shape[:2]
     result = model(frame, conf=confidence, verbose=False)[0]
     model_names = getattr(model, "names", {})
     midpoints = []
-    mask_indices = []
+    mask_index, mask = None, None
 
     if result.masks is not None and len(result.masks.data) > 0:
-        for mask_index in get_allowed_mask_indices(result, model_names):
-            if mask_index >= len(result.masks.data):
+        mask_index, mask = largest_allowed_mask(result, model_names, (h, w))
+
+    if mask is not None:
+        for row_ratio in SCAN_HEIGHTS:
+            y = int(h * row_ratio)
+            if y >= h:
                 continue
-            mask_indices.append(mask_index)
-
-            mask = result.masks.data[mask_index].cpu().numpy()
-            mask = (mask * 255).astype(np.uint8)
-            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-
-            for row_ratio in SCAN_HEIGHTS:
-                y = int(h * row_ratio)
-                if y >= h:
-                    continue
-                filled_x = np.where(mask[y, :] > 0)[0]
-                if len(filled_x) > 0:
-                    midpoints.append((int(np.mean(filled_x)), y))
+            filled_x = np.where(mask[y, :] > 0)[0]
+            if len(filled_x) > 0:
+                midpoints.append((int(np.mean(filled_x)), y))
 
     if midpoints:
         avg_x = int(np.mean([point[0] for point in midpoints]))
@@ -320,7 +333,7 @@ def segment_frame(frame, model, confidence):
         heading = HEADING_FORWARD
 
     overlay = frame.copy()
-    draw_path_overlay(overlay, result, mask_indices, midpoints,
+    draw_path_overlay(overlay, result, mask_index, midpoints,
                       heading if midpoints else None)
     return heading, overlay
 
@@ -766,7 +779,7 @@ HTML_PAGE = """
       {% endfor %}
     </select>
   </label>
-  <p class="hint">Het groene vlak is het pad dat het model herkent, de stippen zijn
+  <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
      de meetpunten en de pijl wijst naar de heading. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer

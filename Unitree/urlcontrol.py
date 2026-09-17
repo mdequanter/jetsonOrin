@@ -1444,7 +1444,6 @@ HTML_PAGE = """
   <div class="grid cols-3">
     <button data-cmd="hello"><span class="ico">👋</span><span class="lbl">hello</span></button>
     <button data-cmd="stretch"><span class="ico">🤸</span><span class="lbl">stretch</span></button>
-    <button data-cmd="scrape"><span class="ico">🐾</span><span class="lbl">scrape</span></button>
     <button data-cmd="sit"><span class="ico">🪑</span><span class="lbl">zitten</span></button>
     <button data-cmd="rise_sit"><span class="ico">🚶</span><span class="lbl">rechtstaan</span></button>
   </div>

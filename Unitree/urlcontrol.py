@@ -75,6 +75,8 @@ HEADING_COLOR = (0, 255, 255)
 # ArUco: we tonen enkel de grootste marker in beeld
 ARUCO_DICTIONARY = "DICT_4X4_50"
 ARUCO_COLOR = (255, 0, 255)   # BGR: magenta kader
+ARUCO_LABEL_SCALE = 2.1       # groot genoeg om van wat verder af te lezen
+ARUCO_LABEL_THICKNESS = 3
 
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
@@ -282,14 +284,20 @@ def detect_largest_marker(frame):
 
 def draw_marker(frame, marker):
     """Teken een kader rond de marker, met zijn nummer en oppervlakte erboven."""
+    h, w = frame.shape[:2]
     points = marker["points"]
     cv2.polylines(frame, [points.reshape((-1, 1, 2))], True, ARUCO_COLOR, 3, cv2.LINE_AA)
 
-    x = int(points[:, 0].min())
-    y = int(points[:, 1].min())
     label = "aruco %d - %d px2" % (marker["id"], round(marker["area"]))
-    cv2.putText(frame, label, (x, max(20, y - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, ARUCO_COLOR, 2, cv2.LINE_AA)
+    (text_w, text_h), _baseline = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_SIMPLEX, ARUCO_LABEL_SCALE, ARUCO_LABEL_THICKNESS)
+
+    # Net boven het kader, maar altijd binnen het beeld
+    x = clamp(int(points[:, 0].min()), 5, max(5, w - text_w - 5))
+    y = clamp(int(points[:, 1].min()) - 10, text_h + 5, h - 5)
+
+    cv2.putText(frame, label, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX,
+                ARUCO_LABEL_SCALE, ARUCO_COLOR, ARUCO_LABEL_THICKNESS, cv2.LINE_AA)
 
 
 def available_models():

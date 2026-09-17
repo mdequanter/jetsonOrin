@@ -91,6 +91,13 @@ ARUCO_COMMANDS = {
 ARUCO_MIN_FRAMES = 3          # zoveel beelden na elkaar zichtbaar voor we reageren
 ARUCO_COOLDOWN = 30.0         # s voor we hetzelfde commando opnieuw laten uitvoeren
 
+# Draairegels: markers die de robot laten draaien, in te stellen via /aruco
+ARUCO_RULES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "aruco_turn_rules.json")
+TURN_DIRECTIONS = ("links", "rechts")
+MAX_TURN_SECONDS = 10.0       # grens op de duur van een draai
+MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
+
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
@@ -196,6 +203,29 @@ class RobotController:
                 "forward": HEADING_MOVE_SPEED,
                 "duration": round(duration, 2),
             }
+        finally:
+            self._heading_lock.release()
+
+    def turn_for(self, direction, seconds):
+        """Draai een aantal seconden naar links of naar rechts, en stop daarna.
+
+        De Go2 beweegt zolang hij move-commando's krijgt, dus we blijven
+        herhalen tot de tijd om is. Is er al een beweging bezig, dan doen we
+        niets en geven we None terug."""
+        if not self._heading_lock.acquire(blocking=False):
+            return None
+
+        try:
+            # In de Go2 is een positieve z een draai naar links
+            z = TURN_SPEED if direction == "links" else -TURN_SPEED
+
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                self.move(z=z)
+                time.sleep(TURN_INTERVAL)
+            self.move(x=0, y=0, z=0)
+
+            return {"direction": direction, "seconds": seconds}
         finally:
             self._heading_lock.release()
 
@@ -312,6 +342,135 @@ def marker_distance(area):
     x_a, x_b = 1.0 / math.sqrt(area_a), 1.0 / math.sqrt(area_b)
     slope = (distance_a - distance_b) / (x_a - x_b)
     return max(0.0, distance_b + slope * (x - x_b))
+
+
+def validate_rule(marker_id, direction, seconds, distance, margin):
+    """Controleer de waarden van een draairegel en geef ze opgekuist terug.
+
+    Bij een fout komt er een ValueError met een boodschap die op de pagina
+    getoond kan worden."""
+    try:
+        marker_id = int(marker_id)
+    except (TypeError, ValueError):
+        raise ValueError("de marker moet een geheel getal zijn")
+
+    if not 0 <= marker_id <= 999:
+        raise ValueError("de marker moet tussen 0 en 999 liggen")
+    if marker_id in ARUCO_COMMANDS:
+        raise ValueError("marker %d is al een vast commando (%s)"
+                         % (marker_id, ARUCO_COMMANDS[marker_id]))
+
+    direction = str(direction).strip().lower()
+    if direction not in TURN_DIRECTIONS:
+        raise ValueError("de richting moet 'links' of 'rechts' zijn")
+
+    def number(value, name, low, high):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(name + " moet een getal zijn")
+        if not low <= value <= high:
+            raise ValueError("%s moet tussen %g en %g liggen" % (name, low, high))
+        return value
+
+    return {
+        "id": marker_id,
+        "direction": direction,
+        "seconds": round(number(seconds, "de duur", 0.1, MAX_TURN_SECONDS), 2),
+        "distance": round(number(distance, "de afstand", 0.1, MAX_RULE_DISTANCE), 2),
+        "margin": round(number(margin, "de marge", 0.0, 100.0), 1),
+    }
+
+
+def rule_range(rule):
+    """Tussen welke afstanden de regel afgaat."""
+    edge = rule["distance"] * rule["margin"] / 100.0
+    return rule["distance"] - edge, rule["distance"] + edge
+
+
+def rule_matches(rule, distance):
+    """Ligt de marker op de afstand waarop deze regel moet afgaan?"""
+    if distance is None:
+        return False
+    low, high = rule_range(rule)
+    return low <= distance <= high
+
+
+class TurnRules:
+    """De draairegels van de pagina /aruco.
+
+    Ze worden in een json-bestand naast dit script bewaard, zodat ze een
+    herstart overleven."""
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._rules = {}
+        self.load()
+
+    def load(self):
+        try:
+            with open(self.path) as bestand:
+                stored = json.load(bestand)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            print("Draairegels lezen mislukt: " + str(exc), flush=True)
+            return
+
+        rules = {}
+        for item in stored if isinstance(stored, list) else []:
+            try:
+                rule = validate_rule(item.get("id"), item.get("direction"),
+                                     item.get("seconds"), item.get("distance"),
+                                     item.get("margin"))
+            except (ValueError, AttributeError) as exc:
+                print("Draairegel overgeslagen: " + str(exc), flush=True)
+                continue
+            rules[rule["id"]] = rule
+
+        with self._lock:
+            self._rules = rules
+        print("Draairegels geladen: %d" % len(rules), flush=True)
+
+    def save(self):
+        try:
+            with open(self.path, "w") as bestand:
+                json.dump(self.all(), bestand, indent=2)
+        except OSError as exc:
+            print("Draairegels bewaren mislukt: " + str(exc), flush=True)
+
+    def all(self):
+        with self._lock:
+            return [self._rules[key] for key in sorted(self._rules)]
+
+    def get(self, marker_id):
+        with self._lock:
+            return self._rules.get(marker_id)
+
+    def set(self, marker_id, direction, seconds, distance, margin):
+        """Voeg een regel toe of pas een bestaande aan."""
+        rule = validate_rule(marker_id, direction, seconds, distance, margin)
+        with self._lock:
+            self._rules[rule["id"]] = rule
+        self.save()
+        return rule
+
+    def delete(self, marker_id):
+        try:
+            marker_id = int(marker_id)
+        except (TypeError, ValueError):
+            raise ValueError("de marker moet een geheel getal zijn")
+
+        with self._lock:
+            removed = self._rules.pop(marker_id, None)
+        if removed is None:
+            raise ValueError("er is geen regel voor marker %d" % marker_id)
+        self.save()
+        return removed
+
+
+turn_rules = TurnRules(ARUCO_RULES_PATH)
 
 
 def draw_marker(frame, marker):
@@ -550,13 +709,17 @@ class Segmentation:
 
     # -- commando's van een marker -------------------------------------------
 
-    def marker_command(self, marker):
-        """Geef het commando dat bij de marker hoort, of None.
+    def marker_action(self, marker):
+        """Geef de actie die bij de marker hoort, of None.
 
         We reageren pas als dezelfde marker ARUCO_MIN_FRAMES beelden na elkaar
         in beeld ligt; zo zet een marker die even voorbijflitst de robot niet
         aan het werk. Daarna houden we hem ARUCO_COOLDOWN seconden tegen, zodat
-        een marker die blijft liggen niet telkens opnieuw afgaat."""
+        een marker die blijft liggen niet telkens opnieuw afgaat.
+
+        Een marker uit ARUCO_COMMANDS geeft een vast commando. Staat er een
+        draairegel op, dan moet de marker bovendien op de ingestelde afstand
+        liggen, marge inbegrepen."""
         marker_id = marker["id"] if marker else None
 
         if marker_id != self._seen_id:
@@ -564,13 +727,26 @@ class Segmentation:
             self._seen_count = 0
         self._seen_count += 1
 
-        command = ARUCO_COMMANDS.get(marker_id)
-        if command is None or self._seen_count < ARUCO_MIN_FRAMES:
+        if marker_id is None or self._seen_count < ARUCO_MIN_FRAMES:
             return None
 
         # Zonder verbinding valt er niets uit te voeren; we wachten gewoon af
         if not robot.connected:
             return None
+
+        command = ARUCO_COMMANDS.get(marker_id)
+        if command is not None:
+            action = {"kind": "command", "command": command, "label": command}
+        else:
+            rule = turn_rules.get(marker_id)
+            distance = marker_distance(marker["area"])
+            if rule is None or not rule_matches(rule, distance):
+                return None
+            action = {
+                "kind": "turn",
+                "rule": rule,
+                "label": "draai %s, %g s" % (rule["direction"], rule["seconds"]),
+            }
 
         now = time.monotonic()
         last = self._triggered_at.get(marker_id)
@@ -578,20 +754,28 @@ class Segmentation:
             return None
 
         self._triggered_at[marker_id] = now
-        return command
+        return action
 
     def run_marker_command(self, marker):
-        """Voer het commando van de marker uit, als er een aan de beurt is."""
-        command = self.marker_command(marker)
-        if command is None:
+        """Voer de actie van de marker uit, als er een aan de beurt is."""
+        action = self.marker_action(marker)
+        if action is None:
             return
 
-        self.last_command = {"id": marker["id"], "command": command}
+        self.last_command = {"id": marker["id"], "command": action["label"]}
         self.command_count += 1
-        print("ArUco %d: %s" % (marker["id"], command), flush=True)
+        print("ArUco %d: %s" % (marker["id"], action["label"]), flush=True)
 
         try:
-            COMMANDS[command]()
+            if action["kind"] == "command":
+                COMMANDS[action["command"]]()
+            else:
+                # Draaien duurt seconden, dus dat gebeurt naast de segmentatie
+                rule = action["rule"]
+                threading.Thread(
+                    target=robot.turn_for,
+                    args=(rule["direction"], rule["seconds"]),
+                    daemon=True).start()
         except Exception as exc:
             print("ArUco-commando mislukt: " + str(exc), flush=True)
 
@@ -821,16 +1005,7 @@ for _marker_id, _command in sorted(ARUCO_COMMANDS.items()):
 
 # ------------------------------------------------------------------ webpagina
 
-HTML_PAGE = """
-<!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#111418">
-  <meta name="mobile-web-app-capable" content="yes">
-  <title>Go2 bediening</title>
-  <style>
+PAGE_CSS = """
     :root {
       --bg: #111418;
       --panel: #1c2128;
@@ -1009,7 +1184,21 @@ HTML_PAGE = """
     .hint { font-size: 11px; color: var(--muted); margin: 8px 2px 0; }
     .hint code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
     footer { text-align: center; color: var(--muted); font-size: 11px; padding: 4px 0 8px; }
-  </style>
+    a.terug { color: var(--accent); text-decoration: none; font-size: 13px; line-height: 2; }
+"""
+
+
+HTML_PAGE = """
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#111418">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Go2 bediening</title>
+  <style>
+""" + PAGE_CSS + """  </style>
 </head>
 <body>
 
@@ -1057,7 +1246,9 @@ HTML_PAGE = """
      De markers met een magenta nummer op de knoppen hieronder voeren dat
      commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
      liggen. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
-     later opnieuw af; wat vroeger komt wordt genegeerd. Zet het beeld uit als de
+     later opnieuw af; wat vroeger komt wordt genegeerd.
+     Andere markers kunnen de robot laten draaien als ze op een ingestelde
+     afstand liggen: dat stel je in bij de <a class="terug" href="/aruco">draairegels</a>. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1147,7 +1338,7 @@ HTML_PAGE = """
   </div>
 </section>
 
-<footer>Robot: {{ robot_ip }}</footer>
+<footer><a class="terug" href="/aruco">🎯 draairegels van de markers</a><br>Robot: {{ robot_ip }}</footer>
 
 <script>
 const dot = document.getElementById('dot');
@@ -1377,6 +1568,211 @@ setInterval(poll, 1000);
 """
 
 
+ARUCO_PAGE = """
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111418">
+  <title>Go2 draairegels</title>
+  <style>
+""" + PAGE_CSS + """
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    td.marker { color: #ff7bff; font-weight: 700; font-variant-numeric: tabular-nums; }
+    td.bereik { color: var(--muted); font-variant-numeric: tabular-nums; }
+    td.actie { width: 44px; }
+    td.actie button { min-height: 34px; padding: 4px; }
+    .form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .form label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
+    .form input, .form select {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      min-height: 46px;
+      width: 100%;
+      text-align: center;
+    }
+    .form input { user-select: text; -webkit-user-select: text; }
+    .wide { grid-column: 1 / -1; }
+    a.terug { color: var(--accent); text-decoration: none; font-size: 13px; }
+    .leeg { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>&#127919; Draairegels</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="msg">klaar</span></div>
+</header>
+
+<section>
+  <h2>Regels</h2>
+  <table>
+    <thead>
+      <tr><th>marker</th><th>draai</th><th>duur</th><th>afstand</th><th></th></tr>
+    </thead>
+    <tbody id="rules"></tbody>
+  </table>
+  <p class="leeg" id="leeg">Nog geen regels ingesteld.</p>
+  <p class="hint">Een regel gaat af zodra de marker {{ min_frames }} beelden na
+     elkaar in beeld ligt <b>en</b> op de ingestelde afstand staat, marge
+     inbegrepen. Daarna wacht dezelfde marker {{ cooldown }} seconden.</p>
+</section>
+
+<section>
+  <h2>Regel toevoegen of aanpassen</h2>
+  <div class="form">
+    <div>
+      <label for="id">marker</label>
+      <input id="id" type="number" inputmode="numeric" min="0" max="999" step="1" value="30">
+    </div>
+    <div>
+      <label for="direction">richting</label>
+      <select id="direction">
+        <option value="links">&#11013;&#65039; links</option>
+        <option value="rechts">&#10145;&#65039; rechts</option>
+      </select>
+    </div>
+    <div>
+      <label for="seconds">duur (s)</label>
+      <input id="seconds" type="number" inputmode="decimal" min="0.1" max="{{ max_seconds }}" step="0.1" value="2">
+    </div>
+    <div>
+      <label for="distance">afstand (m)</label>
+      <input id="distance" type="number" inputmode="decimal" min="0.1" max="{{ max_distance }}" step="0.1" value="1">
+    </div>
+    <div>
+      <label for="margin">marge (%)</label>
+      <input id="margin" type="number" inputmode="numeric" min="0" max="100" step="5" value="20">
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button id="save"><span class="ico">&#128190;</span><span class="lbl">bewaren</span></button>
+    </div>
+    <p class="hint wide" id="preview">&nbsp;</p>
+  </div>
+  <p class="hint">Een bestaande marker pas je aan door hem opnieuw te bewaren.
+     De regels staan in <code>{{ rules_file }}</code> en blijven dus bestaan na
+     een herstart.</p>
+</section>
+
+<section>
+  <h2>Vaste commando's</h2>
+  <table>
+    <thead><tr><th>marker</th><th>commando</th></tr></thead>
+    <tbody>
+      {% for marker_id, command in fixed %}
+      <tr><td class="marker">{{ marker_id }}</td><td>{{ command }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">Deze markers liggen vast in het script; ze kunnen hier niet
+     als draairegel gebruikt worden.</p>
+</section>
+
+<footer><a class="terug" href="/">&#8592; terug naar de bediening</a></footer>
+
+<script>
+const dot = document.getElementById('dot');
+const msg = document.getElementById('msg');
+const velden = ['id', 'direction', 'seconds', 'distance', 'margin'];
+
+function setStatus(text, state) {
+  msg.textContent = text;
+  dot.className = 'dot' + (state ? ' ' + state : '');
+}
+
+function waarde(naam) { return document.getElementById(naam).value; }
+
+// Laat zien tussen welke afstanden de regel zal afgaan
+function toonBereik() {
+  const distance = parseFloat(waarde('distance'));
+  const margin = parseFloat(waarde('margin'));
+  const preview = document.getElementById('preview');
+
+  if (isNaN(distance) || isNaN(margin)) { preview.textContent = ' '; return; }
+
+  const rand = distance * margin / 100;
+  preview.textContent = 'gaat af tussen ' + (distance - rand).toFixed(2) +
+                        ' m en ' + (distance + rand).toFixed(2) + ' m';
+}
+velden.forEach(naam => document.getElementById(naam).addEventListener('input', toonBereik));
+toonBereik();
+
+function rij(rule) {
+  const tr = document.createElement('tr');
+  const pijl = rule.direction === 'links' ? '&#11013;&#65039;' : '&#10145;&#65039;';
+  tr.innerHTML =
+    '<td class="marker">' + rule.id + '</td>' +
+    '<td>' + pijl + ' ' + rule.direction + '</td>' +
+    '<td>' + rule.seconds + ' s</td>' +
+    '<td class="bereik">' + rule.low.toFixed(2) + ' - ' + rule.high.toFixed(2) + ' m</td>';
+
+  const cel = document.createElement('td');
+  cel.className = 'actie';
+  const knop = document.createElement('button');
+  knop.innerHTML = '<span class="ico">&#128465;&#65039;</span>';
+  knop.addEventListener('click', () => verwijder(rule.id));
+  cel.appendChild(knop);
+  tr.appendChild(cel);
+  return tr;
+}
+
+function toonRegels(rules) {
+  const body = document.getElementById('rules');
+  body.innerHTML = '';
+  rules.forEach(rule => body.appendChild(rij(rule)));
+  document.getElementById('leeg').style.display = rules.length ? 'none' : 'block';
+}
+
+async function laden() {
+  try {
+    const res = await fetch('/aruco/rules');
+    toonRegels(await res.json());
+  } catch (err) {
+    setStatus('server onbereikbaar', 'err');
+  }
+}
+
+async function bewaren() {
+  const vraag = velden.map(naam => naam + '=' + encodeURIComponent(waarde(naam))).join('&');
+  try {
+    const res = await fetch('/aruco/rules?' + vraag, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) { setStatus(data.error || 'fout', 'err'); return; }
+    setStatus('marker ' + data.rule.id + ' bewaard', 'ok');
+    toonRegels(data.rules);
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+}
+
+async function verwijder(markerId) {
+  try {
+    const res = await fetch('/aruco/rules/delete?id=' + markerId, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) { setStatus(data.error || 'fout', 'err'); return; }
+    setStatus('marker ' + markerId + ' verwijderd', 'ok');
+    toonRegels(data.rules);
+  } catch (err) {
+    setStatus('geen verbinding', 'err');
+  }
+}
+
+document.getElementById('save').addEventListener('click', bewaren);
+laden();
+</script>
+</body>
+</html>
+"""
+
+
 app = Flask(__name__)
 
 
@@ -1507,6 +1903,67 @@ def model():
                         "choices": segmentation.model_choices()}), 400
 
     return jsonify({"ok": True, "model": name})
+
+
+def rules_for_page():
+    """De regels met hun bereik erbij, klaar voor de tabel op de pagina."""
+    rules = []
+    for rule in turn_rules.all():
+        low, high = rule_range(rule)
+        item = dict(rule)
+        item["low"] = round(low, 2)
+        item["high"] = round(high, 2)
+        rules.append(item)
+    return rules
+
+
+@app.route("/aruco/")
+@app.route("/aruco")
+def aruco():
+    """Pagina om de draairegels van de markers in te stellen."""
+    return render_template_string(
+        ARUCO_PAGE,
+        fixed=sorted(ARUCO_COMMANDS.items()),
+        min_frames=ARUCO_MIN_FRAMES,
+        cooldown=int(ARUCO_COOLDOWN),
+        max_seconds=MAX_TURN_SECONDS,
+        max_distance=MAX_RULE_DISTANCE,
+        rules_file=os.path.basename(ARUCO_RULES_PATH),
+    )
+
+
+@app.route("/aruco/rules", methods=["GET", "POST"])
+def aruco_rules():
+    """De draairegels lezen, of er een toevoegen of aanpassen.
+
+    Toevoegen gaat met alle vijf de waarden, bv.
+    /aruco/rules?id=30&direction=links&seconds=2&distance=1&margin=20"""
+    if request.method == "GET":
+        return jsonify(rules_for_page())
+
+    try:
+        rule = turn_rules.set(
+            request.args.get("id"),
+            request.args.get("direction"),
+            request.args.get("seconds"),
+            request.args.get("distance"),
+            request.args.get("margin"),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "rule": rule, "rules": rules_for_page()})
+
+
+@app.route("/aruco/rules/delete", methods=["POST"])
+def aruco_rules_delete():
+    """Verwijder de regel van een marker, bv. /aruco/rules/delete?id=30"""
+    try:
+        removed = turn_rules.delete(request.args.get("id"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "removed": removed, "rules": rules_for_page()})
 
 
 @app.route("/commands")

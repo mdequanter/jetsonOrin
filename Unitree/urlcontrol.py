@@ -362,12 +362,10 @@ _aruco_detector = None
 _aruco_tried = False
 
 
-def detect_largest_marker(frame):
-    """Zoek de ArUco-markers in het beeld en houd enkel de grootste over.
+def detect_markers(frame):
+    """Zoek alle ArUco-markers in het beeld, van groot naar klein.
 
-    De grootste is doorgaans ook de dichtste, en één marker tegelijk houdt het
-    beeld rustig. Geeft een dict met de id, de hoekpunten en de oppervlakte
-    terug, of None als er niets in beeld is."""
+    Elke marker is een dict met zijn id, zijn hoekpunten en zijn oppervlakte."""
     global _aruco_detector, _aruco_tried
 
     if not _aruco_tried:
@@ -378,20 +376,44 @@ def detect_largest_marker(frame):
             print("ArUco niet beschikbaar: " + str(exc), flush=True)
 
     if _aruco_detector is None:
-        return None
+        return []
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _rejected = _aruco_detector(gray)
     if ids is None or len(ids) == 0:
-        return None
+        return []
 
-    best = None
+    markers = []
     for marker_id, marker_corners in zip(ids, corners):
         points = np.round(marker_corners.reshape((4, 2))).astype(np.int32)
-        area = float(cv2.contourArea(points))
-        if best is None or area > best["area"]:
-            best = {"id": int(marker_id[0]), "points": points, "area": area}
-    return best
+        markers.append({
+            "id": int(marker_id[0]),
+            "points": points,
+            "area": float(cv2.contourArea(points)),
+        })
+
+    markers.sort(key=lambda marker: marker["area"], reverse=True)
+    return markers
+
+
+def detect_largest_marker(frame):
+    """De grootste marker in beeld, of None.
+
+    De grootste is doorgaans ook de dichtste, en één marker tegelijk houdt het
+    beeld rustig. Enkel de noodstop kijkt naar alle markers."""
+    markers = detect_markers(frame)
+    return markers[0] if markers else None
+
+
+def estop_marker(markers):
+    """De noodstopmarker tussen de markers in beeld, of None.
+
+    Hier telt de grootte niet mee: ook een kleine marker ver weg moet de robot
+    stilzetten."""
+    for marker in markers:
+        if command_markers.get_command(marker["id"]) == ARUCO_ESTOP:
+            return marker
+    return None
 
 
 def marker_distance(area):
@@ -887,6 +909,11 @@ class Segmentation:
         self.last_command = None
         self.command_count = 0
 
+        # Voor de noodstopthread, die elk binnenkomend beeld bekijkt
+        self._marker_cond = threading.Condition()
+        self._marker_frame = None
+        self._marker_seq = 0
+
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
         self._stream_image = None
@@ -898,6 +925,12 @@ class Segmentation:
     def put_frame(self, image):
         """Bewaar enkel het laatste beeld; oudere beelden zijn toch achterhaald."""
         self._publish_stream(image, annotated=False)
+
+        # De noodstopthread krijgt elk beeld, die mag niet wachten
+        with self._marker_cond:
+            self._marker_frame = image
+            self._marker_seq += 1
+            self._marker_cond.notify_all()
 
         now = time.monotonic()
         if now - self._last_frame_at < FRAME_INTERVAL:
@@ -943,13 +976,6 @@ class Segmentation:
             return None
 
         command = command_markers.get_command(marker_id)
-        if command == ARUCO_ESTOP:
-            # De noodstop mag niet wachten: meteen, en zonder cooldown. Staat
-            # de robot al stil, dan valt er niets meer te doen.
-            if robot.stopped:
-                return None
-            return {"kind": "command", "command": command, "label": "noodstop"}
-
         if command is not None:
             if self._seen_count < ARUCO_MIN_FRAMES:
                 return None
@@ -981,8 +1007,31 @@ class Segmentation:
         self._triggered_at[marker_id] = now
         return action
 
+    def trigger_estop(self, marker):
+        """Zet de robot meteen stil omdat de noodstopmarker in beeld ligt.
+
+        Geen tellen, geen cooldown en geen afstandsvoorwaarde: dit gebeurt bij
+        het eerste beeld waarop de marker gezien wordt. Staat de robot al stil,
+        dan valt er niets meer te doen."""
+        if robot.stopped or not robot.connected:
+            return
+
+        self.last_command = {"id": marker["id"], "command": "noodstop"}
+        self.command_count += 1
+        print("ArUco %d: noodstop" % marker["id"], flush=True)
+
+        try:
+            robot.run_command(ARUCO_ESTOP)
+        except Exception as exc:
+            print("Noodstop mislukt: " + str(exc), flush=True)
+
     def run_marker_command(self, marker):
         """Voer de actie van de marker uit, als er een aan de beurt is."""
+        if marker is not None and \
+                command_markers.get_command(marker["id"]) == ARUCO_ESTOP:
+            self.trigger_estop(marker)
+            return
+
         action = self.marker_action(marker)
         if action is None:
             return
@@ -1050,6 +1099,34 @@ class Segmentation:
         if not USE_CAMERA:
             return
         threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._run_estop, daemon=True).start()
+
+    def _run_estop(self):
+        """Controleer elk binnenkomend beeld op de noodstopmarker.
+
+        Dit staat los van de segmentatie, die maar een paar keer per seconde
+        rekent: de noodstop moet afgaan bij het eerste beeld waarop de marker
+        te zien is, ook terwijl het YOLO-model nog aan het laden is, en
+        ongeacht hoe klein of ver de marker in beeld staat."""
+        if cv2 is None or np is None:
+            return
+
+        last_seq = -1
+        while True:
+            with self._marker_cond:
+                while self._marker_seq == last_seq or self._marker_frame is None:
+                    self._marker_cond.wait()
+                image, last_seq = self._marker_frame, self._marker_seq
+
+            try:
+                marker = estop_marker(detect_markers(image))
+            except Exception as exc:
+                print("Noodstopcontrole mislukt: " + str(exc), flush=True)
+                time.sleep(SEGMENTATION_INTERVAL)
+                continue
+
+            if marker is not None:
+                self.trigger_estop(marker)
 
     def _run(self):
         self.status = "model laden"
@@ -1483,7 +1560,8 @@ HTML_PAGE = """
      ({{ calibration }}).<br>
      De markers met een magenta nummer op de knoppen hieronder voeren dat
      commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
-     liggen; de noodstop gaat al af bij het eerste beeld. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
+     liggen; de noodstop gaat al af bij het eerste beeld waarop hij te zien is,
+     op eender welke afstand. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
      later opnieuw af; wat vroeger komt wordt genegeerd.
      Andere markers kunnen de robot laten draaien zodra ze {{ aruco_turn_frames }}
      beelden na elkaar op een ingestelde afstand liggen: dat stel je in bij de
@@ -1929,8 +2007,10 @@ ARUCO_PAGE = """
 
   <p class="hint">Eén marker per commando: kies het commando en geef de marker
      die het moet uitvoeren. De noodstop (<code>estop</code>) is de uitzondering:
-     die gaat af bij het eerste beeld, breekt een lopende draai meteen af en
-     houdt de robot stil tot er een nieuw commando komt. Een bestaand commando verhuist zo naar een andere
+     die wordt op elk camerabeeld apart gecontroleerd en gaat af zodra de marker
+     te zien is, van dichtbij of van ver, ook als er een grotere marker in beeld
+     ligt. Hij breekt een lopende draai meteen af en houdt de robot stil tot er
+     een nieuw commando komt. Een bestaand commando verhuist zo naar een andere
      marker. Deze markers gaan af na {{ min_frames }} beelden na elkaar, zonder
      afstandsvoorwaarde, en kunnen niet ook een draairegel hebben.
      Op de bedieningspagina staan de nummers op de knoppen; herlaad die pagina

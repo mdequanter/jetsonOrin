@@ -281,13 +281,14 @@ def detect_largest_marker(frame):
 
 
 def draw_marker(frame, marker):
-    """Teken een kader rond de marker, met zijn nummer erboven."""
+    """Teken een kader rond de marker, met zijn nummer en oppervlakte erboven."""
     points = marker["points"]
     cv2.polylines(frame, [points.reshape((-1, 1, 2))], True, ARUCO_COLOR, 3, cv2.LINE_AA)
 
     x = int(points[:, 0].min())
     y = int(points[:, 1].min())
-    cv2.putText(frame, "aruco %d" % marker["id"], (x, max(20, y - 10)),
+    label = "aruco %d - %d px2" % (marker["id"], round(marker["area"]))
+    cv2.putText(frame, label, (x, max(20, y - 10)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, ARUCO_COLOR, 2, cv2.LINE_AA)
 
 
@@ -593,8 +594,14 @@ class Segmentation:
                 marker = detect_largest_marker(image)
                 if marker is not None:
                     draw_marker(overlay, marker)
-                    self.marker = {"id": marker["id"],
-                                   "size": int(round(math.sqrt(marker["area"])))}
+                    self.marker = {
+                        "id": marker["id"],
+                        "area": int(round(marker["area"])),
+                        "size": int(round(math.sqrt(marker["area"]))),
+                        # deel van het beeld, handig om de afstand in te schatten
+                        "percent": round(100.0 * marker["area"] /
+                                         (image.shape[0] * image.shape[1]), 1),
+                    }
                 else:
                     self.marker = None
             except Exception as exc:
@@ -933,7 +940,9 @@ HTML_PAGE = """
   </label>
   <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
      de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
-     beeld, dan krijgt de grootste een magenta kader met zijn nummer. Zet het beeld uit als de
+     beeld, dan krijgt de grootste een magenta kader met zijn nummer en
+     oppervlakte in pixels; het percentage erachter is het deel van het beeld
+     dat de marker inneemt. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1183,7 +1192,11 @@ function showCamera(cam) {
   let badge = cam.heading === null || cam.heading === undefined
     ? cam.status
     : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
-  if (cam.marker) badge += ' · aruco ' + cam.marker.id;
+  if (cam.marker) {
+    badge += ' · aruco ' + cam.marker.id +
+             ' (' + cam.marker.area.toLocaleString('nl-BE') + ' px², ' +
+             cam.marker.percent + '%)';
+  }
   camBadge.textContent = badge;
 
   // De keuzelijsten gelijk houden met de server, bv. na een herstart of een URL

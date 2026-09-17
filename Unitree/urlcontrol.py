@@ -1174,8 +1174,14 @@ class Segmentation:
             try:
                 heading, overlay = segment_frame(image, model, self.confidence)
 
-                # De grootste ArUco-marker krijgt een kader op hetzelfde beeld
-                marker = detect_largest_marker(image)
+                # De grootste ArUco-marker krijgt een kader op hetzelfde beeld,
+                # behalve als de noodstopmarker in beeld ligt: die gaat voor,
+                # hoe klein hij ook is, en houdt elke andere actie tegen
+                markers = detect_markers(image)
+                marker = estop_marker(markers)
+                if marker is None and markers:
+                    marker = markers[0]
+
                 if marker is not None:
                     draw_marker(overlay, marker)
                     distance = marker_distance(marker["area"])

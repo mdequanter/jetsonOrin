@@ -109,9 +109,11 @@ TURN_DIRECTIONS = ("links", "rechts")
 MAX_TURN_SECONDS = 10.0       # grens op de duur van een draai
 MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
 
-# Het pad volgen zolang de vooruitknop ingedrukt blijft
+# Het pad volgen: dit loopt door tot er iets is om voor te stoppen
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
+FOLLOW_INTERVAL = 0.15        # s tussen twee move-commando's tijdens het volgen
+MARKER_MAX_AGE = 0.6          # s waarna we een geziene marker als verdwenen beschouwen
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -185,6 +187,11 @@ class RobotController:
         blijft de robot stil tot je hem iets nieuws vraagt."""
         if command != ARUCO_ESTOP:
             self.resume()
+
+        # Een ander commando betekent dat je zelf de leiding neemt
+        if command != "follow":
+            path_follower.stop("commando " + command)
+
         self.note_command(command)
         return COMMANDS[command]()
 
@@ -848,11 +855,12 @@ def segment_frame(frame, model, confidence):
         target_y = min(point[1] for point in midpoints)
         heading = compute_heading_to_point(frame, avg_x, target_y)
     else:
-        heading = HEADING_FORWARD
+        # Geen pad in beeld: geen heading. Zo weet wie volgt dat hij moet
+        # stoppen, in plaats van blind op 90 graden rechtdoor te lopen.
+        heading = None
 
     overlay = frame.copy()
-    draw_path_overlay(overlay, result, mask_index, midpoints,
-                      heading if midpoints else None)
+    draw_path_overlay(overlay, result, mask_index, midpoints, heading)
     return heading, overlay
 
 
@@ -900,6 +908,8 @@ class Segmentation:
         self.confidence = DETECTION_CONFIDENCE
         self.model_name = os.path.basename(MODEL_PATH)
         self.marker = None
+        self.marker_id = None         # de marker die de snelle thread net zag
+        self.marker_at = 0.0
 
         # ArUco-commando's: tellen hoe lang dezelfde marker in beeld ligt
         self._seen_id = None
@@ -1099,15 +1109,16 @@ class Segmentation:
         if not USE_CAMERA:
             return
         threading.Thread(target=self._run, daemon=True).start()
-        threading.Thread(target=self._run_estop, daemon=True).start()
+        threading.Thread(target=self._run_markers, daemon=True).start()
 
-    def _run_estop(self):
-        """Controleer elk binnenkomend beeld op de noodstopmarker.
+    def _run_markers(self):
+        """Bekijk elk binnenkomend beeld op ArUco-markers.
 
         Dit staat los van de segmentatie, die maar een paar keer per seconde
         rekent: de noodstop moet afgaan bij het eerste beeld waarop de marker
         te zien is, ook terwijl het YOLO-model nog aan het laden is, en
-        ongeacht hoe klein of ver de marker in beeld staat."""
+        ongeacht hoe klein of ver de marker in beeld staat. Wie het pad volgt
+        gebruikt dezelfde thread om te weten dat er een marker in zicht komt."""
         if cv2 is None or np is None:
             return
 
@@ -1119,11 +1130,16 @@ class Segmentation:
                 image, last_seq = self._marker_frame, self._marker_seq
 
             try:
-                marker = estop_marker(detect_markers(image))
+                markers = detect_markers(image)
+                marker = estop_marker(markers)
             except Exception as exc:
-                print("Noodstopcontrole mislukt: " + str(exc), flush=True)
+                print("Markercontrole mislukt: " + str(exc), flush=True)
                 time.sleep(SEGMENTATION_INTERVAL)
                 continue
+
+            if markers:
+                self.marker_id = markers[0]["id"]
+                self.marker_at = time.monotonic()
 
             if marker is not None:
                 self.trigger_estop(marker)
@@ -1208,7 +1224,7 @@ class Segmentation:
                 continue
 
             self._publish_stream(overlay, annotated=True)
-            self.heading = clamp(float(heading), 0.0, 180.0)
+            self.heading = None if heading is None else clamp(float(heading), 0.0, 180.0)
             self.updated_at = time.monotonic()
             self.status = "actief"
             self.error = None
@@ -1242,6 +1258,12 @@ class Segmentation:
         self.confidence = round(value, 2)
         return self.confidence
 
+    def marker_in_view(self):
+        """Het nummer van de marker die net nog in beeld lag, of None."""
+        if not self.marker_at or time.monotonic() - self.marker_at > MARKER_MAX_AGE:
+            return None
+        return self.marker_id
+
     def current_heading(self):
         """De laatste heading, of None als er nog geen of enkel een verouderde is."""
         if self.heading is None or not self.updated_at:
@@ -1271,12 +1293,102 @@ class Segmentation:
 segmentation = Segmentation()
 
 
+# ------------------------------------------------------------- het pad volgen
+
+class PathFollower:
+    """Volgt het pad tot er een reden is om te stoppen.
+
+    Het volgen loopt hier op de Jetson door, niet op de webpagina: die klikt
+    het enkel aan en uit. We stoppen zodra er een ArUco-marker in beeld komt,
+    zodra het model geen pad meer ziet, bij een noodstop, en natuurlijk als je
+    opnieuw op de knop klikt of een ander commando geeft."""
+
+    def __init__(self):
+        self._thread = None
+        self._stop = threading.Event()
+        self.active = False
+        self.reason = None
+        self.changes = 0          # zo ziet de webpagina dat er iets veranderd is
+
+    def toggle(self):
+        """Aan- of uitzetten, wat de knop 'volg pad' doet."""
+        if self.active:
+            self.stop("op de knop geklikt")
+            return {"following": False}
+        return self.start()
+
+    def start(self):
+        if self.active:
+            return {"following": True}
+
+        robot.resume()            # een noodstop van daarnet mag dit niet tegenhouden
+        self._stop.clear()
+        self.active = True
+        self.reason = None
+        self.changes += 1
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        print("Pad volgen gestart", flush=True)
+        return {"following": True}
+
+    def stop(self, reason):
+        """Zet het volgen stil. Doet niets als er niet gevolgd wordt."""
+        if not self.active:
+            return
+
+        self.active = False
+        self.reason = reason
+        self.changes += 1
+        self._stop.set()
+        print("Pad volgen gestopt: " + reason, flush=True)
+
+    def _run(self):
+        try:
+            while not self._stop.is_set():
+                reason = self._reason_to_stop()
+                if reason is not None:
+                    self.stop(reason)
+                    break
+
+                robot.note_command("volg pad")
+                robot.follow_path()
+                self._stop.wait(FOLLOW_INTERVAL)
+        except Exception as exc:
+            self.stop("fout: " + str(exc))
+
+        # Altijd afsluiten met een stop, behalve als de noodstop dat al deed
+        try:
+            if not robot.stopped:
+                robot.move(x=0, y=0, z=0)
+        except Exception:
+            pass
+
+    def _reason_to_stop(self):
+        """Waarom moeten we stoppen? None als we gewoon verder mogen."""
+        if not robot.connected:
+            return "geen verbinding"
+        if robot.stopped:
+            return "noodstop"
+
+        marker_id = segmentation.marker_in_view()
+        if marker_id is not None:
+            return "aruco %d" % marker_id
+
+        if segmentation.current_heading() is None:
+            return "geen pad"
+        return None
+
+
+path_follower = PathFollower()
+
+
 # -------------------------------------------------------------- commandotabel
 
 COMMANDS = {
     # de basis
     "forward":      lambda: robot.move(x=MOVE_SPEED),
-    "follow":       lambda: robot.follow_path(),
+    "follow":       lambda: path_follower.toggle(),
     "backward":     lambda: robot.move(x=-MOVE_SPEED),
     "turn_left":    lambda: robot.move(z=TURN_SPEED),
     "turn_right":   lambda: robot.move(z=-TURN_SPEED),
@@ -1426,6 +1538,13 @@ PAGE_CSS = """
     .dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .dpad button { min-height: 66px; }
     .dpad .stop { background: #3a2224; border-color: #5a2c30; }
+    .dpad button.bezig {
+      background: var(--accent);
+      border-color: var(--accent);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .dpad button.bezig .lbl { color: #fff; }
+    @keyframes pulse { 50% { opacity: .65; } }
 
     .estop {
       background: var(--danger);
@@ -1597,7 +1716,10 @@ HTML_PAGE = """
     <div></div>
   </div>
   <p class="hint">De robot beweegt zolang je de knop ingedrukt houdt. Staat
-     "volg de camera" aan, dan blijft hij tijdens het vooruit stappen het pad volgen.</p>
+     "volg de camera" aan, dan wordt de vooruitknop een schakelaar: één klik en
+     de robot volgt het pad verder op eigen houtje. Hij stopt bij een
+     ArUco-marker, zodra het model geen pad meer ziet, bij een noodstop, en
+     als je opnieuw op de knop klikt, op stop drukt of iets anders vraagt.</p>
 </section>
 
 <section>
@@ -1704,10 +1826,10 @@ document.querySelectorAll('button[data-cmd]:not([data-hold])').forEach(btn => {
   btn.addEventListener('click', () => send(btn.dataset.cmd));
 });
 
-// Staat "volg de camera" aan, dan stuurt de vooruitknop het pad achterna
-function commandFor(btn) {
-  if (btn.dataset.follow !== undefined && autoHeading.checked) return 'follow';
-  return btn.dataset.cmd;
+// Staat "volg de camera" aan, dan is de vooruitknop een schakelaar in plaats
+// van een houdknop: het volgen loopt dan op de robot zelf door
+function isFollowToggle(btn) {
+  return btn.dataset.follow !== undefined && autoHeading.checked;
 }
 
 // houd-knoppen: herhaal het commando tot je loslaat, daarna stoppen
@@ -1715,10 +1837,11 @@ document.querySelectorAll('button[data-hold]').forEach(btn => {
   let timer = null;
 
   const start = (ev) => {
+    if (isFollowToggle(btn)) return;   // dan doet de klik hieronder het werk
     ev.preventDefault();
     if (timer) return;
-    send(commandFor(btn));
-    timer = setInterval(() => send(commandFor(btn)), HOLD_INTERVAL);
+    send(btn.dataset.cmd);
+    timer = setInterval(() => send(btn.dataset.cmd), HOLD_INTERVAL);
   };
 
   const end = () => {
@@ -1735,11 +1858,12 @@ document.querySelectorAll('button[data-hold]').forEach(btn => {
   btn.addEventListener('contextmenu', ev => ev.preventDefault());
 });
 
-// stoppen wanneer de pagina naar de achtergrond gaat of je wegsurft
+// Stoppen wanneer de pagina naar de achtergrond gaat of je wegsurft. Volgt de
+// robot een pad, dan laten we hem doorgaan: dat is net de bedoeling van de modus.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) send('stop');
+  if (document.hidden && !following) send('stop');
 });
-window.addEventListener('pagehide', () => send('stop'));
+window.addEventListener('pagehide', () => { if (!following) send('stop'); });
 
 // verbindingstoestand + heading van de camera ophalen
 const headingInput = document.getElementById('heading');
@@ -1748,12 +1872,43 @@ const cameraHeading = document.getElementById('camera-heading');
 const followButton = document.querySelector('button[data-follow]');
 
 // Toon op de knop zelf of hij gewoon vooruit gaat of het pad volgt
+let following = false;
+let lastFollowChanges = null;
+
 function showForwardMode() {
-  followButton.querySelector('.lbl').textContent =
-    autoHeading.checked ? 'volg pad' : 'vooruit';
+  const lbl = followButton.querySelector('.lbl');
+  if (!autoHeading.checked) {
+    lbl.textContent = 'vooruit';
+  } else {
+    lbl.textContent = following ? 'volgt pad…' : 'volg pad';
+  }
+  followButton.classList.toggle('bezig', following);
 }
-autoHeading.addEventListener('change', showForwardMode);
+
+autoHeading.addEventListener('change', () => {
+  if (following) send('stop');       // van modus wisselen zet het volgen stil
+  showForwardMode();
+});
+
+// Eén klik zet het volgen aan, nog een klik zet het weer uit
+followButton.addEventListener('click', () => {
+  if (!isFollowToggle(followButton)) return;
+  send('follow');
+});
+
 showForwardMode();
+
+function showFollowing(data) {
+  following = !!data.following;
+  showForwardMode();
+
+  // Meld waarom het volgen gestopt is, maar maar één keer
+  if (lastFollowChanges !== null && data.follow_changes !== lastFollowChanges &&
+      !data.following && data.follow_reason) {
+    setStatus('volgen gestopt: ' + data.follow_reason, 'ok');
+  }
+  lastFollowChanges = data.follow_changes;
+}
 
 // live beeld met het masker erop: gewoon een MJPEG-stream in een <img>
 const camImg = document.getElementById('cam');
@@ -1878,6 +2033,7 @@ async function poll() {
     if (!data.connected) setStatus('robot niet verbonden', 'err');
     showCamera(data.camera);
     showMarkerCommand(data.camera);
+    showFollowing(data);
   } catch (err) {
     setStatus('server onbereikbaar', 'err');
   }
@@ -2210,6 +2366,9 @@ def status():
     return jsonify({
         "connected": robot.connected,
         "camera": segmentation.snapshot(),
+        "following": path_follower.active,
+        "follow_reason": path_follower.reason,
+        "follow_changes": path_follower.changes,
     })
 
 

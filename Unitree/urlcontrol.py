@@ -81,6 +81,16 @@ ARUCO_LABEL_THICKNESS = 3
 # IJkpunten om de afstand te schatten: (oppervlakte in pixels, afstand in meter)
 ARUCO_CALIBRATION = [(2100, 1.00), (25000, 0.30)]
 
+# Markers die een commando uitvoeren zodra ze lang genoeg in beeld liggen
+ARUCO_COMMANDS = {
+    25: "stand_down",     # neerliggen
+    23: "stand_up",       # opstaan
+    22: "hello",
+    29: "stretch",
+}
+ARUCO_MIN_FRAMES = 3          # zoveel beelden na elkaar zichtbaar voor we reageren
+ARUCO_COOLDOWN = 30.0         # s voor we hetzelfde commando opnieuw laten uitvoeren
+
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
@@ -507,6 +517,13 @@ class Segmentation:
         self.model_name = os.path.basename(MODEL_PATH)
         self.marker = None
 
+        # ArUco-commando's: tellen hoe lang dezelfde marker in beeld ligt
+        self._seen_id = None
+        self._seen_count = 0
+        self._triggered_at = {}
+        self.last_command = None
+        self.command_count = 0
+
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
         self._stream_image = None
@@ -530,6 +547,53 @@ class Segmentation:
         with self._frame_lock:
             image, self._frame = self._frame, None
         return image
+
+    # -- commando's van een marker -------------------------------------------
+
+    def marker_command(self, marker):
+        """Geef het commando dat bij de marker hoort, of None.
+
+        We reageren pas als dezelfde marker ARUCO_MIN_FRAMES beelden na elkaar
+        in beeld ligt; zo zet een marker die even voorbijflitst de robot niet
+        aan het werk. Daarna houden we hem ARUCO_COOLDOWN seconden tegen, zodat
+        een marker die blijft liggen niet telkens opnieuw afgaat."""
+        marker_id = marker["id"] if marker else None
+
+        if marker_id != self._seen_id:
+            self._seen_id = marker_id
+            self._seen_count = 0
+        self._seen_count += 1
+
+        command = ARUCO_COMMANDS.get(marker_id)
+        if command is None or self._seen_count < ARUCO_MIN_FRAMES:
+            return None
+
+        # Zonder verbinding valt er niets uit te voeren; we wachten gewoon af
+        if not robot.connected:
+            return None
+
+        now = time.monotonic()
+        last = self._triggered_at.get(marker_id)
+        if last is not None and now - last < ARUCO_COOLDOWN:
+            return None
+
+        self._triggered_at[marker_id] = now
+        return command
+
+    def run_marker_command(self, marker):
+        """Voer het commando van de marker uit, als er een aan de beurt is."""
+        command = self.marker_command(marker)
+        if command is None:
+            return
+
+        self.last_command = {"id": marker["id"], "command": command}
+        self.command_count += 1
+        print("ArUco %d: %s" % (marker["id"], command), flush=True)
+
+        try:
+            COMMANDS[command]()
+        except Exception as exc:
+            print("ArUco-commando mislukt: " + str(exc), flush=True)
 
     # -- live stream ---------------------------------------------------------
 
@@ -636,6 +700,8 @@ class Segmentation:
                     }
                 else:
                     self.marker = None
+
+                self.run_marker_command(marker)
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)
@@ -698,6 +764,8 @@ class Segmentation:
             "confidence": round(self.confidence, 2),
             "model": self.model_name,
             "marker": self.marker,
+            "last_command": self.last_command,
+            "command_count": self.command_count,
         }
 
 
@@ -743,6 +811,12 @@ COMMANDS = {
     # noodstop
     "estop":        lambda: robot.emergency_stop(),
 }
+
+
+# Elke ArUco-actie moet naar een bestaand commando verwijzen
+for _marker_id, _command in sorted(ARUCO_COMMANDS.items()):
+    if _command not in COMMANDS:
+        raise RuntimeError("ARUCO_COMMANDS verwijst naar een onbekend commando: " + _command)
 
 
 # ------------------------------------------------------------------ webpagina
@@ -840,6 +914,11 @@ HTML_PAGE = """
     }
     button .ico { font-size: 20px; line-height: 1; }
     button .lbl { font-size: 12px; color: var(--muted); text-align: center; }
+    button .aruco {
+      font-size: 10px;
+      color: #ff7bff;
+      letter-spacing: .04em;
+    }
     button:active { background: var(--accent); transform: scale(.96); }
     button:active .lbl { color: #fff; }
 
@@ -974,7 +1053,11 @@ HTML_PAGE = """
      de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
      beeld, dan krijgt de grootste een magenta kader met zijn nummer en de
      geschatte afstand, berekend uit zijn oppervlakte
-     ({{ calibration }}). Zet het beeld uit als de
+     ({{ calibration }}).<br>
+     De markers met een magenta nummer op de knoppen hieronder voeren dat
+     commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
+     liggen. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
+     later opnieuw af; wat vroeger komt wordt genegeerd. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1183,6 +1266,18 @@ showCameraBox.addEventListener('change', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopStream(); else startStream();
 });
+// de markers die een knop bedienen: zet hun nummer op die knop
+const ARUCO_COMMANDS = {{ aruco_commands|tojson }};
+
+Object.keys(ARUCO_COMMANDS).forEach(markerId => {
+  const btn = document.querySelector('button[data-cmd="' + ARUCO_COMMANDS[markerId] + '"]');
+  if (!btn) return;
+  const tag = document.createElement('span');
+  tag.className = 'aruco';
+  tag.textContent = 'aruco ' + markerId;
+  btn.appendChild(tag);
+});
+
 // het model kiezen: de .pt-bestanden uit de modelmap
 const modelBox = document.getElementById('model');
 
@@ -1251,12 +1346,25 @@ function showCamera(cam) {
   }
 }
 
+let lastCommandCount = null;
+
+function showMarkerCommand(cam) {
+  if (!cam || cam.command_count === undefined) return;
+
+  // De eerste ronde tonen we niets, anders meldt de pagina een oud commando
+  if (lastCommandCount !== null && cam.command_count > lastCommandCount && cam.last_command) {
+    setStatus('aruco ' + cam.last_command.id + ': ' + cam.last_command.command, 'ok');
+  }
+  lastCommandCount = cam.command_count;
+}
+
 async function poll() {
   try {
     const res = await fetch('/status');
     const data = await res.json();
     if (!data.connected) setStatus('robot niet verbonden', 'err');
     showCamera(data.camera);
+    showMarkerCommand(data.camera);
   } catch (err) {
     setStatus('server onbereikbaar', 'err');
   }
@@ -1283,6 +1391,9 @@ def index():
         model=segmentation.model_name,
         calibration=" en ".join("%d px² = %.2f m" % (area, distance)
                                 for area, distance in ARUCO_CALIBRATION),
+        aruco_commands=ARUCO_COMMANDS,
+        aruco_min_frames=ARUCO_MIN_FRAMES,
+        aruco_cooldown=int(ARUCO_COOLDOWN),
     )
 
 

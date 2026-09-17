@@ -59,7 +59,7 @@ SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MODEL_DIR = os.path.dirname(MODEL_PATH)   # hier zoeken we de andere .pt-bestanden
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
-SEGMENTATION_INTERVAL = 0.3   # s tussen twee berekeningen
+SEGMENTATION_INTERVAL = 0.2  # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
 
 # Live beeld op de webpagina (/video)

@@ -72,6 +72,10 @@ MASK_ALPHA = 0.35             # hoe hard het masker het beeld inkleurt
 MIDPOINT_COLOR = (0, 200, 255)
 HEADING_COLOR = (0, 255, 255)
 
+# ArUco: we tonen enkel de grootste marker in beeld
+ARUCO_DICTIONARY = "DICT_4X4_50"
+ARUCO_COLOR = (255, 0, 255)   # BGR: magenta kader
+
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
@@ -212,6 +216,80 @@ robot = RobotController()
 
 
 # ---------------------------------------------------------- camera + segmentatie
+
+def create_aruco_detector(dictionary_name):
+    """Maak een detector die werkt met zowel de oude als de nieuwe OpenCV-API
+    (zelfde opzet als in arucoContro.py)."""
+    if not hasattr(cv2, "aruco"):
+        raise RuntimeError("deze OpenCV heeft geen cv2.aruco (opencv-contrib-python)")
+
+    dictionary_id = getattr(cv2.aruco, dictionary_name, None)
+    if dictionary_id is None:
+        raise RuntimeError("onbekende ArUco-dictionary: " + dictionary_name)
+
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    else:
+        dictionary = cv2.aruco.Dictionary_get(dictionary_id)
+
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        parameters = cv2.aruco.DetectorParameters()
+    else:
+        parameters = cv2.aruco.DetectorParameters_create()
+
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        return lambda image: detector.detectMarkers(image)
+
+    return lambda image: cv2.aruco.detectMarkers(image, dictionary, parameters=parameters)
+
+
+_aruco_detector = None
+_aruco_tried = False
+
+
+def detect_largest_marker(frame):
+    """Zoek de ArUco-markers in het beeld en houd enkel de grootste over.
+
+    De grootste is doorgaans ook de dichtste, en één marker tegelijk houdt het
+    beeld rustig. Geeft een dict met de id, de hoekpunten en de oppervlakte
+    terug, of None als er niets in beeld is."""
+    global _aruco_detector, _aruco_tried
+
+    if not _aruco_tried:
+        _aruco_tried = True
+        try:
+            _aruco_detector = create_aruco_detector(ARUCO_DICTIONARY)
+        except Exception as exc:
+            print("ArUco niet beschikbaar: " + str(exc), flush=True)
+
+    if _aruco_detector is None:
+        return None
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _rejected = _aruco_detector(gray)
+    if ids is None or len(ids) == 0:
+        return None
+
+    best = None
+    for marker_id, marker_corners in zip(ids, corners):
+        points = np.round(marker_corners.reshape((4, 2))).astype(np.int32)
+        area = float(cv2.contourArea(points))
+        if best is None or area > best["area"]:
+            best = {"id": int(marker_id[0]), "points": points, "area": area}
+    return best
+
+
+def draw_marker(frame, marker):
+    """Teken een kader rond de marker, met zijn nummer erboven."""
+    points = marker["points"]
+    cv2.polylines(frame, [points.reshape((-1, 1, 2))], True, ARUCO_COLOR, 3, cv2.LINE_AA)
+
+    x = int(points[:, 0].min())
+    y = int(points[:, 1].min())
+    cv2.putText(frame, "aruco %d" % marker["id"], (x, max(20, y - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, ARUCO_COLOR, 2, cv2.LINE_AA)
+
 
 def available_models():
     """De .pt-bestanden die naast het ingestelde model staan."""
@@ -393,6 +471,7 @@ class Segmentation:
         self.error = None
         self.confidence = DETECTION_CONFIDENCE
         self.model_name = os.path.basename(MODEL_PATH)
+        self.marker = None
 
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
@@ -509,6 +588,15 @@ class Segmentation:
 
             try:
                 heading, overlay = segment_frame(image, model, self.confidence)
+
+                # De grootste ArUco-marker krijgt een kader op hetzelfde beeld
+                marker = detect_largest_marker(image)
+                if marker is not None:
+                    draw_marker(overlay, marker)
+                    self.marker = {"id": marker["id"],
+                                   "size": int(round(math.sqrt(marker["area"])))}
+                else:
+                    self.marker = None
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)
@@ -570,6 +658,7 @@ class Segmentation:
             "age": round(age, 1) if age is not None else None,
             "confidence": round(self.confidence, 2),
             "model": self.model_name,
+            "marker": self.marker,
         }
 
 
@@ -843,7 +932,8 @@ HTML_PAGE = """
     </select>
   </label>
   <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
-     de meetpunten en de pijl wijst naar de heading. Zet het beeld uit als de
+     de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
+     beeld, dan krijgt de grootste een magenta kader met zijn nummer. Zet het beeld uit als de
      verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
      Een lagere confidence laat het model sneller een pad zien (maar ook meer
      verkeerde), een hogere enkel wat het zeker weet.
@@ -1090,9 +1180,11 @@ startStream();
 function showCamera(cam) {
   if (!cam) return;
 
-  camBadge.textContent = cam.heading === null || cam.heading === undefined
+  let badge = cam.heading === null || cam.heading === undefined
     ? cam.status
     : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
+  if (cam.marker) badge += ' · aruco ' + cam.marker.id;
+  camBadge.textContent = badge;
 
   // De keuzelijsten gelijk houden met de server, bv. na een herstart of een URL
   if (cam.confidence !== undefined && document.activeElement !== confidenceBox) {

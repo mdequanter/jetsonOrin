@@ -16,7 +16,7 @@ import random
 import threading
 import time
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request
 
 try:
     import cv2
@@ -58,6 +58,15 @@ ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
 SEGMENTATION_INTERVAL = 0.5   # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
+
+# Live beeld op de webpagina (/video)
+STREAM_QUALITY = 70           # JPEG-kwaliteit van de stream
+OVERLAY_MAX_AGE = 2.0         # s dat we het getekende beeld blijven tonen
+STREAM_IDLE_TIMEOUT = 1.0     # s wachten op een nieuw beeld voor we iets sturen
+MASK_COLOR = (0, 255, 0)      # BGR: het pad
+MASK_ALPHA = 0.35             # hoe hard het masker het beeld inkleurt
+MIDPOINT_COLOR = (0, 200, 255)
+HEADING_COLOR = (0, 255, 255)
 
 # Het pad volgen zolang de vooruitknop ingedrukt blijft
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
@@ -230,8 +239,48 @@ def compute_heading_to_point(frame, target_x, target_y):
     return 2 * HEADING_FORWARD - angle
 
 
-def compute_heading(frame, model):
-    """Zoek het pad in het beeld en geef de heading ernaartoe.
+def draw_path_overlay(frame, result, mask_indices, midpoints, heading):
+    """Teken de maskers van het pad, de meetpunten en de heading op het beeld."""
+    h, w = frame.shape[:2]
+    masks_xy = getattr(result.masks, "xy", None) if result.masks is not None else None
+    polygons = []
+
+    if masks_xy is not None:
+        for mask_index in mask_indices:
+            if mask_index >= len(masks_xy):
+                continue
+            polygon = masks_xy[mask_index]
+            if polygon is None or len(polygon) < 3:
+                continue
+            points = np.round(polygon).astype(np.int32).reshape((-1, 1, 2))
+            points[:, 0, 0] = np.clip(points[:, 0, 0], 0, w - 1)
+            points[:, 0, 1] = np.clip(points[:, 0, 1], 0, h - 1)
+            polygons.append(points)
+
+    if polygons:
+        shaded = frame.copy()
+        cv2.fillPoly(shaded, polygons, MASK_COLOR)
+        cv2.addWeighted(shaded, MASK_ALPHA, frame, 1.0 - MASK_ALPHA, 0, dst=frame)
+        for points in polygons:
+            cv2.polylines(frame, [points], True, MASK_COLOR, 2, cv2.LINE_AA)
+
+    for x, y in midpoints:
+        cv2.circle(frame, (x, y), 4, MIDPOINT_COLOR, -1, cv2.LINE_AA)
+
+    if midpoints:
+        avg_x = int(np.mean([point[0] for point in midpoints]))
+        target_y = min(point[1] for point in midpoints)
+        cv2.arrowedLine(frame, (w // 2, h - 1), (avg_x, target_y),
+                        HEADING_COLOR, 3, cv2.LINE_AA, tipLength=0.08)
+
+    text = "geen pad" if heading is None else "heading: %.1f" % heading
+    cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                HEADING_COLOR, 2, cv2.LINE_AA)
+
+
+def segment_frame(frame, model):
+    """Zoek het pad in het beeld en geef de heading ernaartoe, samen met een
+    kopie van het beeld waarop het masker getekend staat (voor de live stream).
 
     Per masker van een pad kijken we op een aantal hoogtes waar het pad zit, en
     we mikken op het gemiddelde van die punten. Wordt er niets gevonden, dan
@@ -240,32 +289,45 @@ def compute_heading(frame, model):
     result = model(frame, conf=DETECTION_CONFIDENCE, verbose=False)[0]
     model_names = getattr(model, "names", {})
     midpoints = []
+    mask_indices = []
 
-    if result.masks is None or len(result.masks.data) == 0:
-        return HEADING_FORWARD
-
-    for mask_index in get_allowed_mask_indices(result, model_names):
-        if mask_index >= len(result.masks.data):
-            continue
-
-        mask = result.masks.data[mask_index].cpu().numpy()
-        mask = (mask * 255).astype(np.uint8)
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-
-        for row_ratio in SCAN_HEIGHTS:
-            y = int(h * row_ratio)
-            if y >= h:
+    if result.masks is not None and len(result.masks.data) > 0:
+        for mask_index in get_allowed_mask_indices(result, model_names):
+            if mask_index >= len(result.masks.data):
                 continue
-            filled_x = np.where(mask[y, :] > 0)[0]
-            if len(filled_x) > 0:
-                midpoints.append((int(np.mean(filled_x)), y))
+            mask_indices.append(mask_index)
 
-    if not midpoints:
-        return HEADING_FORWARD
+            mask = result.masks.data[mask_index].cpu().numpy()
+            mask = (mask * 255).astype(np.uint8)
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    avg_x = int(np.mean([point[0] for point in midpoints]))
-    target_y = min(point[1] for point in midpoints)
-    return compute_heading_to_point(frame, avg_x, target_y)
+            for row_ratio in SCAN_HEIGHTS:
+                y = int(h * row_ratio)
+                if y >= h:
+                    continue
+                filled_x = np.where(mask[y, :] > 0)[0]
+                if len(filled_x) > 0:
+                    midpoints.append((int(np.mean(filled_x)), y))
+
+    if midpoints:
+        avg_x = int(np.mean([point[0] for point in midpoints]))
+        target_y = min(point[1] for point in midpoints)
+        heading = compute_heading_to_point(frame, avg_x, target_y)
+    else:
+        heading = HEADING_FORWARD
+
+    overlay = frame.copy()
+    draw_path_overlay(overlay, result, mask_indices, midpoints,
+                      heading if midpoints else None)
+    return heading, overlay
+
+
+def placeholder_frame(text):
+    """Zwart beeld met een boodschap, zolang er geen camerabeeld binnenkomt."""
+    image = np.zeros((360, 480, 3), dtype=np.uint8)
+    cv2.putText(image, str(text)[:40], (20, 180), cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, (160, 160, 160), 2, cv2.LINE_AA)
+    return image
 
 
 class Segmentation:
@@ -283,10 +345,18 @@ class Segmentation:
         self.status = "uit" if not USE_CAMERA else "wachten op beeld"
         self.error = None
 
+        # Voor de live stream op /video
+        self._stream_cond = threading.Condition()
+        self._stream_image = None
+        self._stream_seq = 0
+        self._overlay_at = 0.0
+
     # -- beelden binnenkrijgen ----------------------------------------------
 
     def put_frame(self, image):
         """Bewaar enkel het laatste beeld; oudere beelden zijn toch achterhaald."""
+        self._publish_stream(image, annotated=False)
+
         now = time.monotonic()
         if now - self._last_frame_at < FRAME_INTERVAL:
             return
@@ -298,6 +368,44 @@ class Segmentation:
         with self._frame_lock:
             image, self._frame = self._frame, None
         return image
+
+    # -- live stream ---------------------------------------------------------
+
+    def _publish_stream(self, image, annotated):
+        """Zet een beeld klaar voor /video.
+
+        Zolang het model beelden aflevert tonen we die met het masker erop; het
+        kale camerabeeld dient enkel als terugval, bijvoorbeeld terwijl YOLO nog
+        aan het laden is of wanneer de segmentatie stilvalt."""
+        now = time.monotonic()
+        with self._stream_cond:
+            if annotated:
+                self._overlay_at = now
+            elif now - self._overlay_at < OVERLAY_MAX_AGE:
+                return
+            self._stream_image = image
+            self._stream_seq += 1
+            self._stream_cond.notify_all()
+
+    def stream_frames(self):
+        """Blijf JPEG's opleveren voor de MJPEG-stream van /video."""
+        last_seq = -1
+        while True:
+            with self._stream_cond:
+                if self._stream_seq == last_seq:
+                    self._stream_cond.wait(timeout=STREAM_IDLE_TIMEOUT)
+                image = None
+                if self._stream_seq != last_seq:
+                    image, last_seq = self._stream_image, self._stream_seq
+
+            # Niets nieuws? Toch iets sturen: zo merken we dat de browser weg is
+            if image is None:
+                image = placeholder_frame(self.error or self.status)
+
+            ok, buffer = cv2.imencode(
+                ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY])
+            if ok:
+                yield buffer.tobytes()
 
     # -- berekening ----------------------------------------------------------
 
@@ -330,13 +438,14 @@ class Segmentation:
                 continue
 
             try:
-                heading = compute_heading(image, model)
+                heading, overlay = segment_frame(image, model)
             except Exception as exc:
                 self.status = "fout"
                 self.error = str(exc)
                 time.sleep(SEGMENTATION_INTERVAL)
                 continue
 
+            self._publish_stream(overlay, annotated=True)
             self.heading = clamp(float(heading), 0.0, 180.0)
             self.updated_at = time.monotonic()
             self.status = "actief"
@@ -558,6 +667,27 @@ HTML_PAGE = """
     .check input { width: 22px; height: 22px; accent-color: var(--accent); }
     .check b { color: var(--text); font-variant-numeric: tabular-nums; }
 
+    .camera {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .camera img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .camera .badge {
+      position: absolute;
+      left: 8px; bottom: 8px;
+      background: rgba(17, 20, 24, .75);
+      border-radius: 8px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
     .hint { font-size: 11px; color: var(--muted); margin: 8px 2px 0; }
     .hint code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
     footer { text-align: center; color: var(--muted); font-size: 11px; padding: 4px 0 8px; }
@@ -573,6 +703,21 @@ HTML_PAGE = """
 <section>
   <h2>Noodstop</h2>
   <button class="estop" data-cmd="estop"><span class="lbl">⛔ EMERGENCY STOP</span></button>
+</section>
+
+<section>
+  <h2>Camera</h2>
+  <div class="camera">
+    <img id="cam" alt="camerabeeld">
+    <span class="badge" id="cam-badge">—</span>
+  </div>
+  <label class="check">
+    <input type="checkbox" id="show-camera" checked>
+    <span>toon het beeld</span>
+  </label>
+  <p class="hint">Het groene vlak is het pad dat het model herkent, de stippen zijn
+     de meetpunten en de pijl wijst naar de heading. Zet het beeld uit als de
+     verbinding traag wordt. Los te bekijken via <code>/video</code>.</p>
 </section>
 
 <section>
@@ -750,8 +895,42 @@ function showForwardMode() {
 autoHeading.addEventListener('change', showForwardMode);
 showForwardMode();
 
+// live beeld met het masker erop: gewoon een MJPEG-stream in een <img>
+const camImg = document.getElementById('cam');
+const camBadge = document.getElementById('cam-badge');
+const showCameraBox = document.getElementById('show-camera');
+
+function startStream() {
+  if (!showCameraBox.checked || document.hidden) return;
+  if (camImg.getAttribute('src')) return;
+  camImg.src = '/video?t=' + Date.now();   // nieuwe url, anders hergebruikt de browser de oude stream
+}
+
+function stopStream() {
+  if (!camImg.getAttribute('src')) return;
+  camImg.removeAttribute('src');           // sluit de verbinding met /video
+}
+
+showCameraBox.addEventListener('change', () => {
+  if (showCameraBox.checked) startStream(); else stopStream();
+});
+
+// De stream niet laten doorlopen als de pagina toch niet zichtbaar is
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopStream(); else startStream();
+});
+camImg.addEventListener('error', () => {
+  stopStream();
+  setTimeout(startStream, 2000);        // opnieuw proberen, bv. na een herstart
+});
+startStream();
+
 function showCamera(cam) {
   if (!cam) return;
+
+  camBadge.textContent = cam.heading === null || cam.heading === undefined
+    ? cam.status
+    : cam.status + ' · ' + cam.heading.toFixed(1) + '°';
 
   if (cam.heading === null || cam.heading === undefined) {
     cameraHeading.textContent = '(' + cam.status + ')';
@@ -798,6 +977,28 @@ def status():
         "connected": robot.connected,
         "camera": segmentation.snapshot(),
     })
+
+
+@app.route("/video")
+def video():
+    """Live camerabeeld van de robot met het masker van het model erop.
+
+    Het is een MJPEG-stream, zo kan de webpagina er gewoon een <img> van maken."""
+    if not USE_CAMERA or cv2 is None:
+        return jsonify({"ok": False, "error": "camera staat uit"}), 404
+
+    def frames():
+        for jpeg in segmentation.stream_frames():
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n"
+                   b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
+                   jpeg + b"\r\n")
+
+    return Response(
+        frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
 
 
 @app.route("/heading/", methods=["GET", "POST"])

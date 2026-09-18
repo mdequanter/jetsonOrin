@@ -59,9 +59,7 @@ SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MODEL_DIR = os.path.dirname(MODEL_PATH)   # hier zoeken we de andere .pt-bestanden
 ALLOWED_PATH_LABELS = {"path", "path-oxod"}
 FRAME_INTERVAL = 0.2          # s tussen twee frames die we bijhouden (5 fps volstaat)
-SEGMENTATION_INTERVAL = 0.2   # s wachten na een fout voor we opnieuw proberen
-FRAME_WAIT_TIMEOUT = 0.5      # s wachten op een beeld voor de lus toch rondgaat
-MARKER_CACHE_FRAMES = 16      # zoveel markerresultaten houden we bij voor de segmentatie
+SEGMENTATION_INTERVAL = 0.2  # s tussen twee berekeningen
 HEADING_MAX_AGE = 3.0         # s waarna we een heading als verouderd beschouwen
 
 # Foto's van het ruwe camerabeeld: op vraag of om de zoveel tijd
@@ -917,8 +915,7 @@ class Segmentation:
 
     def __init__(self):
         self._frame = None
-        self._frame_seq = 0
-        self._frame_cond = threading.Condition()
+        self._frame_lock = threading.Lock()
         self._last_frame_at = 0.0
         self._raw_frame = None            # het laatste beeld zoals het binnenkwam
         self._raw_lock = threading.Lock()
@@ -944,7 +941,6 @@ class Segmentation:
         self._marker_cond = threading.Condition()
         self._marker_frame = None
         self._marker_seq = 0
-        self._markers_by_seq = {}     # wat die thread per beeld vond, om te hergebruiken
 
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
@@ -964,38 +960,21 @@ class Segmentation:
 
         # De noodstopthread krijgt elk beeld, die mag niet wachten
         with self._marker_cond:
-            self._marker_seq += 1
-            seq = self._marker_seq
             self._marker_frame = image
+            self._marker_seq += 1
             self._marker_cond.notify_all()
 
         now = time.monotonic()
         if now - self._last_frame_at < FRAME_INTERVAL:
             return
         self._last_frame_at = now
-        with self._frame_cond:
+        with self._frame_lock:
             self._frame = image
-            self._frame_seq = seq
-            self._frame_cond.notify_all()
 
-    def take_frame(self, timeout=None):
-        """Wacht op het volgende beeld voor de segmentatie: (beeld, volgnummer).
-
-        Wachten in plaats van pollen: het tempo ligt al vast bij put_frame, met
-        FRAME_INTERVAL. Een sleep achteraf kwam daar bovenop en maakte de
-        segmentatie trager dan die ene rem. Komt er niets binnen de timeout, dan
-        geven we (None, 0) terug zodat de lus toch rondgaat en bijvoorbeeld een
-        nieuw gekozen model opmerkt.
-
-        Het volgnummer hoort bij hetzelfde beeld als _marker_seq, zodat we de
-        markers kunnen ophalen die de snelle thread er al op vond."""
-        with self._frame_cond:
-            if self._frame is None:
-                self._frame_cond.wait(timeout)
-            if self._frame is None:
-                return None, 0
+    def take_frame(self):
+        with self._frame_lock:
             image, self._frame = self._frame, None
-            return image, self._frame_seq
+        return image
 
     def raw_frame(self):
         """Het laatste camerabeeld zonder masker, kaders of tekst, of None.
@@ -1004,27 +983,6 @@ class Segmentation:
         kopie. Dit blijft dus het beeld zoals de camera het aanleverde."""
         with self._raw_lock:
             return self._raw_frame
-
-    def put_markers(self, seq, markers):
-        """Bewaar wat de markerthread op dit beeld vond, voor de segmentatie.
-
-        We houden er een handvol bij: de segmentatie vraagt ze pas op als YOLO
-        klaar is, en tegen dan staat de markerthread al een paar beelden
-        verder."""
-        with self._marker_cond:
-            self._markers_by_seq[seq] = markers
-            while len(self._markers_by_seq) > MARKER_CACHE_FRAMES:
-                del self._markers_by_seq[next(iter(self._markers_by_seq))]
-
-    def markers_for(self, seq):
-        """De markers die de markerthread op dit beeld vond, of None.
-
-        None betekent enkel dat die thread er nog niet aan toe was; de
-        segmentatie zoekt dan zelf. Zo hoort het kader altijd bij het beeld
-        waarop het getekend wordt, zonder dezelfde detectie twee keer te
-        doen."""
-        with self._marker_cond:
-            return self._markers_by_seq.get(seq)
 
     # -- commando's van een marker -------------------------------------------
 
@@ -1209,10 +1167,6 @@ class Segmentation:
                 time.sleep(SEGMENTATION_INTERVAL)
                 continue
 
-            # De segmentatie werkt op hetzelfde beeld en hoeft straks niet
-            # opnieuw te zoeken
-            self.put_markers(last_seq, markers)
-
             if markers:
                 self.marker_id = markers[0]["id"]
                 self.marker_at = time.monotonic()
@@ -1258,8 +1212,9 @@ class Segmentation:
                 time.sleep(SEGMENTATION_INTERVAL)
                 continue
 
-            image, seq = self.take_frame(FRAME_WAIT_TIMEOUT)
+            image = self.take_frame()
             if image is None:
+                time.sleep(0.05)
                 continue
 
             try:
@@ -1267,12 +1222,8 @@ class Segmentation:
 
                 # De grootste ArUco-marker krijgt een kader op hetzelfde beeld,
                 # behalve als de noodstopmarker in beeld ligt: die gaat voor,
-                # hoe klein hij ook is, en houdt elke andere actie tegen.
-                # De markerthread bekeek dit beeld al; enkel als zijn antwoord
-                # er nog niet is zoeken we zelf
-                markers = self.markers_for(seq)
-                if markers is None:
-                    markers = detect_markers(image)
+                # hoe klein hij ook is, en houdt elke andere actie tegen
+                markers = detect_markers(image)
                 marker = estop_marker(markers)
                 if marker is None and markers:
                     marker = markers[0]
@@ -1307,6 +1258,7 @@ class Segmentation:
             self.updated_at = time.monotonic()
             self.status = "actief"
             self.error = None
+            time.sleep(SEGMENTATION_INTERVAL)
 
     # -- uitlezen ------------------------------------------------------------
 

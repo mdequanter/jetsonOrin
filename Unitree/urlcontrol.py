@@ -1139,15 +1139,33 @@ class Segmentation:
             if action["kind"] == "command":
                 robot.run_command(action["command"])
             else:
-                # Draaien duurt seconden, dus dat gebeurt naast de segmentatie
+                # Volgt de robot een pad, dan zetten we hem eerst stil
+                resume = path_follower.pause_for_turn()
                 robot.resume()
-                rule = action["rule"]
+                # Draaien duurt seconden, dus dat gebeurt naast de segmentatie
                 threading.Thread(
-                    target=robot.turn_for,
-                    args=(rule["direction"], rule["seconds"]),
+                    target=self._turn_and_resume,
+                    args=(action["rule"], resume),
                     daemon=True).start()
         except Exception as exc:
             print("ArUco-commando mislukt: " + str(exc), flush=True)
+
+    def _turn_and_resume(self, rule, resume):
+        """Draai zoals de regel zegt en zet het volgen daarna terug aan.
+
+        Enkel hervatten als het volgen aanstond toen de regel afging: wie met
+        de hand aan het rijden was, blijft met de hand rijden.
+
+        Een noodstop tijdens het draaien gaat voor. path_follower.start() heft
+        een noodstop op, dus die mogen we dan niet oproepen."""
+        try:
+            robot.turn_for(rule["direction"], rule["seconds"])
+        except Exception as exc:
+            print("Draairegel mislukt: " + str(exc), flush=True)
+            return
+
+        if resume and not robot.stopped:
+            path_follower.start()
 
     # -- live stream ---------------------------------------------------------
 
@@ -1540,6 +1558,25 @@ class PathFollower:
         self.changes += 1
         self._stop.set()
         print("Pad volgen gestopt: " + reason, flush=True)
+
+    def pause_for_turn(self):
+        """Zet het volgen stil voor een draairegel.
+
+        Geeft terug of het volgen aanstond. Was dat zo, dan hoort de beller het
+        na de draai weer aan te zetten; stond het af, dan blijft het af.
+
+        We wachten tot de volglus echt uitgebold is: die stuurt bij het
+        afsluiten nog een move(0,0,0), en dat moet gebeurd zijn voor het
+        draaien begint. Anders stuurt de volger nog een stapcommando midden in
+        de draai."""
+        if not self.active:
+            return False
+
+        self.stop("draairegel")
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=FOLLOW_INTERVAL * 4)
+        return True
 
     def _run(self):
         try:

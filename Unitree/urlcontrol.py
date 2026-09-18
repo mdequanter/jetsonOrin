@@ -1842,18 +1842,6 @@ HTML_PAGE = """
     <input type="checkbox" id="show-camera" checked>
     <span>toon het beeld</span>
   </label>
-  <label class="check">
-    <span>foto om de</span>
-    <select id="photo-interval">
-      {% for choice in photo_intervals %}
-      <option value="{{ choice.seconds }}"{% if choice.seconds == photo_interval %} selected{% endif %}>{{ choice.label }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <div class="row" style="margin-top:10px">
-    <span class="check" style="margin-top:0">opgenomen beelden <b id="photo-count">0</b></span>
-    <button id="photo-go"><span class="ico">&#128247;</span><span class="lbl">foto</span></button>
-  </div>
 </section>
 
 <section>
@@ -1925,6 +1913,22 @@ HTML_PAGE = """
   </div>
   <div class="grid" style="margin-top:8px">
     <button data-cmd="flash"><span class="ico">⚡</span><span class="lbl">flash</span></button>
+  </div>
+</section>
+
+<section>
+  <h2>Foto's</h2>
+  <label class="check">
+    <span>foto om de</span>
+    <select id="photo-interval">
+      {% for choice in photo_intervals %}
+      <option value="{{ choice.seconds }}"{% if choice.seconds == photo_interval %} selected{% endif %}>{{ choice.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <div class="row" style="margin-top:10px">
+    <span class="check" style="margin-top:0">opgenomen beelden <b id="photo-count">0</b></span>
+    <button id="photo-go"><span class="ico">&#128247;</span><span class="lbl">foto</span></button>
   </div>
 </section>
 

@@ -129,7 +129,8 @@ MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
 
 # Het pad volgen: dit loopt door tot er iets is om voor te stoppen
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
-FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
+FOLLOW_FULL_TURN = 90.0       # graden verschil waarbij we op volle bijstuursnelheid zitten
+FOLLOW_TURN_SPEED = 0.6       # rad/s bij die afwijking; los van de draaiknoppen
 FOLLOW_INTERVAL = 0.15        # s tussen twee move-commando's tijdens het volgen
 FOLLOW_NO_PATH_FRAMES = 5     # zoveel beelden na elkaar zonder pad voor we stoppen (~1 s)
 MARKER_MAX_AGE = 0.6          # s waarna we een geziene marker als verdwenen beschouwen
@@ -232,6 +233,17 @@ class RobotController:
         """Vooruit stappen en meteen bijsturen naar de heading die de camera
         ziet, zodat de robot het pad volgt zolang dit commando binnenkomt.
 
+        Hoe verder het pad van recht vooruit ligt, hoe harder we bijsturen: de
+        draaisnelheid loopt recht evenredig met de afwijking. De camera geeft
+        een heading tussen 0 en 180, dus de afwijking blijft binnen 90 graden;
+        met FOLLOW_FULL_TURN op 90 loopt die lijn over het hele bereik en zit
+        de robot nooit tegen zijn maximum aan te schuren.
+
+        We rekenen hier met FOLLOW_TURN_SPEED en niet met TURN_SPEED: dat
+        laatste is de draaisnelheid van de knoppen links en rechts, een
+        bewuste snelle draai. Voor het bijsturen op een pad is dat veel te
+        hard.
+
         Ziet de camera niets bruikbaars, dan stappen we gewoon rechtdoor."""
         heading = segmentation.current_heading()
         if heading is None:
@@ -241,8 +253,8 @@ class RobotController:
         if abs(error) < FOLLOW_DEADBAND:
             z = 0.0
         else:
-            # Hoe verder van 90, hoe harder we draaien; positieve z is links
-            z = -clamp(error / FOLLOW_FULL_TURN, -1.0, 1.0) * TURN_SPEED
+            # Evenredig met de afwijking; positieve z is links
+            z = -clamp(error / FOLLOW_FULL_TURN, -1.0, 1.0) * FOLLOW_TURN_SPEED
 
         return self.move(x=MOVE_SPEED, z=z)
 

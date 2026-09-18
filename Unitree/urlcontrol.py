@@ -131,6 +131,7 @@ MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 45.0       # graden verschil waarbij we op volle draaisnelheid zitten
 FOLLOW_INTERVAL = 0.15        # s tussen twee move-commando's tijdens het volgen
+FOLLOW_NO_PATH_FRAMES = 5     # zoveel beelden na elkaar zonder pad voor we stoppen (~1 s)
 MARKER_MAX_AGE = 0.6          # s waarna we een geziene marker als verdwenen beschouwen
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
@@ -1480,8 +1481,9 @@ class PathFollower:
 
     Het volgen loopt hier op de Jetson door, niet op de webpagina: die klikt
     het enkel aan en uit. We stoppen zodra er een ArUco-marker in beeld komt,
-    zodra het model geen pad meer ziet, bij een noodstop, en natuurlijk als je
-    opnieuw op de knop klikt of een ander commando geeft."""
+    als het model FOLLOW_NO_PATH_FRAMES beelden na elkaar geen pad ziet, bij
+    een noodstop, en natuurlijk als je opnieuw op de knop klikt of een ander
+    commando geeft."""
 
     def __init__(self):
         self._thread = None
@@ -1489,6 +1491,8 @@ class PathFollower:
         self.active = False
         self.reason = None
         self.changes = 0          # zo ziet de webpagina dat er iets veranderd is
+        self._no_path_count = 0   # beelden na elkaar zonder pad
+        self._last_frame_at = 0.0 # updated_at van het beeld dat we al beoordeeld hebben
 
     def toggle(self):
         """Aan- of uitzetten, wat de knop 'volg pad' doet."""
@@ -1506,6 +1510,8 @@ class PathFollower:
         self.active = True
         self.reason = None
         self.changes += 1
+        self._no_path_count = 0   # elke nieuwe rit begint met een schone teller
+        self._last_frame_at = 0.0
 
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -1555,8 +1561,38 @@ class PathFollower:
         if marker_id is not None:
             return "aruco %d" % marker_id
 
-        if segmentation.current_heading() is None:
-            return "geen pad"
+        return self._no_path_reason()
+
+    def _no_path_reason(self):
+        """Stoppen omdat er geen pad meer is? None als we verder mogen.
+
+        Een enkel beeld zonder pad zegt niet veel: het model mist er wel eens
+        een, en dan stopt de robot midden op een pad dat er gewoon ligt. We
+        stoppen daarom pas na FOLLOW_NO_PATH_FRAMES beelden na elkaar zonder
+        pad. Ondertussen stapt follow_path rechtdoor.
+
+        We tellen beelden, geen lusrondes: deze lus draait op FOLLOW_INTERVAL
+        en is daarmee sneller dan de segmentatie, dus hetzelfde beeld zou
+        anders meermaals meetellen. Een nieuw beeld herkennen we aan
+        updated_at, dat elke ronde van de segmentatie opnieuw gezet wordt.
+
+        Valt de segmentatie helemaal stil, dan komt er ook geen nieuw beeld
+        meer om op te tellen. Daar helpt wachten niet, dus stoppen we meteen:
+        anders zou de robot blijven doorstappen op een verouderd beeld."""
+        updated_at = segmentation.updated_at
+        if not updated_at or time.monotonic() - updated_at > HEADING_MAX_AGE:
+            return "geen beeld"
+
+        # Enkel een beeld dat we nog niet bekeken hebben telt mee
+        if updated_at != self._last_frame_at:
+            self._last_frame_at = updated_at
+            if segmentation.current_heading() is None:
+                self._no_path_count += 1
+            else:
+                self._no_path_count = 0
+
+        if self._no_path_count >= FOLLOW_NO_PATH_FRAMES:
+            return "geen pad op %d beelden" % self._no_path_count
         return None
 
 

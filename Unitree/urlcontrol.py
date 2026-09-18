@@ -52,8 +52,8 @@ TURN_CALIBRATION = 1.0        # verhoog als de robot te weinig draait, verlaag a
 
 # Camera + segmentatie
 USE_CAMERA = True             # zet op False om zonder camera/YOLO te draaien
-MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/unrealsim.pt"
-DETECTION_CONFIDENCE = 0.8    # startwaarde, op de webpagina aanpasbaar
+MODEL_PATH = "/home/jetson/jetsonOrin/signaling/models/laerbeekbos.pt"
+DETECTION_CONFIDENCE = 0.5    # startwaarde, op de webpagina aanpasbaar
 CONFIDENCE_CHOICES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 SCAN_HEIGHTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MODEL_DIR = os.path.dirname(MODEL_PATH)   # hier zoeken we de andere .pt-bestanden
@@ -1843,22 +1843,6 @@ HTML_PAGE = """
     <span>toon het beeld</span>
   </label>
   <label class="check">
-    <span>model</span>
-    <select id="model">
-      {% for name in model_choices %}
-      <option value="{{ name }}"{% if name == model %} selected{% endif %}>{{ name }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label class="check">
-    <span>confidence</span>
-    <select id="confidence">
-      {% for value in confidence_choices %}
-      <option value="{{ value }}"{% if value == confidence %} selected{% endif %}>{{ "%.1f"|format(value) }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label class="check">
     <span>foto om de</span>
     <select id="photo-interval">
       {% for choice in photo_intervals %}
@@ -1870,32 +1854,6 @@ HTML_PAGE = """
     <span class="check" style="margin-top:0">opgenomen beelden <b id="photo-count">0</b></span>
     <button id="photo-go"><span class="ico">&#128247;</span><span class="lbl">foto</span></button>
   </div>
-  <p class="hint">Het groene vlak is het grootste pad dat het model herkent, de stippen zijn
-     de meetpunten en de pijl wijst naar de heading. Ligt er een ArUco-marker in
-     beeld, dan krijgt de grootste een magenta kader met zijn nummer en de
-     geschatte afstand, berekend uit zijn oppervlakte
-     ({{ calibration }}).<br>
-     De markers met een magenta nummer op de knoppen hieronder voeren dat
-     commando uit zodra ze {{ aruco_min_frames }} beelden na elkaar in beeld
-     liggen; de noodstop gaat al af bij het eerste beeld waarop hij te zien is,
-     op eender welke afstand. Daarna gaat hetzelfde commando pas {{ aruco_cooldown }} seconden
-     later opnieuw af; wat vroeger komt wordt genegeerd.
-     Andere markers kunnen de robot laten draaien zodra ze {{ aruco_turn_frames }}
-     beelden na elkaar op een ingestelde afstand liggen: dat stel je in bij de
-     <a class="terug" href="/aruco">draairegels</a>. Zet het beeld uit als de
-     verbinding traag wordt. Los te bekijken via <code>/video</code>.<br>
-     Een lagere confidence laat het model sneller een pad zien (maar ook meer
-     verkeerde), een hogere enkel wat het zeker weet.
-     Werkt ook via de URL: <code>/confidence/?value=0.4</code><br>
-     De knop foto bewaart het ruwe camerabeeld, zonder masker, kader of tekst,
-     als JPEG in <code>{{ photo_dir }}</code>; die map wordt aangemaakt als ze
-     nog niet bestaat. Staat de keuzelijst op iets anders dan "geen", dan
-     gebeurt dat vanzelf om de zoveel tijd, ook als je de pagina sluit. De
-     teller telt wat er sinds de start van dit script bewaard is.
-     Werkt ook via <code>/photo/</code> en <code>/photo/interval/?value=30</code><br>
-     De keuzelijst toont de <code>.pt</code>-bestanden uit de modelmap. Een ander
-     model laden duurt een tiental seconden, ondertussen staat de status op
-     "model laden". Werkt ook via <code>/model/?name=denham.pt</code></p>
 </section>
 
 <section>
@@ -1913,11 +1871,6 @@ HTML_PAGE = """
     <button data-cmd="backward" data-hold><span class="ico">⬇️</span><span class="lbl">achteruit</span></button>
     <div></div>
   </div>
-  <p class="hint">De robot beweegt zolang je de knop ingedrukt houdt. Staat
-     "volg de camera" aan, dan wordt de vooruitknop een schakelaar: één klik en
-     de robot volgt het pad verder op eigen houtje. Hij stopt bij een
-     ArUco-marker, zodra het model geen pad meer ziet, bij een noodstop, en
-     als je opnieuw op de knop klikt, op stop drukt of iets anders vraagt.</p>
 </section>
 
 <section>
@@ -1930,11 +1883,6 @@ HTML_PAGE = """
     <input type="checkbox" id="auto-heading" checked>
     <span>volg de camera <b id="camera-heading">—</b></span>
   </label>
-  <p class="hint">90 = één seconde rechtdoor stappen. Meer draait naar rechts,
-     minder naar links, telkens traag vooruit al draaiend.
-     Werkt ook via de URL: <code>/heading/?heading=101</code><br>
-     Met "volg de camera" aan wordt dit veld bijgewerkt met wat de camera ziet
-     en stuurt de vooruitknop zelf bij naar 90.</p>
 </section>
 
 <section>
@@ -1978,6 +1926,26 @@ HTML_PAGE = """
   <div class="grid" style="margin-top:8px">
     <button data-cmd="flash"><span class="ico">⚡</span><span class="lbl">flash</span></button>
   </div>
+</section>
+
+<section>
+  <h2>Model</h2>
+  <label class="check">
+    <span>model</span>
+    <select id="model">
+      {% for name in model_choices %}
+      <option value="{{ name }}"{% if name == model %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="check">
+    <span>confidence</span>
+    <select id="confidence">
+      {% for value in confidence_choices %}
+      <option value="{{ value }}"{% if value == confidence %} selected{% endif %}>{{ "%.1f"|format(value) }}</option>
+      {% endfor %}
+    </select>
+  </label>
 </section>
 
 <footer><a class="terug" href="/aruco">🎯 draairegels van de markers</a><br>Robot: {{ robot_ip }}</footer>
@@ -2341,10 +2309,6 @@ ARUCO_PAGE = """
     <tbody id="rules"></tbody>
   </table>
   <p class="leeg" id="leeg">Nog geen regels ingesteld.</p>
-  <p class="hint">Een regel gaat af zodra de marker {{ turn_frames }} beelden na
-     elkaar op de ingestelde afstand ligt, marge inbegrepen. Een beeld buiten die
-     afstand zet de teller weer op nul. Daarna wacht dezelfde marker
-     {{ cooldown }} seconden.</p>
 </section>
 
 <section>
@@ -2379,9 +2343,6 @@ ARUCO_PAGE = """
     </div>
     <p class="hint wide" id="preview">&nbsp;</p>
   </div>
-  <p class="hint">Een bestaande marker pas je aan door hem opnieuw te bewaren.
-     De regels staan in <code>{{ rules_file }}</code> en blijven dus bestaan na
-     een herstart.</p>
 </section>
 
 <section>
@@ -2410,16 +2371,6 @@ ARUCO_PAGE = """
     </div>
   </div>
 
-  <p class="hint">Eén marker per commando: kies het commando en geef de marker
-     die het moet uitvoeren. De noodstop (<code>estop</code>) is de uitzondering:
-     die wordt op elk camerabeeld apart gecontroleerd en gaat af zodra de marker
-     te zien is, van dichtbij of van ver, ook als er een grotere marker in beeld
-     ligt. Hij breekt een lopende draai meteen af en houdt de robot stil tot er
-     een nieuw commando komt. Een bestaand commando verhuist zo naar een andere
-     marker. Deze markers gaan af na {{ min_frames }} beelden na elkaar, zonder
-     afstandsvoorwaarde, en kunnen niet ook een draairegel hebben.
-     Op de bedieningspagina staan de nummers op de knoppen; herlaad die pagina
-     na een wijziging.</p>
 </section>
 
 <footer><a class="terug" href="/">&#8592; terug naar de bediening</a></footer>
@@ -2595,15 +2546,9 @@ def index():
         confidence=segmentation.confidence,
         model_choices=segmentation.model_choices(),
         model=segmentation.model_name,
-        calibration=" en ".join("%d px² = %.2f m" % (area, distance)
-                                for area, distance in ARUCO_CALIBRATION),
         photo_intervals=photos.interval_choices(),
         photo_interval=photos.interval,
-        photo_dir=PHOTO_DIR,
         aruco_commands=command_markers.as_dict(),
-        aruco_min_frames=ARUCO_MIN_FRAMES,
-        aruco_turn_frames=ARUCO_TURN_FRAMES,
-        aruco_cooldown=int(ARUCO_COOLDOWN),
     )
 
 
@@ -2781,12 +2726,8 @@ def aruco():
     return render_template_string(
         ARUCO_PAGE,
         commands=sorted(COMMANDS),
-        min_frames=ARUCO_MIN_FRAMES,
-        turn_frames=ARUCO_TURN_FRAMES,
-        cooldown=int(ARUCO_COOLDOWN),
         max_seconds=MAX_TURN_SECONDS,
         max_distance=MAX_RULE_DISTANCE,
-        rules_file=os.path.basename(ARUCO_RULES_PATH),
     )
 
 

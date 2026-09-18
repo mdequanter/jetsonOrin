@@ -1789,6 +1789,7 @@ PAGE_CSS = """
       border-radius: 10px;
       overflow: hidden;
     }
+    .camera.verborgen { display: none; }
     .camera img { width: 100%; height: 100%; object-fit: contain; display: block; }
     .camera .badge {
       position: absolute;
@@ -1834,7 +1835,7 @@ HTML_PAGE = """
 
 <section>
   <h2>Camera</h2>
-  <div class="camera">
+  <div class="camera" id="cam-box">
     <img id="cam" alt="camerabeeld">
     <span class="badge" id="cam-badge">—</span>
   </div>
@@ -2084,6 +2085,14 @@ function showFollowing(data) {
 const camImg = document.getElementById('cam');
 const camBadge = document.getElementById('cam-badge');
 const showCameraBox = document.getElementById('show-camera');
+const camBox = document.getElementById('cam-box');
+
+// Staat "toon het beeld" af, dan tonen we ook geen leeg zwart vak. Dit volgt
+// enkel de schakelaar: een pagina die even naar de achtergrond gaat stopt wel
+// de stream, maar laat het vak staan waar het stond.
+function updateCamBox() {
+  camBox.classList.toggle('verborgen', !showCameraBox.checked);
+}
 
 function startStream() {
   if (!showCameraBox.checked || document.hidden) return;
@@ -2097,8 +2106,12 @@ function stopStream() {
 }
 
 showCameraBox.addEventListener('change', () => {
+  updateCamBox();
   if (showCameraBox.checked) startStream(); else stopStream();
 });
+
+// De browser kan de schakelaar bij een herlaadbeurt op zijn oude stand zetten
+updateCamBox();
 
 // De stream niet laten doorlopen als de pagina toch niet zichtbaar is
 document.addEventListener('visibilitychange', () => {

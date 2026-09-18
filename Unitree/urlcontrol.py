@@ -1569,9 +1569,9 @@ class PathFollower:
         if robot.stopped:
             return "noodstop"
 
-        marker_id = segmentation.marker_in_view()
-        if marker_id is not None:
-            return "aruco %d" % marker_id
+        #marker_id = segmentation.marker_in_view()
+        #if marker_id is not None:
+        #    return "aruco %d" % marker_id
 
         return self._no_path_reason()
 

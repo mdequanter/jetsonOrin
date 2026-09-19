@@ -116,7 +116,7 @@ ARUCO_COMMANDS = {
 }
 ARUCO_MIN_FRAMES = 3          # zoveel beelden na elkaar zichtbaar voor we reageren
 ARUCO_TURN_FRAMES = 2         # draairegels reageren sneller: 2 beelden op de juiste afstand
-ARUCO_COOLDOWN = 30.0         # s voor we hetzelfde commando opnieuw laten uitvoeren
+ARUCO_COOLDOWN = 10        # s voor we hetzelfde commando opnieuw laten uitvoeren
 
 # Draairegels: markers die de robot laten draaien, in te stellen via /aruco
 ARUCO_RULES_PATH = os.path.join(
@@ -229,26 +229,18 @@ class RobotController:
     def move(self, x=0, y=0, z=0):
         return self.sport(SPORT_CMD["Move"], {"x": x, "y": y, "z": z})
 
-    def follow_path(self):
-        """Vooruit stappen en meteen bijsturen naar de heading die de camera
-        ziet, zodat de robot het pad volgt zolang dit commando binnenkomt.
+    def steer_to(self, heading):
+        """Vooruit stappen en evenredig bijsturen naar een heading.
 
-        Hoe verder het pad van recht vooruit ligt, hoe harder we bijsturen: de
-        draaisnelheid loopt recht evenredig met de afwijking. De camera geeft
-        een heading tussen 0 en 180, dus de afwijking blijft binnen 90 graden;
-        met FOLLOW_FULL_TURN op 90 loopt die lijn over het hele bereik en zit
-        de robot nooit tegen zijn maximum aan te schuren.
+        Hoe verder het doel van recht vooruit ligt, hoe harder we bijsturen:
+        de draaisnelheid loopt recht evenredig met de afwijking. Een heading
+        ligt tussen 0 en 180, dus de afwijking blijft binnen 90 graden; met
+        FOLLOW_FULL_TURN op 90 loopt die lijn over het hele bereik en zit de
+        robot nooit tegen zijn maximum aan te schuren.
 
-        We rekenen hier met FOLLOW_TURN_SPEED en niet met TURN_SPEED: dat
-        laatste is de draaisnelheid van de knoppen links en rechts, een
-        bewuste snelle draai. Voor het bijsturen op een pad is dat veel te
-        hard.
-
-        Ziet de camera niets bruikbaars, dan stappen we gewoon rechtdoor."""
-        heading = segmentation.current_heading()
-        if heading is None:
-            return self.move(x=MOVE_SPEED)
-
+        We rekenen met FOLLOW_TURN_SPEED en niet met TURN_SPEED: dat laatste
+        is de draaisnelheid van de knoppen links en rechts, een bewuste snelle
+        draai. Voor bijsturen is dat veel te hard."""
         error = heading - HEADING_FORWARD
         if abs(error) < FOLLOW_DEADBAND:
             z = 0.0
@@ -257,6 +249,15 @@ class RobotController:
             z = -clamp(error / FOLLOW_FULL_TURN, -1.0, 1.0) * FOLLOW_TURN_SPEED
 
         return self.move(x=MOVE_SPEED, z=z)
+
+    def follow_path(self):
+        """Het pad volgen zoals de camera het ziet.
+
+        Ziet de camera niets bruikbaars, dan stappen we gewoon rechtdoor."""
+        heading = segmentation.current_heading()
+        if heading is None:
+            return self.move(x=MOVE_SPEED)
+        return self.steer_to(heading)
 
     # -- heading -------------------------------------------------------------
 
@@ -958,6 +959,7 @@ class Segmentation:
         self._marker_frame = None
         self._marker_seq = 0
         self._markers_by_seq = {}     # wat die thread per beeld vond, om te hergebruiken
+        self._aims = (0.0, ())        # (tijdstip, richtingsmarkers in beeld)
 
         # Voor de live stream op /video
         self._stream_cond = threading.Condition()
@@ -1029,6 +1031,61 @@ class Segmentation:
             while len(self._markers_by_seq) > MARKER_CACHE_FRAMES:
                 del self._markers_by_seq[next(iter(self._markers_by_seq))]
 
+    def _publish_aims(self, image, markers):
+        """Zet klaar waar de richtingsmarkers liggen, voor wie erop wil mikken.
+
+        Een richtingsmarker is er een met een draairegel. We rekenen er
+        dezelfde heading voor uit als voor het pad, vanaf het midden onderaan
+        het beeld naar het midden van de marker: 90 is recht vooruit, meer is
+        naar rechts. Zo stuurt de robot met dezelfde regeling naar een marker
+        als naar een pad.
+
+        De lijst staat op volgorde van grootte, dus de dichtste vooraan."""
+        aims = []
+        for marker in markers:
+            if turn_rules.get(marker["id"]) is None:
+                continue
+            points = marker["points"]
+            heading = compute_heading_to_point(
+                image, float(np.mean(points[:, 0])), float(np.mean(points[:, 1])))
+            aims.append({
+                "id": marker["id"],
+                "heading": clamp(heading, 0.0, 180.0),
+                "distance": marker_distance(marker["area"]),
+            })
+        self._aims = (time.monotonic(), tuple(aims))
+
+    def aims(self):
+        """De richtingsmarkers in beeld, de dichtste eerst.
+
+        Een lege tuple als er geen zijn of als het laatste beeld ouder is dan
+        MARKER_MAX_AGE: dan beschouwen we ze als uit beeld."""
+        at, aims = self._aims
+        if not aims or time.monotonic() - at > MARKER_MAX_AGE:
+            return ()
+        return aims
+
+    def aim_for(self, marker_id):
+        """De richtingsmarker met dit nummer, of None als hij niet in beeld is."""
+        for aim in self.aims():
+            if aim["id"] == marker_id:
+                return aim
+        return None
+
+    def turn_rule_on_cooldown(self, marker_id):
+        """Is de draairegel van deze marker net afgegaan?
+
+        Dezelfde cooldown als in marker_action, en met dezelfde boekhouding:
+        zowel de segmentatie als de volger kan een regel laten afgaan, en na
+        een draai staat de marker vaak nog in beeld. Zonder dit zou hij meteen
+        opnieuw afgaan."""
+        last = self._triggered_at.get(marker_id)
+        return last is not None and time.monotonic() - last < ARUCO_COOLDOWN
+
+    def note_turn_rule(self, marker_id):
+        """Onthoud dat deze draairegel nu afgaat, voor de cooldown."""
+        self._triggered_at[marker_id] = time.monotonic()
+
     def markers_for(self, seq):
         """De markers die de markerthread op dit beeld vond, of None.
 
@@ -1078,6 +1135,12 @@ class Segmentation:
         else:
             rule = turn_rules.get(marker_id)
             if rule is None:
+                return None
+
+            # Lijnt de volger op een richtingsmarker uit, dan regelt die het
+            # draaien: hij rijdt er zelf naartoe en weet wanneer hij er is.
+            # Andere richtingsmarkers tellen zolang niet mee.
+            if path_follower.aligning_id() is not None:
                 return None
 
             if rule_matches(rule, marker_distance(marker["area"])):
@@ -1144,13 +1207,13 @@ class Segmentation:
                 robot.resume()
                 # Draaien duurt seconden, dus dat gebeurt naast de segmentatie
                 threading.Thread(
-                    target=self._turn_and_resume,
+                    target=self.turn_and_resume,
                     args=(action["rule"], resume),
                     daemon=True).start()
         except Exception as exc:
             print("ArUco-commando mislukt: " + str(exc), flush=True)
 
-    def _turn_and_resume(self, rule, resume):
+    def turn_and_resume(self, rule, resume):
         """Draai zoals de regel zegt en zet het volgen daarna terug aan.
 
         Enkel hervatten als het volgen aanstond toen de regel afging: wie met
@@ -1243,6 +1306,10 @@ class Segmentation:
             # De segmentatie werkt op hetzelfde beeld en hoeft straks niet
             # opnieuw te zoeken
             self.put_markers(last_seq, markers)
+
+            # Wie een richtingsmarker wil naderen, stuurt op deze thread: die
+            # loopt op het tempo van de camera, de segmentatie veel trager
+            self._publish_aims(image, markers)
 
             if markers:
                 self.marker_id = markers[0]["id"]
@@ -1523,6 +1590,8 @@ class PathFollower:
         self.changes = 0          # zo ziet de webpagina dat er iets veranderd is
         self._no_path_count = 0   # beelden na elkaar zonder pad
         self._last_frame_at = 0.0 # updated_at van het beeld dat we al beoordeeld hebben
+        self._aim_id = None       # de richtingsmarker waarop we nu uitlijnen
+        self._arrived_count = 0   # beelden na elkaar op de ingestelde afstand
 
     def toggle(self):
         """Aan- of uitzetten, wat de knop 'volg pad' doet."""
@@ -1542,6 +1611,8 @@ class PathFollower:
         self.changes += 1
         self._no_path_count = 0   # elke nieuwe rit begint met een schone teller
         self._last_frame_at = 0.0
+        self._aim_id = None
+        self._arrived_count = 0
 
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -1573,21 +1644,115 @@ class PathFollower:
             return False
 
         self.stop("draairegel")
+        self._aim_id = None
+        self._arrived_count = 0
         thread = self._thread
         if thread is not None:
             thread.join(timeout=FOLLOW_INTERVAL * 4)
         return True
 
+    def aligning_id(self):
+        """De richtingsmarker waarop we nu uitlijnen, of None.
+
+        De segmentatie leest dit om te weten dat zij het draaien niet hoeft te
+        regelen zolang de volger er zelf naartoe rijdt."""
+        return self._aim_id
+
+    def _aim(self):
+        """De richtingsmarker waar we naartoe rijden, of None voor het pad.
+
+        Eenmaal gekozen blijven we op dezelfde marker mikken tot hij uit beeld
+        verdwijnt of zijn regel uitgevoerd is: andere richtingsmarkers tellen
+        tijdens het uitlijnen niet mee."""
+        if self._aim_id is not None:
+            aim = segmentation.aim_for(self._aim_id)
+            if aim is not None:
+                return aim
+
+            # Uit beeld: terug het pad volgen, met schone tellers
+            print("Aruco %d uit beeld, terug naar het pad" % self._aim_id,
+                  flush=True)
+            self._aim_id = None
+            self._arrived_count = 0
+            self._no_path_count = 0
+            self._last_frame_at = 0.0
+            return None
+
+        for aim in segmentation.aims():
+            # Net gedraaid voor deze marker? Dan laten we hem met rust, anders
+            # mikken we er na het hervatten meteen opnieuw op
+            if segmentation.turn_rule_on_cooldown(aim["id"]):
+                continue
+
+            self._aim_id = aim["id"]
+            self._arrived_count = 0
+            print("Uitlijnen op aruco %d" % aim["id"], flush=True)
+            return aim
+
+        return None
+
+    def _arrived(self, aim):
+        """De regel van deze marker als we er zijn, anders None.
+
+        We slaan toe zodra de marker binnen de bovengrens van de marge komt,
+        niet pas als hij precies in het bandje ligt: de robot rijdt er recht
+        naartoe, dus de afstand loopt enkel terug, en een smal bandje zou
+        tussen twee beelden door kunnen wegvallen.
+
+        Een paar beelden na elkaar, want de afstand komt uit de oppervlakte
+        van de marker in beeld en die schommelt."""
+        rule = turn_rules.get(aim["id"])
+        distance = aim["distance"]
+        if rule is None or distance is None or distance > rule_range(rule)[1]:
+            self._arrived_count = 0
+            return None
+
+        self._arrived_count += 1
+        if self._arrived_count < ARUCO_TURN_FRAMES:
+            return None
+        return rule
+
+    def _start_turn(self, marker_id, rule):
+        """We zijn er: stilzetten en de draairegel laten uitvoeren.
+
+        Dit loopt in de volgthread zelf, dus pause_for_turn kan hier niet:
+        die wacht op deze thread. We zetten onszelf stil, sturen de robot
+        eerst echt naar nul en laten het draaien in een eigen thread lopen.
+        Die zet het volgen daarna weer aan."""
+        print("Aruco %d op afstand: draai %s" % (marker_id, rule["direction"]),
+              flush=True)
+        segmentation.note_turn_rule(marker_id)
+        self.stop("draairegel")
+        self._aim_id = None
+        self._arrived_count = 0
+        try:
+            robot.move(x=0, y=0, z=0)
+        except Exception:
+            pass
+        threading.Thread(target=segmentation.turn_and_resume,
+                         args=(rule, True), daemon=True).start()
+
     def _run(self):
         try:
             while not self._stop.is_set():
-                reason = self._reason_to_stop()
+                aim = self._aim()
+
+                reason = self._reason_to_stop(aim)
                 if reason is not None:
                     self.stop(reason)
                     break
 
-                robot.note_command("volg pad")
-                robot.follow_path()
+                if aim is not None:
+                    rule = self._arrived(aim)
+                    if rule is not None:
+                        self._start_turn(aim["id"], rule)
+                        break
+                    robot.note_command("naar aruco %d" % aim["id"])
+                    robot.steer_to(aim["heading"])
+                else:
+                    robot.note_command("volg pad")
+                    robot.follow_path()
+
                 self._stop.wait(FOLLOW_INTERVAL)
         except Exception as exc:
             self.stop("fout: " + str(exc))
@@ -1599,12 +1764,17 @@ class PathFollower:
         except Exception:
             pass
 
-    def _reason_to_stop(self):
+    def _reason_to_stop(self, aim=None):
         """Waarom moeten we stoppen? None als we gewoon verder mogen."""
         if not robot.connected:
             return "geen verbinding"
         if robot.stopped:
             return "noodstop"
+
+        # Tijdens het uitlijnen mikken we op de marker en overrulen we de
+        # segmentatie: of er een pad ligt doet dan niet ter zake
+        if aim is not None:
+            return None
 
         #marker_id = segmentation.marker_in_view()
         #if marker_id is not None:

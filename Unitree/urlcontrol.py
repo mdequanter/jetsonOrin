@@ -130,10 +130,15 @@ MAX_RULE_DISTANCE = 10.0      # grens op de afstand waarop een regel afgaat
 # Het pad volgen: dit loopt door tot er iets is om voor te stoppen
 FOLLOW_DEADBAND = 3.0         # graden verschil waarbinnen we niet bijsturen
 FOLLOW_FULL_TURN = 90.0       # graden verschil waarbij we op volle bijstuursnelheid zitten
-FOLLOW_TURN_SPEED = 0.6       # rad/s bij die afwijking; los van de draaiknoppen
+FOLLOW_TURN_SPEED = 0.8      # rad/s bij die afwijking; los van de draaiknoppen
 FOLLOW_INTERVAL = 0.15        # s tussen twee move-commando's tijdens het volgen
 FOLLOW_NO_PATH_FRAMES = 5     # zoveel beelden na elkaar zonder pad voor we stoppen (~1 s)
 MARKER_MAX_AGE = 0.6          # s waarna we een geziene marker als verdwenen beschouwen
+
+# Met de hand rijden: de knoppen herhalen hun commando zolang je ze indrukt
+MANUAL_MOVE_COMMANDS = {"forward", "backward", "turn_left", "turn_right",
+                        "strafe_left", "strafe_right"}
+MANUAL_MOVE_MAX_AGE = 0.5     # s na zo'n commando rekenen we de robot als rijdend
 DISCO_COLOURS = [VUI_COLOR.RED, VUI_COLOR.YELLOW, VUI_COLOR.GREEN,
                  VUI_COLOR.CYAN, VUI_COLOR.BLUE, VUI_COLOR.PURPLE]
 
@@ -161,6 +166,9 @@ class RobotController:
         # Wat de robot nu doet, om op het beeld te zetten
         self.command = None
         self.command_at = 0.0
+
+        # Wanneer er voor het laatst met de hand gereden is
+        self.moving_at = 0.0
 
     # -- laag niveau ---------------------------------------------------------
 
@@ -200,6 +208,18 @@ class RobotController:
             return None
         return self.command
 
+    def driving(self):
+        """Rijdt de robot nu met de hand?
+
+        De knoppen sturen hun commando om de HOLD_INTERVAL opnieuw zolang je ze
+        ingedrukt houdt, dus een move-commando van net betekent dat de knop nog
+        vaststaat. Laat je los, dan valt dit na MANUAL_MOVE_MAX_AGE vanzelf weg
+        en staat de robot weer stil.
+
+        Het volgen telt hier niet mee: dat stuurt rechtstreeks met move() en
+        komt niet langs run_command."""
+        return time.monotonic() - self.moving_at < MANUAL_MOVE_MAX_AGE
+
     def run_command(self, command):
         """Voer een commando uit de tabel uit.
 
@@ -211,6 +231,10 @@ class RobotController:
         # Een ander commando betekent dat je zelf de leiding neemt
         if command != "follow":
             path_follower.stop("commando " + command)
+
+        # Onthouden of je met de hand aan het rijden bent; alles wat geen
+        # rijcommando is (stop, gaan liggen, het licht) zet dat weer uit
+        self.moving_at = time.monotonic() if command in MANUAL_MOVE_COMMANDS else 0.0
 
         self.note_command(command)
         return COMMANDS[command]()
@@ -1141,6 +1165,12 @@ class Segmentation:
             # draaien: hij rijdt er zelf naartoe en weet wanneer hij er is.
             # Andere richtingsmarkers tellen zolang niet mee.
             if path_follower.aligning_id() is not None:
+                return None
+
+            # Rijd je met de hand, dan heb jij de leiding: dan mag een marker
+            # de robot niet zomaar laten draaien. Stilstaan mag wel, en het
+            # volgen komt hier toch niet langs.
+            if robot.driving():
                 return None
 
             if rule_matches(rule, marker_distance(marker["area"])):
